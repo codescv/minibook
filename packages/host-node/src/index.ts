@@ -1,1 +1,2 @@
-export const MINIBOOK_VERSION = '0.1.0';
+export * from './server/index.js';
+export * from './shared/index.js';

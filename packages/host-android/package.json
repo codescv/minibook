@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "vite dev web",
-    "build": "tsc --noEmit",
+    "build": "pnpm run build:web",
     "build:web": "vite build web",
     "cap:sync": "pnpm run build:web && cap sync android",
     "build:apk": "node ../../scripts/bump-version.mjs && pnpm run cap:sync && cd android && ./gradlew assembleRelease",

@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "vendor": "onyx",
+      "manufacturerOrBrandContains": ["onyx"],
+      "supportsVendorRefresh": true
+    },
+    {
+      "vendor": "boyue",
+      "manufacturerOrBrandContains": ["boyue", "haoqing", "meebook", "likebook"]
+    },
+    {
+      "vendor": "bigme",
+      "manufacturerOrBrandContains": ["bigme"]
+    },
+    {
+      "vendor": "hisense",
+      "manufacturerOrBrandContains": ["hisense"],
+      "modelAllowlist": [
+        "a5",
+        "a5c",
+        "a5 pro",
+        "a5pro",
+        "a5 pro cc",
+        "a6",
+        "a6l",
+        "a7",
+        "a7 cc",
+        "a7cc",
+        "a9",
+        "touch",
+        "touch lite",
+        "hi reader",
+        "hireader",
+        "q5",
+        "hlte200",
+        "hlte201",
+        "hlte202",
+        "hlte203",
+        "hlte300",
+        "hlte315",
+        "hlte556",
+        "hlte700"
+      ]
+    },
+    {
+      "vendor": "moaan",
+      "manufacturerOrBrandContains": ["moaan", "inkpalm"]
+    },
+    {
+      "vendor": "moaan",
+      "manufacturerOrBrandContains": ["xiaomi"],
+      "modelContains": ["ereader", "moaan", "inkpalm", "duokan"]
+    },
+    {
+      "vendor": "ireader",
+      "manufacturerOrBrandContains": ["ireader", "zhangyue"]
+    },
+    {
+      "vendor": "dasung",
+      "manufacturerOrBrandContains": ["dasung"]
+    },
+    {
+      "vendor": "pocketbook",
+      "manufacturerOrBrandContains": ["pocketbook"]
+    },
+    {
+      "vendor": "tolino",
+      "manufacturerOrBrandContains": ["tolino"]
+    },
+    {
+      "vendor": "nook",
+      "manufacturerOrBrandContains": ["barnesandnoble", "barnes & noble", "nook"]
+    },
+    {
+      "vendor": "supernote",
+      "manufacturerOrBrandContains": ["ratta", "supernote"]
+    },
+    {
+      "vendor": "iflytek",
+      "manufacturerOrBrandContains": ["iflytek"],
+      "modelContains": ["ainote", "officebook", "eink", "x1", "x2", "x3", "r1", "t1", "t2"]
+    },
+    {
+      "vendor": "kobo",
+      "manufacturerOrBrandContains": ["kobo"]
+    },
+    {
+      "vendor": "sony",
+      "manufacturerOrBrandContains": ["sony"],
+      "modelContains": ["dpt-", "dpt "]
+    },
+    {
+      "vendor": "generic",
+      "deviceOrHardwareContains": ["eink", "_epd", "epd_", "rk3566_eink", "allwinner_epd"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <style>
+    .plate { fill: #F5F3EE; }
+    .ink { stroke: #18181A; }
+    @media (prefers-color-scheme: dark) {
+      .plate { fill: #282A30; }
+      .ink { stroke: #F4F5F7; }
+    }
+  </style>
+  <rect class="plate" width="1024" height="1024" rx="224"/>
+  <path class="ink" d="M512 310 C425 268 290 268 196 304 L196 734 C290 698 425 698 512 742 C599 698 734 698 828 734 L828 304 C734 268 599 268 512 310 Z"
+        fill="none" stroke-width="68" stroke-linecap="round" stroke-linejoin="round"/>
+  <line class="ink" x1="512" y1="316" x2="512" y2="736" stroke-width="64" stroke-linecap="round"/>
+  <path d="M642 278 L726 278 L726 538 L684 498 L642 538 Z" fill="#FF4800"/>
+</svg>
