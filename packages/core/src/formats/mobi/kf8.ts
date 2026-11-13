@@ -1,9 +1,10 @@
+import { cleanTocHeading, scanSanitizedBody } from '../../book/heading.js';
 import { sanitizeDocument } from '../../book/sanitize.js';
 import { type BuiltSectionUnits, buildSectionRenderUnits } from '../../book/text-model.js';
 import { MiniBookError } from '../../errors.js';
 import { concatBytes } from '../../io/binary.js';
 import { parseXhtmlOrHtml } from '../../markup/html.js';
-import { findFirst, localName, type MNode, textContent } from '../../markup/mnode.js';
+import { findFirst, localName, textContent } from '../../markup/mnode.js';
 import type {
   BookMeta,
   BookOpenHint,
@@ -556,7 +557,7 @@ export async function buildKf8IndexFromStream(params: {
   }));
 
   // Helper to scan a KF8 section in memory (`flow0Bytes` is already loaded -> 0 extra I/O reads!)
-  // for exact anchor char offsets (`[P1-C2]`) and heading-derived TOC (`[P2]`).
+  // for exact `countedChars` (`[P1-F1]`), anchor char offsets (`[P1-C2]`), and heading-derived TOC (`[P2]`).
   const scannedKf8Sections = new Map<
     number,
     { anchors: Map<string, number>; heading: string | null; countedChars: number }
@@ -572,48 +573,17 @@ export async function buildKf8IndexFromStream(params: {
       const xhtml = new TextDecoder('utf-8', { fatal: false }).decode(assembled);
       const tree = parseXhtmlOrHtml(xhtml, false);
       const headTitleEl = findFirst(tree, (n) => localName(n.tag).toLowerCase() === 'title');
-      const rawHeadTitle = headTitleEl ? textContent(headTitleEl).replace(/\s+/g, ' ').trim() : '';
-      const usefulHeadTitle =
-        rawHeadTitle &&
-        rawHeadTitle.toLowerCase() !== header.title.trim().toLowerCase() &&
-        !/project gutenberg ebook/i.test(rawHeadTitle)
-          ? rawHeadTitle
-          : null;
+      const rawHeadTitle = headTitleEl ? textContent(headTitleEl) : '';
       const sanitized = await sanitizeDocument(tree, {
         sectionPath: `${sec.name}.xhtml`,
         defaultLang: header.exth.language ?? header.localeLang,
         defaultDir: header.exth.direction ?? 'ltr',
       });
-      const anchors = new Map<string, number>();
-      let firstH: string | null = null;
-      let firstShortBlock: string | null = null;
-      let cur = 0;
-      const walk = (nodes: readonly MNode[]) => {
-        for (const n of nodes) {
-          if (n.type === 'text') {
-            cur += n.value.length;
-            continue;
-          }
-          const idVal = n.attrs['id'];
-          if (idVal && !anchors.has(idVal)) anchors.set(idVal, cur);
-          if ('data-mb-skip' in n.attrs) continue;
-          if (!firstH && n.ns === 'xhtml' && /^h[1-6]$/.test(n.tag)) {
-            const ht = textContent(n).replace(/\s+/g, ' ').trim();
-            if (ht) firstH = ht;
-          } else if (!firstShortBlock && n.ns === 'xhtml' && (n.tag === 'p' || n.tag === 'div')) {
-            const bt = textContent(n).replace(/\s+/g, ' ').trim();
-            if (bt && bt.length <= 60 && !/[。！？.!?]$/.test(bt)) {
-              firstShortBlock = bt;
-            }
-          }
-          walk(n.children);
-        }
-      };
-      walk(sanitized.bodyChildren);
+      const bodyInfo = scanSanitizedBody(sanitized.bodyChildren, rawHeadTitle, header.title);
       const entry = {
-        anchors,
-        heading: firstH ?? usefulHeadTitle ?? firstShortBlock ?? null,
-        countedChars: cur,
+        anchors: bodyInfo.anchors,
+        heading: bodyInfo.heading,
+        countedChars: bodyInfo.countedChars,
       };
       scannedKf8Sections.set(secIdx, entry);
       return entry;
@@ -621,6 +591,18 @@ export async function buildKf8IndexFromStream(params: {
       return null;
     }
   };
+
+  // Scan all sections in memory (`0` extra reads!) so `SectionRef.charLength` & `sizeHint` are exact counted chars (`[P1-F1]`)!
+  for (let idx = 0; idx < mutableSections.length; idx++) {
+    const scanned = await scanKf8SectionInMemory(idx);
+    if (scanned) {
+      spine[idx] = {
+        ...spine[idx]!,
+        sizeHint: Math.max(1, scanned.countedChars),
+        charLength: scanned.countedChars,
+      };
+    }
+  }
 
   // Sparse TOC fallback (`[P2]`: e.g. Gutenberg zh KF8 with 1 license entry for 13 chapters)
   const collectKf8TocSections = (items: readonly TocItem[], acc = new Set<number>()): Set<number> => {
@@ -643,7 +625,12 @@ export async function buildKf8IndexFromStream(params: {
       const s = spine[idx]!;
       const existing = bySec.get(s.index);
       if (existing && existing.length > 0) {
-        rebuilt.push(...existing);
+        rebuilt.push(
+          ...existing.map((it) => ({
+            ...it,
+            title: cleanTocHeading(it.title) ?? it.title,
+          })),
+        );
         continue;
       }
       const scanned = await scanKf8SectionInMemory(s.index);
@@ -651,7 +638,7 @@ export async function buildKf8IndexFromStream(params: {
         continue;
       }
       const heading = scanned?.heading || `Section ${idx + 1}`;
-      spine[s.index] = { ...s, title: heading };
+      spine[s.index] = { ...spine[s.index]!, title: heading };
       rebuilt.push({
         title: heading,
         locator: { section: s.index, offset: 0 },

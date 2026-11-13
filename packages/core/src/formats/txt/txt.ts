@@ -160,6 +160,7 @@ export async function inspectTxt(
     title: ch.title,
     linear: true,
     sizeHint: Math.max(1, ch.charCount),
+    charLength: ch.charCount,
   }));
 
   const toc: TocItem[] = chapters.map((ch) => ({
@@ -221,6 +222,7 @@ export async function openTxtSession(
       title: ch.title,
       linear: true,
       sizeHint: Math.max(1, ch.charCount),
+      charLength: ch.charCount,
     }));
     const toc: TocItem[] = chapters.map((ch) => ({
       title: ch.title,

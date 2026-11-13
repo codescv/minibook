@@ -626,12 +626,26 @@ export async function inspectMarkdown(
     fallbackTitle,
   );
 
-  const spine: SectionRef[] = chapters.map((ch) => ({
-    index: ch.index,
-    title: ch.title,
-    linear: true,
-    sizeHint: Math.max(1, ch.charCount),
-  }));
+  const spine: SectionRef[] = chapters.map((ch) => {
+    const slice = rawBytes.subarray(ch.byteStart, ch.byteEnd);
+    const mdText = decodeBytesWithEncoding(slice, detected.encoding, 0);
+    const renderedChars = buildSectionRenderUnits({
+      sectionIndex: ch.index,
+      bodyChildren: renderMarkdownToNodes(mdText),
+      css: '',
+      lang: null,
+      dir: 'ltr',
+      resources: [],
+      isCoverLike: false,
+    }).fullText.text.length;
+    return {
+      index: ch.index,
+      title: ch.title,
+      linear: true,
+      sizeHint: Math.max(1, renderedChars),
+      charLength: renderedChars,
+    };
+  });
 
   const toc: TocItem[] = chapters.map((ch) => ({
     title: ch.title,

@@ -437,13 +437,17 @@ function parseFb2Tree(root: MElement, fileName: string): ParsedFb2Model {
     indexIds(s.node, s.info.index);
   }
 
-  const spine: SectionRef[] = sections.map((s) => ({
-    index: s.info.index,
-    ...(s.info.id ? { id: s.info.id } : {}),
-    ...(s.info.title ? { title: s.info.title } : {}),
-    linear: s.info.linear,
-    sizeHint: s.info.sizeHint,
-  }));
+  const spine: SectionRef[] = sections.map((s) => {
+    const exactChars = textContent(s.node).length;
+    return {
+      index: s.info.index,
+      ...(s.info.id ? { id: s.info.id } : {}),
+      ...(s.info.title ? { title: s.info.title } : {}),
+      linear: s.info.linear,
+      sizeHint: Math.max(1, exactChars),
+      charLength: exactChars,
+    };
+  });
 
   if (toc.length === 0) {
     spine

@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   MiniBookError,
+  type SectionRef,
   buildZipArchive,
+  fractionForLocator,
+  getSectionTotalChars,
   inspectBook,
+  locatorForFraction,
   memoryByteSource,
   openBook,
   parseHtmlDocument,
   parseXml,
+  resolveLocatorForFraction,
   sanitizeStylesheet,
   search,
+  sectionShareForFraction,
   segmentSection,
 } from '../index.js';
 import { buildSectionText } from '../book/text-model.js';
@@ -285,6 +291,116 @@ ${
       'We met at 5 p.m. on Jan. 3.',
       'He said wait until Oct. 12 at 8 a.m.',
       'Then leave.',
+    ]);
+  });
+
+  it('[P1-F1] & [P2] computes char-accurate TOC % (0/20/40/60/80), Go-to-% round-trips, CJK ratio fallback, and clean sparse-TOC titles (#45)', async () => {
+    // 1. Single-file EPUB (> 130,000 counted chars across 4 render units) with 5 equal anchored chapters
+    const chapBody = '<p>' + 'A'.repeat(26_280) + '</p>';
+    const singleXhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<body><h2 id="c1">Chapter 1</h2>${chapBody}<h2 id="c2">Chapter 2</h2>${chapBody}<h2 id="c3">Chapter 3</h2>${chapBody}<h2 id="c4">Chapter 4</h2>${chapBody}<h2 id="c5">Chapter 5</h2>${chapBody}</body>
+</html>`;
+    const navXhtml = `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol>
+      <li><a href="t.xhtml#c1">Chapter 1</a></li>
+      <li><a href="t.xhtml#c2">Chapter 2</a></li>
+      <li><a href="t.xhtml#c3">Chapter 3</a></li>
+      <li><a href="t.xhtml#c4">Chapter 4</a></li>
+      <li><a href="t.xhtml#c5">Chapter 5</a></li>
+    </ol></nav></body></html>`;
+
+    const epubBytes = buildZipArchive([
+      { name: 'mimetype', data: 'application/epub+zip', store: true },
+      {
+        name: 'META-INF/container.xml',
+        data: '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+      },
+      {
+        name: 'OEBPS/content.opf',
+        data: '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">f1</dc:identifier><dc:title>Book</dc:title></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="t" href="t.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="t"/></spine></package>',
+      },
+      { name: 'OEBPS/nav.xhtml', data: navXhtml },
+      { name: 'OEBPS/t.xhtml', data: singleXhtml },
+    ]);
+
+    const s = await openBook(memoryByteSource(epubBytes), { fileName: 'single.epub' });
+    const fullText = await s.loadSectionText!(0);
+    expect(fullText.text.length).toBeGreaterThan(130_000);
+    expect(s.spine[0]?.charLength).toBe(fullText.text.length);
+
+    // Multi-unit `SectionDoc`: `unit0.unit.end <= 40,000` while `getSectionTotalChars(unit0)` is the full 131,445 chars!
+    const unit0 = await s.loadSection(0, 0);
+    expect(unit0.unit.end).toBeLessThanOrEqual(40_000);
+    expect(getSectionTotalChars(unit0)).toBe(fullText.text.length);
+
+    // Contents TOC `%` (even with 2-arg `fractionForLocator(s.spine, item.locator)`) is exact 0 / 20 / 40 / 60 / 80!
+    const tocPcts = s.toc.map((it) => Math.round(fractionForLocator(s.spine, it.locator) * 100));
+    expect(tocPcts).toEqual([0, 20, 40, 60, 80]);
+
+    // Scrubber & E-Ink Go to % (0, 25, 50, 75, 99) round-trip to exact char offset!
+    for (const targetPct of [0, 20, 47, 73, 99]) {
+      const targetFrac = targetPct / 100;
+      const syncLoc = locatorForFraction(s.spine, targetFrac);
+      const asyncLoc = await resolveLocatorForFraction(s, targetFrac);
+      expect(syncLoc).toEqual(asyncLoc);
+      const roundTripFrac = fractionForLocator(s.spine, asyncLoc, getSectionTotalChars(unit0));
+      expect(Math.abs(roundTripFrac - targetFrac)).toBeLessThan(0.001);
+    }
+
+    // 2. CJK byte-weight vs char-length mismatch (`sizeHint=163097` bytes vs `charLength=85065` chars)
+    // + unloaded section observed-ratio fallback:
+    const mixedSpine: SectionRef[] = [
+      { index: 0, linear: true, sizeHint: 163_097, charLength: 85_065 },
+      { index: 1, linear: true, sizeHint: 163_097 }, // unloaded section (no `charLength` yet)
+    ];
+    // End of section 0 (`offset = 85065`) reaches full 50.0% of the 2-equal-weight book (never sticks at ~26%)!
+    expect(fractionForLocator(mixedSpine, { section: 0, offset: 85_065 })).toBeCloseTo(0.5, 4);
+    // Midpoint of unloaded section 1 (`share = 0.5` -> `fraction = 0.75`) estimates ~42,533 chars (not 81,548 bytes)!
+    expect(sectionShareForFraction(mixedSpine, 0.75)).toEqual({ section: 1, share: 0.5 });
+    const estUnloaded = locatorForFraction(mixedSpine, 0.75);
+    expect(estUnloaded.section).toBe(1);
+    expect(estUnloaded.offset).toBeCloseTo(42_533, -1);
+    expect(fractionForLocator(mixedSpine, estUnloaded)).toBeCloseTo(0.75, 3);
+
+    // 3. [P2] Sparse-TOC title cleanup: strips `"\"Cover\""` quotes & skips `————` decorative rules
+    const quotedAndRuleEpub = buildZipArchive([
+      { name: 'mimetype', data: 'application/epub+zip', store: true },
+      {
+        name: 'META-INF/container.xml',
+        data: '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+      },
+      {
+        name: 'OEBPS/content.opf',
+        data: '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">q</dc:identifier><dc:title>紅樓夢</dc:title></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="s0" href="s0.xhtml" media-type="application/xhtml+xml"/><item id="s1" href="s1.xhtml" media-type="application/xhtml+xml"/><item id="s2" href="s2.xhtml" media-type="application/xhtml+xml"/><item id="s3" href="s3.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="s0"/><itemref idref="s1"/><itemref idref="s2"/><itemref idref="s3"/></spine></package>',
+      },
+      {
+        name: 'OEBPS/nav.xhtml',
+        data: '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="s3.xhtml">"License"</a></li></ol></nav></body></html>',
+      },
+      {
+        name: 'OEBPS/s0.xhtml',
+        data: '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>"Cover"</title></head><body><p>封面頁</p></body></html>',
+      },
+      {
+        name: 'OEBPS/s1.xhtml',
+        data: '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>紅樓夢</title></head><body><p>————————</p><p>引言</p><p>此開卷第一回也。作者自云因曾歷過一番夢幻之後，故將真事隱去。</p></body></html>',
+      },
+      {
+        name: 'OEBPS/s2.xhtml',
+        data: '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>The Project Gutenberg eBook of 紅樓夢</title></head><body><p>════════════<br/>第一回 甄士隱夢幻識通靈<br/>════════════</p><p>正文開始。</p></body></html>',
+      },
+      {
+        name: 'OEBPS/s3.xhtml',
+        data: '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>版權聲明。</p></body></html>',
+      },
+    ]);
+
+    const qSession = await openBook(memoryByteSource(quotedAndRuleEpub), { fileName: 'hlm.epub' });
+    expect(qSession.toc.map((t) => t.title)).toEqual([
+      'Cover',
+      '引言',
+      '第一回 甄士隱夢幻識通靈',
+      'License',
     ]);
   });
 });

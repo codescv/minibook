@@ -87,10 +87,14 @@ export {
   buildSectionText,
 } from './book/text-model.js';
 export {
+  type SectionFractionTarget,
   createSavedPosition,
   fractionForLocator,
+  getSectionTotalChars,
   locatorForFraction,
   reanchorLocator,
+  resolveLocatorForFraction,
+  sectionShareForFraction,
 } from './book/locator.js';
 export {
   search,
