@@ -182,6 +182,28 @@ export class Paginator {
     return el;
   }
 
+  /**
+   * Ensures `html.scrollWidth >= S * Vw` even when trailing end padding (`G/2`) or an empty
+   * trailing spread column (`n = 2`, odd `K`) would otherwise cause `scrollLeft` to clamp short
+   * of `(S - 1) * Vw` on the last page of a render unit.
+   */
+  private syncScrollExtentSpacer(screenCount: number): void {
+    let spacer = this.frameDoc.getElementById('mb-scroll-spacer');
+    if (!spacer) {
+      spacer = this.frameDoc.createElement('div');
+      spacer.id = 'mb-scroll-spacer';
+      spacer.setAttribute('data-mb-skip', '');
+      spacer.setAttribute('aria-hidden', 'true');
+      this.frameDoc.documentElement.appendChild(spacer);
+    }
+    const totalPx = Math.max(1, screenCount * this.geom.Vw);
+    if (this.dir === 'rtl' && usesNegativeRtlScroll(this.frameDoc)) {
+      spacer.style.cssText = `position:absolute;top:0;right:${totalPx - 1}px;width:1px;height:1px;pointer-events:none;`;
+    } else {
+      spacer.style.cssText = `position:absolute;top:0;left:${totalPx - 1}px;width:1px;height:1px;pointer-events:none;`;
+    }
+  }
+
   private scaleOversizedBlocks(): void {
     const maxW = this.geom.Cw;
     if (maxW <= 0) return;
@@ -206,6 +228,7 @@ export class Paginator {
       this.columnCount = 1;
       this.screenCount = 1;
       this.currentPage = 0;
+      this.syncScrollExtentSpacer(1);
       return { columnCount: 1, pageCount: 1 };
     }
 
@@ -217,6 +240,7 @@ export class Paginator {
     if (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.right === 0) {
       this.columnCount = 1;
       this.screenCount = 1;
+      this.syncScrollExtentSpacer(1);
       return { columnCount: 1, pageCount: 1 };
     }
 
@@ -233,6 +257,7 @@ export class Paginator {
     const S = Math.max(1, Math.ceil(K / n));
     this.columnCount = K;
     this.screenCount = S;
+    this.syncScrollExtentSpacer(S);
     if (this.currentPage >= S) {
       this.currentPage = S - 1;
     }

@@ -52,6 +52,7 @@ export interface FrameGestureCallbacks {
   onImageZoom(src: string, alt: string): void;
   onSelectionChange(selection: { text: string; locator: Locator } | null): void;
   onReadAloudTapLocator(locator: Locator): boolean;
+  onContentRelayout?(): void;
 }
 
 export interface FilledFrameUnit {
@@ -320,12 +321,20 @@ export class SectionFrameManager {
       freezeAnimatedImages(frameDoc);
     }
 
-    // Wait briefly for font readiness (capped so slow/offline environments never hang)
+    // Wait for font readiness capped at 1.5s (`ARCHITECTURE.md` §6.3)
     if (frameDoc.fonts?.ready) {
+      let settledBeforeCap = false;
       await Promise.race([
-        frameDoc.fonts.ready,
-        new Promise((r) => setTimeout(r, 120)),
+        frameDoc.fonts.ready.then(() => {
+          settledBeforeCap = true;
+        }),
+        new Promise((r) => setTimeout(r, 1500)),
       ]);
+      if (!settledBeforeCap) {
+        void frameDoc.fonts.ready.then(() => {
+          this.callbacks.onContentRelayout?.();
+        });
+      }
     }
 
     const textMap = new TextMap(frameDoc.body, options.sectionDoc.text.text);
@@ -396,6 +405,22 @@ export class SectionFrameManager {
     let hadSelectionOnDown = false;
     let lastImageTap: { target: Element; time: number; timer: ReturnType<typeof setTimeout> } | null = null;
     let lastWheelAt = 0;
+    let relayoutDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRelayout = (): void => {
+      if (relayoutDebounce) clearTimeout(relayoutDebounce);
+      relayoutDebounce = setTimeout(() => {
+        relayoutDebounce = null;
+        this.callbacks.onContentRelayout?.();
+      }, 100);
+    };
+
+    const images = Array.from(frameDoc.querySelectorAll('img'));
+    for (const img of images) {
+      if (!img.complete) {
+        img.addEventListener('load', scheduleRelayout, { once: true });
+      }
+    }
 
     const getNonEmptySelection = (): Selection | null => {
       const sel = frameDoc.getSelection();
@@ -551,6 +576,10 @@ export class SectionFrameManager {
     frameDoc.addEventListener('wheel', onWheel, { passive: false });
 
     return () => {
+      if (relayoutDebounce) {
+        clearTimeout(relayoutDebounce);
+        relayoutDebounce = null;
+      }
       if (lastImageTap) {
         clearTimeout(lastImageTap.timer);
         lastImageTap = null;

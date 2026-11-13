@@ -2,11 +2,23 @@ import type { Locator, Utterance } from '@minibook/core';
 
 export interface AutoPageTurnViewAdapter {
   readonly visibleSection: number;
+  readonly visibleUnitRange?: { readonly start: number; readonly end: number };
   currentPage(): number;
   pageOf(sectionOffset: number): number;
   countCharsOnPage(sectionStart: number, sectionEnd: number, page: number): number;
   goToPage(page: number): void;
   jumpToLocator(locator: Locator): void;
+}
+
+function isOffsetInsideVisibleUnit(
+  adapter: AutoPageTurnViewAdapter,
+  section: number,
+  offset: number,
+): boolean {
+  if (section !== adapter.visibleSection) return false;
+  const u = adapter.visibleUnitRange;
+  if (!u || u.end <= u.start) return true;
+  return offset >= u.start && offset < u.end;
 }
 
 /**
@@ -47,6 +59,7 @@ export class AutoPageTurn {
     options: {
       readonly rate: number;
       readonly attachedDurationMs?: number;
+      readonly suppressBackwardSnap?: boolean;
       readonly now?: number;
     },
   ): void {
@@ -60,23 +73,30 @@ export class AutoPageTurn {
 
     if (!adapter) return;
 
-    if (utterance.section !== adapter.visibleSection) {
+    if (!isOffsetInsideVisibleUnit(adapter, utterance.section, utterance.start)) {
       adapter.jumpToLocator({ section: utterance.section, offset: utterance.start });
       return;
     }
 
     const startPage = adapter.pageOf(utterance.start);
-    if (startPage !== adapter.currentPage()) {
+    if (!options.suppressBackwardSnap && startPage !== adapter.currentPage()) {
+      adapter.goToPage(startPage);
+    } else if (options.suppressBackwardSnap && startPage > adapter.currentPage()) {
       adapter.goToPage(startPage);
     }
 
     const lastCharOffset = Math.max(utterance.start, utterance.end - 1);
-    const endPage = adapter.pageOf(lastCharOffset);
-    if (endPage > startPage) {
+    const unitRange = adapter.visibleUnitRange;
+    const crossesUnitBoundary =
+      Boolean(unitRange && unitRange.end > unitRange.start && lastCharOffset >= unitRange.end);
+    const endPage = crossesUnitBoundary ? startPage + 1 : adapter.pageOf(lastCharOffset);
+
+    if (crossesUnitBoundary || endPage > startPage) {
       const totalChars = Math.max(1, utterance.text.length);
+      const effectiveEndInUnit = crossesUnitBoundary && unitRange ? unitRange.end : utterance.end;
       const charsOnFirst = Math.min(
         totalChars,
-        Math.max(1, adapter.countCharsOnPage(utterance.start, utterance.end, startPage)),
+        Math.max(1, adapter.countCharsOnPage(utterance.start, effectiveEndInUnit, startPage)),
       );
       const rate = Math.max(0.5, options.rate);
       const estTotalMs =
@@ -88,7 +108,9 @@ export class AutoPageTurn {
       this.straddleTimer = setTimeout(() => {
         this.straddleTimer = null;
         if (this.activeUtterance?.id !== utterance.id) return;
-        if (adapter.visibleSection === utterance.section && adapter.currentPage() === startPage) {
+        if (crossesUnitBoundary && unitRange) {
+          adapter.jumpToLocator({ section: utterance.section, offset: unitRange.end });
+        } else if (adapter.visibleSection === utterance.section && adapter.currentPage() === startPage) {
           adapter.goToPage(startPage + 1);
         }
       }, delayMs);
@@ -102,6 +124,11 @@ export class AutoPageTurn {
   ): void {
     if (!adapter || utterance.section !== adapter.visibleSection) return;
     const wordSectionOffset = utterance.start + Math.max(0, wordRelativeStart);
+    if (!isOffsetInsideVisibleUnit(adapter, utterance.section, wordSectionOffset)) {
+      this.clearTimer();
+      adapter.jumpToLocator({ section: utterance.section, offset: wordSectionOffset });
+      return;
+    }
     const wordPage = adapter.pageOf(wordSectionOffset);
     if (wordPage > adapter.currentPage()) {
       this.clearTimer();

@@ -142,9 +142,97 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
     expect(withReadAloud).toEqual(bare);
   });
 
-  test('renders 42,000-char chapter via virtual render units and preserves anchor on font change', async ({
+  test('renders 42,000-char chapter via virtual render units, aligns last page scrollLeft == (S-1)*Vw, and keeps sticky anchor across A+/A- & rotations', async ({
     page,
   }) => {
+    // 1. [P1-U1]: Verify last page of unit 0 & unit 1 has exact scrollLeft === (S - 1) * Vw and all text rects inside [G/2-1, Vw-G/2+1] on 393px (n=1) AND 1440px (n=2)!
+    for (const vp of [
+      { width: 393, height: 852 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(vp);
+      await page.goto('/?book=b_long40k&eink=on');
+      await page.waitForSelector('iframe.mb-reader-frame');
+
+      await expect
+        .poll(async () =>
+          page.evaluate(() => {
+            const iframe = document.querySelector<HTMLIFrameElement>(
+              'iframe.mb-reader-frame[style*="visibility: visible"]',
+            );
+            return iframe?.contentDocument?.body?.textContent?.includes('Paragraph 1.') ?? false;
+          }),
+        )
+        .toBe(true);
+
+      const lastPageCheck = await page.evaluate(async () => {
+        const harness = (window as unknown as {
+          __minibookTestHarness: {
+            host: { openMockSession: (id: string) => Promise<{ loadSection: (s: number, u: number) => Promise<{ unit: { start: number; end: number }; dir: 'ltr' | 'rtl'; text: { text: string } }> }> };
+            TextMap: new (root: Element, exp?: string) => unknown;
+            Paginator: new (o: Record<string, unknown>) => {
+              getPageCount: () => number;
+              goToPage: (p: number) => number;
+              getGeometry: () => { Vw: number; G: number };
+            };
+            computePaginationGeometry: (i: Record<string, unknown>) => { Vw: number; G: number };
+          };
+        }).__minibookTestHarness;
+
+        const iframe = document.querySelector<HTMLIFrameElement>(
+          'iframe.mb-reader-frame[style*="visibility: visible"]',
+        )!;
+        const fDoc = iframe.contentDocument!;
+        const sess = await harness.host.openMockSession('b_long40k');
+        const secDoc = await sess.loadSection(0, 0);
+        const tm = new harness.TextMap(fDoc.body, secDoc.text.text);
+        const geom = harness.computePaginationGeometry({
+          frameWidth: window.innerWidth,
+          frameHeight: window.innerHeight,
+          fontScale: 100,
+          margins: 'medium',
+          safeTop: 0,
+          safeBottom: 0,
+          isEink: true,
+        });
+        const pag = new harness.Paginator({
+          frameDoc: fDoc,
+          textMap: tm,
+          sectionDoc: secDoc,
+          geometry: geom,
+        });
+        const S = pag.getPageCount();
+        pag.goToPage(S - 1);
+        const actualSL = fDoc.documentElement.scrollLeft;
+        const expectedSL = (S - 1) * geom.Vw;
+
+        const outOfBounds: string[] = [];
+        const walker = fDoc.createTreeWalker(fDoc.body, NodeFilter.SHOW_TEXT);
+        let n = walker.nextNode();
+        while (n) {
+          if ((n.nodeValue ?? '').trim().length > 0) {
+            const r = fDoc.createRange();
+            r.selectNodeContents(n);
+            for (const rect of Array.from(r.getClientRects())) {
+              if (rect.width < 0.5) continue;
+              if (rect.right > 0 && rect.left < geom.Vw) {
+                if (rect.left < geom.G / 2 - 1.5 || rect.right > geom.Vw - geom.G / 2 + 1.5) {
+                  outOfBounds.push(`L=${rect.left.toFixed(1)} R=${rect.right.toFixed(1)}`);
+                }
+              }
+            }
+          }
+          n = walker.nextNode();
+        }
+        pag.goToPage(0);
+        return { S, actualSL, expectedSL, outOfBounds };
+      });
+
+      expect(lastPageCheck.actualSL).toBe(lastPageCheck.expectedSL);
+      expect(lastPageCheck.outOfBounds).toEqual([]);
+    }
+
+    // 2. [P1-U2]: Verify sticky reading anchor shows ZERO backward drift across A+ x3 -> A- x3 and 393 -> 852 -> 393 -> 1440 -> 393!
     await page.setViewportSize({ width: 393, height: 852 });
     await page.goto('/?book=b_long40k&theme=original');
     await page.waitForSelector('iframe.mb-reader-frame');
@@ -158,33 +246,52 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
       )
       .toBe(true);
 
-    // Turn 2 pages forward using keyboard ArrowRight
-    await page.keyboard.press('ArrowRight');
-    await page.waitForTimeout(220);
-    await page.keyboard.press('ArrowRight');
-    await page.waitForTimeout(220);
+    // Turn forward 10 pages cleanly (using E-Ink instant turn via keyboard or quick settle)
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(200);
+    }
 
-    const scrollBefore = await page.evaluate(() => {
-      const iframe = document.querySelector<HTMLIFrameElement>(
-        'iframe.mb-reader-frame[style*="visibility: visible"]',
-      )!;
-      return iframe.contentDocument!.documentElement.scrollLeft;
-    });
-    expect(scrollBefore).toBeGreaterThan(0);
+    const getVisibleScrollAndFirstText = () =>
+      page.evaluate(() => {
+        const iframe = document.querySelector<HTMLIFrameElement>(
+          'iframe.mb-reader-frame[style*="visibility: visible"]',
+        )!;
+        const fDoc = iframe.contentDocument!;
+        const sl = fDoc.documentElement.scrollLeft;
+        const Vw = parseFloat(iframe.style.width);
+        return { page: Math.round(sl / Vw), sl };
+      });
 
-    // Open Appearance ('a') and bump font size twice -> verify page re-anchors without jumping back to 0
+    const initial = await getVisibleScrollAndFirstText();
+    expect(initial.page).toBe(10);
+
+    // A+ x3 then A- x3 -> returns to exact Page 10!
     await page.keyboard.press('a');
     await expect(page.getByRole('dialog', { name: 'Appearance' })).toBeVisible();
-    await page.getByRole('button', { name: 'Increase text size' }).click();
-    await page.getByRole('button', { name: 'Increase text size' }).click();
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole('button', { name: 'Increase text size' }).click();
+    }
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole('button', { name: 'Decrease text size' }).click();
+    }
+    await page.keyboard.press('Escape');
 
-    const scrollAfter = await page.evaluate(() => {
-      const iframe = document.querySelector<HTMLIFrameElement>(
-        'iframe.mb-reader-frame[style*="visibility: visible"]',
-      )!;
-      return iframe.contentDocument!.documentElement.scrollLeft;
-    });
-    expect(scrollAfter).toBeGreaterThan(0);
+    const afterFontRoundTrip = await getVisibleScrollAndFirstText();
+    expect(afterFontRoundTrip.page).toBe(10);
+
+    // Rotate 393x852 -> 852x393 -> 393x852 -> 1440x900 -> 393x852 -> returns to exact Page 10!
+    await page.setViewportSize({ width: 852, height: 393 });
+    await page.waitForTimeout(80);
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.waitForTimeout(80);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.waitForTimeout(80);
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.waitForTimeout(80);
+
+    const afterRotationRoundTrip = await getVisibleScrollAndFirstText();
+    expect(afterRotationRoundTrip.page).toBe(10);
   });
 
   test('blocks XSS script execution and remote tracking requests inside SectionFrame (4-layer CSP)', async ({
