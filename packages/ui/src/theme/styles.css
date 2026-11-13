@@ -704,6 +704,13 @@ body,
   overflow: hidden;
 }
 
+.mb-progress-track[data-block="true"] {
+  flex: none;
+  width: 100%;
+  height: 2px;
+  margin: 4px 0;
+}
+
 .mb-progress-fill {
   height: 100%;
   background-color: var(--mb-fg);
@@ -712,6 +719,17 @@ body,
 
 :root[data-eink="1"] .mb-progress-track {
   display: none !important;
+}
+
+.mb-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: var(--mb-hairline-width) solid var(--mb-line);
+  border-radius: var(--mb-radius-xs);
+  font-size: var(--mb-ui-caption-size);
+  line-height: var(--mb-ui-caption-lh);
+  color: var(--mb-fg-quiet);
 }
 
 /* Empty State */

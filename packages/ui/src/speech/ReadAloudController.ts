@@ -23,6 +23,8 @@ import {
 } from '../host/core-bridge';
 import { resolveLocale, translate } from '../i18n';
 import { AutoPageTurn, type AutoPageTurnViewAdapter } from './AutoPageTurn';
+import { KokoroG2PClient, isKokoroCompatibleLang } from './KokoroG2PClient';
+import { useSpeechModelStore } from './speech-model-store';
 
 const MIN_QUEUE_HORIZON = 25;
 
@@ -82,9 +84,12 @@ export class ReadAloudController {
   private readonly getSettings: () => AppSettings;
   private readonly getIsEink: () => boolean;
   private readonly autoPageTurn = new AutoPageTurn();
+  private readonly g2p: KokoroG2PClient;
+  private readonly ownsG2P: boolean;
 
   private scheduler: SynthScheduler | null = null;
   private unsubPlayer: (() => void) | null = null;
+  private unsubHost: (() => void) | null = null;
   private session: BookSession | null = null;
   private ownsSession = false;
 
@@ -96,6 +101,7 @@ export class ReadAloudController {
   private lowestQueuedSection = Infinity;
   private toppingUp = false;
   private suppressBackwardSnapForId: string | null = null;
+  private voiceSwitchGeneration = 0;
 
   private viewAdapter: AutoPageTurnViewAdapter | null = null;
   private manualTurnDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -105,13 +111,29 @@ export class ReadAloudController {
     readonly player: SpeechPlayer;
     readonly getSettings: () => AppSettings;
     readonly getIsEink: () => boolean;
+    readonly g2pClient?: KokoroG2PClient;
   }) {
     this.host = deps.host;
     this.player = deps.player;
     this.getSettings = deps.getSettings;
     this.getIsEink = deps.getIsEink;
+    if (deps.g2pClient) {
+      this.g2p = deps.g2pClient;
+      this.ownsG2P = false;
+    } else {
+      this.g2p = new KokoroG2PClient();
+      this.ownsG2P = true;
+    }
 
     this.unsubPlayer = this.player.subscribe((ev) => this.handlePlayerEvent(ev));
+    if (this.host.speech.models || this.host.models) {
+      void useSpeechModelStore.getState().refreshFromHost(this.host);
+    }
+    this.unsubHost = this.host.subscribe((ev) => {
+      if (ev.type === 'speech-model') {
+        useSpeechModelStore.getState().setStatus(ev.status);
+      }
+    });
   }
 
   attachViewAdapter(adapter: AutoPageTurnViewAdapter | null): void {
@@ -135,6 +157,20 @@ export class ReadAloudController {
       }
       if (explicit.kind === 'openai' && !settings.customSpeechServer) {
         return { kind: 'system', voiceId: null };
+      }
+      if (explicit.kind === 'qwen' && !settings.qwenServer) {
+        return { kind: 'system', voiceId: null };
+      }
+      if (explicit.kind === 'kokoro') {
+        const modelStatus = useSpeechModelStore.getState().status;
+        if (
+          !this.host.speech.models ||
+          !explicit.voiceId ||
+          modelStatus?.state !== 'ready' ||
+          !modelStatus.installedVoices.includes(explicit.voiceId)
+        ) {
+          return { kind: 'system', voiceId: null };
+        }
       }
       return explicit;
     }
@@ -279,21 +315,25 @@ export class ReadAloudController {
     this.lowestQueuedSection = options.startLocator.section;
 
     // Load full starting section (splitting first long utterance when starting mid-section, §8.1 #6)
-    await this.loadAndAppendSection(options.startLocator.section, {
-      ...(options.preferContaining && options.startLocator.offset > 0
-        ? {
-            startOffset: options.startLocator.offset,
-            splitFirstLongUtterance: true,
-          }
-        : options.startLocator.offset > 0 && !options.preferContaining
-          ? { splitFirstLongUtterance: false }
-          : {}),
-    });
+    await this.loadAndAppendSection(
+      options.startLocator.section,
+      {
+        ...(options.preferContaining && options.startLocator.offset > 0
+          ? {
+              startOffset: options.startLocator.offset,
+              splitFirstLongUtterance: true,
+            }
+          : options.startLocator.offset > 0 && !options.preferContaining
+            ? { splitFirstLongUtterance: false }
+            : {}),
+      },
+      options.voice,
+    );
 
     // Always stock at least the next linear section + loop until >= 25 utterances ahead (`[P2 #1]`)
     const nextLinear = this.findNextLinearSection(options.startLocator.section);
     if (nextLinear !== null) {
-      await this.loadAndAppendSection(nextLinear);
+      await this.loadAndAppendSection(nextLinear, undefined, options.voice);
     }
 
     const targetUtterance = this.pickStartUtterance({
@@ -309,7 +349,7 @@ export class ReadAloudController {
       0,
       this.utterances.findIndex((u) => u.id === targetUtterance.id),
     );
-    await this.stockAheadUntilHorizon(startIdx, MIN_QUEUE_HORIZON);
+    await this.stockAheadUntilHorizon(startIdx, MIN_QUEUE_HORIZON, options.voice);
 
     const settings = this.getSettings();
     const coverUrl = this.host.library.coverUrl(options.bookId);
@@ -489,12 +529,7 @@ export class ReadAloudController {
   setVoice(voice: VoiceRef): void {
     const st = useReadAloudStore.getState();
     useReadAloudStore.setState({ voice, slowVoiceRtf: null, usingFallback: false });
-    this.player.setVoice(voice);
-
-    if (st.activeUtterance) {
-      const idx = Math.max(0, this.utterances.findIndex((u) => u.id === st.activeUtterance!.id));
-      this.configureSchedulerForVoice(voice, this.utterances.slice(idx), st.activeUtterance.id);
-    }
+    const gen = ++this.voiceSwitchGeneration;
 
     const langKey = (st.bookLang?.split('-')[0] ?? 'default').toLowerCase();
     const currentPrefs = this.getSettings().preferredVoices;
@@ -506,6 +541,64 @@ export class ReadAloudController {
         },
       })
       .catch(() => {});
+
+    if (!st.activeUtterance) {
+      this.player.setVoice(voice);
+      return;
+    }
+
+    const curId = st.activeUtterance.id;
+    const idx = Math.max(0, this.utterances.findIndex((u) => u.id === curId));
+
+    if (voice.kind !== 'kokoro' || !voice.voiceId) {
+      this.player.setVoice(voice);
+      this.configureSchedulerForVoice(voice, this.utterances.slice(idx), curId);
+      return;
+    }
+
+    // TTS_V2_SPEC.md §7.5: When switching to a `kokoro` voice mid-session, first annotate
+    // the current + next 3 utterances, call `player.enqueue(firstBatch, { replaceFromId: curId })`
+    // + `player.setVoice(voice)`, and then annotate the remaining queued utterances in batches of 50 per macrotask.
+    void (async () => {
+      const initialSlice = this.utterances.slice(idx, idx + 4);
+      const firstBatch = await this.annotateForVoice(initialSlice, voice);
+      if (gen !== this.voiceSwitchGeneration) return;
+
+      for (let i = 0; i < firstBatch.length; i++) {
+        const u = firstBatch[i]!;
+        this.utterances[idx + i] = u;
+        this.utteranceById.set(u.id, u);
+      }
+
+      this.player.enqueue(firstBatch, { replaceFromId: curId });
+      this.player.setVoice(voice);
+      this.configureSchedulerForVoice(voice, this.utterances.slice(idx), curId);
+
+      let offset = idx + 4;
+      while (offset < this.utterances.length) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (gen !== this.voiceSwitchGeneration) return;
+
+        const rawChunk = this.utterances.slice(offset, offset + 50);
+        if (rawChunk.length === 0) break;
+        const annotatedChunk = await this.annotateForVoice(rawChunk, voice);
+        if (gen !== this.voiceSwitchGeneration) return;
+
+        for (let i = 0; i < annotatedChunk.length; i++) {
+          const u = annotatedChunk[i]!;
+          if (offset + i < this.utterances.length) {
+            this.utterances[offset + i] = u;
+          }
+          this.utteranceById.set(u.id, u);
+        }
+
+        this.player.enqueue(annotatedChunk);
+        const nowActiveId = useReadAloudStore.getState().activeUtterance?.id ?? curId;
+        const nowIdx = Math.max(0, this.utterances.findIndex((u) => u.id === nowActiveId));
+        this.scheduler?.setQueue(this.utterances.slice(nowIdx), nowActiveId);
+        offset += 50;
+      }
+    })();
   }
 
   setSleepTimer(config: SleepTimerConfig): void {
@@ -646,6 +739,35 @@ export class ReadAloudController {
     this.stop();
     this.unsubPlayer?.();
     this.unsubPlayer = null;
+    this.unsubHost?.();
+    this.unsubHost = null;
+    if (this.ownsG2P) {
+      this.g2p.dispose();
+    }
+  }
+
+  async annotateForVoice(
+    utterances: readonly Utterance[],
+    voice: VoiceRef,
+  ): Promise<Utterance[]> {
+    if (voice.kind !== 'kokoro' || !voice.voiceId) {
+      return [...utterances];
+    }
+    const out: Utterance[] = [];
+    for (const u of utterances) {
+      if (!isKokoroCompatibleLang(u.lang)) {
+        out.push(u);
+        continue;
+      }
+      const res = await this.g2p.phonemize(u.text, u.lang, { voiceId: voice.voiceId });
+      out.push({
+        ...u,
+        phonemeIds: res.phonemeIds,
+        phonemeSpeeds: res.phonemeSpeeds,
+        phonemeSpans: res.phonemeSpans,
+      });
+    }
+    return out;
   }
 
   private configureSchedulerForVoice(
@@ -710,19 +832,26 @@ export class ReadAloudController {
   private async loadAndAppendSection(
     sectionIndex: number,
     segOpts?: { readonly startOffset?: number; readonly splitFirstLongUtterance?: boolean },
+    voiceOverride?: VoiceRef,
   ): Promise<Utterance[]> {
     if (!this.session || this.loadedSections.has(sectionIndex)) return [];
     this.loadedSections.add(sectionIndex);
 
     const sectionText = await loadFullSectionText(this.session, sectionIndex);
 
-    const segs = segmentSectionSafe(sectionIndex, sectionText, {
+    const rawSegs = segmentSectionSafe(sectionIndex, sectionText, {
       bookLang: this.session.meta.language,
       ...(segOpts?.startOffset !== undefined ? { startOffset: segOpts.startOffset } : {}),
       ...(segOpts?.splitFirstLongUtterance !== undefined
         ? { splitFirstLongUtterance: segOpts.splitFirstLongUtterance }
         : {}),
     });
+
+    const activeVoice = voiceOverride ?? useReadAloudStore.getState().voice;
+    const segs =
+      activeVoice && activeVoice.kind === 'kokoro'
+        ? await this.annotateForVoice(rawSegs, activeVoice)
+        : rawSegs;
 
     const added: Utterance[] = [];
     for (const u of segs) {
@@ -745,12 +874,16 @@ export class ReadAloudController {
    * Loops across consecutive linear sections until at least `minAhead` utterances are queued
    * after `fromIndex` or the book's spine ends (`[P2 #1]`: handles tiny 31-char sections cleanly).
    */
-  private async stockAheadUntilHorizon(fromIndex: number, minAhead: number): Promise<Utterance[]> {
+  private async stockAheadUntilHorizon(
+    fromIndex: number,
+    minAhead: number,
+    voiceOverride?: VoiceRef,
+  ): Promise<Utterance[]> {
     const newlyAdded: Utterance[] = [];
     while (this.utterances.length - fromIndex < minAhead) {
       const nextSec = this.findNextLinearSection(this.highestQueuedSection);
       if (nextSec === null) break;
-      const chunk = await this.loadAndAppendSection(nextSec);
+      const chunk = await this.loadAndAppendSection(nextSec, undefined, voiceOverride);
       newlyAdded.push(...chunk);
     }
     return newlyAdded;
@@ -869,6 +1002,10 @@ export class ReadAloudController {
         if (ev.reason === 'completed') {
           useReadAloudStore.setState({ status: 'paused', activeWordRange: null });
         }
+        break;
+
+      case 'engine-slow':
+        useReadAloudStore.setState({ slowVoiceRtf: Math.round(ev.rtf * 10) / 10 });
         break;
 
       default:

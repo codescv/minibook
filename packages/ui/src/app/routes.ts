@@ -12,7 +12,10 @@ export type ActiveSheetKind =
   | 'book-info'
   | 'custom-server'
   | 'licenses'
-  | 'settings-voice';
+  | 'settings-voice'
+  | 'kokoro-model'
+  | 'kokoro-voices'
+  | 'qwen-server';
 
 export type ContentsTab = 'contents' | 'bookmarks' | 'search';
 
@@ -101,7 +104,7 @@ export interface RouteState {
   reset(): void;
 }
 
-const LIST_SHEETS = new Set<ActiveSheetKind>(['contents', 'voice', 'settings-voice']);
+const LIST_SHEETS = new Set<ActiveSheetKind>(['contents', 'voice', 'settings-voice', 'kokoro-voices']);
 
 const pageableStack: PageableHandler[] = [];
 const pageableListeners = new Set<() => void>();

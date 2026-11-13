@@ -1,13 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_APP_SETTINGS } from '@minibook/core';
+import {
+  DEFAULT_APP_SETTINGS,
+  KOKORO_VOICE_BIN_BYTES,
+  KOKORO_VOICE_DIM,
+  parseWav,
+} from '@minibook/core';
 import {
   AutoPageTurn,
   createMockPlatformHost,
   createMockSpeechPlayer,
+  KokoroG2PClient,
+  KokoroWebEngine,
   ReadAloudController,
   RefreshController,
+  sliceKokoroVoiceStyle,
   useReadAloudStore,
+  useSpeechModelStore,
   WebSpeechPlayer,
+  type MinimalWorkerLike,
+  type OrtRuntimeLike,
+  type OrtSessionLike,
+  type OrtTensorLike,
 } from '../index';
 
 describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController', () => {
@@ -493,5 +506,306 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('implements KokoroG2PClient Worker execution + sync throw, async onerror, and 2s WKWebView handshake timeout fallbacks (#66 Guardrail 1)', async () => {
+    // 1. Dedicated Worker path when Worker posts `{ type: 'ready' }`
+    const workerClient = new KokoroG2PClient({
+      workerFactory: () => {
+        const w: MinimalWorkerLike = {
+          onmessage: null,
+          onerror: null,
+          postMessage(msg: any) {
+            if (msg.type === 'init') {
+              setTimeout(() => {
+                w.onmessage?.({ data: { type: 'ready' } } as MessageEvent);
+              }, 5);
+            } else if (msg.type === 'phonemize') {
+              setTimeout(() => {
+                w.onmessage?.({
+                  data: {
+                    type: 'result',
+                    id: msg.id,
+                    result: {
+                      phonemes: 'ㄋㄧ2ㄏㄠ3.',
+                      phonemeIds: [[73, 127, 172, 88, 108, 169, 4]],
+                      phonemeSpeeds: [1.0],
+                      phonemeSpans: [[{ t0: 0, t1: 6, c0: 0, c1: 2 }]],
+                    },
+                  },
+                } as MessageEvent);
+              }, 5);
+            }
+          },
+          terminate() {},
+        };
+        return w;
+      },
+    });
+
+    const wRes = await workerClient.phonemize('你好。', 'zh-CN', { voiceId: 'zf_001' });
+    expect(workerClient.getExecutionMode()).toBe('worker-ready');
+    expect(wRes.phonemeIds[0]).toEqual([73, 127, 172, 88, 108, 169, 4]);
+    workerClient.dispose();
+
+    // 2. Synchronous throw in `new Worker()` -> falls back to main-thread G2P with 0 errors
+    const syncThrowClient = new KokoroG2PClient({
+      workerFactory: () => {
+        throw new Error('SecurityError: Worker blocked by origin');
+      },
+    });
+    const syncRes = await syncThrowClient.phonemize('你好, world.', 'zh-CN', {
+      voiceId: 'zf_001',
+    });
+    expect(syncThrowClient.getExecutionMode()).toBe('main');
+    expect(syncRes.phonemeIds.length).toBeGreaterThan(0);
+    expect(syncRes.phonemeIds[0]!.length).toBeGreaterThan(0);
+    syncThrowClient.dispose();
+
+    // 3. Asynchronous `worker.onerror` -> falls back to main-thread G2P and replays pending job seamlessly
+    const asyncErrClient = new KokoroG2PClient({
+      workerFactory: () => {
+        const w: MinimalWorkerLike = {
+          onmessage: null,
+          onerror: null,
+          postMessage() {
+            setTimeout(() => {
+              w.onerror?.(new Error('WKWebView module worker load error'));
+            }, 10);
+          },
+          terminate() {},
+        };
+        return w;
+      },
+    });
+    const asyncRes = await asyncErrClient.phonemize('Hello world.', 'en-US', {
+      voiceId: 'af_maple',
+    });
+    expect(asyncErrClient.getExecutionMode()).toBe('main');
+    expect(asyncRes.phonemeIds.length).toBeGreaterThan(0);
+    asyncErrClient.dispose();
+
+    // 4. Silent hang in WKWebView (`capacitor://localhost`) -> 2s handshake timeout triggers main-thread G2P fallback!
+    vi.useFakeTimers();
+    try {
+      let terminated = false;
+      const hangClient = new KokoroG2PClient({
+        handshakeTimeoutMs: 2000,
+        workerFactory: () => ({
+          onmessage: null,
+          onerror: null,
+          postMessage() {
+            // Never responds (simulating WKWebView silent module Worker hang)
+          },
+          terminate() {
+            terminated = true;
+          },
+        }),
+      });
+
+      const pendingPromise = hangClient.phonemize('春眠不觉晓, 处处闻啼鸟.', 'zh-CN', {
+        voiceId: 'zf_001',
+      });
+      expect(hangClient.getExecutionMode()).toBe('worker-connecting');
+
+      await vi.advanceTimersByTimeAsync(2050);
+      const hangRes = await pendingPromise;
+      expect(terminated).toBe(true);
+      expect(hangClient.getExecutionMode()).toBe('main');
+      expect(hangRes.phonemeIds.length).toBeGreaterThan(0);
+      hangClient.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs KokoroWebEngine load-time self-test, WebGPU -> WASM fallback, voice .bin row slicing, PCM16 WAV + WordMark[] synthesis, and RTF EMA >= 0.9 engine-slow (§5.1)', async () => {
+    // Build a deterministic 522,240-byte voice .bin where row `r` has `style[0] = r + 0.5`
+    const voiceBin = new Uint8Array(KOKORO_VOICE_BIN_BYTES);
+    const dv = new DataView(voiceBin.buffer);
+    for (let r = 0; r < 510; r++) {
+      for (let d = 0; d < KOKORO_VOICE_DIM; d++) {
+        dv.setFloat32((r * KOKORO_VOICE_DIM + d) * 4, r + (d === 0 ? 0.5 : 0.1), true);
+      }
+    }
+
+    // Verify row = clamp(unpaddedLen - 1, 0, 509)
+    expect(sliceKokoroVoiceStyle(voiceBin, 1)[0]).toBeCloseTo(0.5, 5);
+    expect(sliceKokoroVoiceStyle(voiceBin, 7)[0]).toBeCloseTo(6.5, 5);
+    expect(sliceKokoroVoiceStyle(voiceBin, 510)[0]).toBeCloseTo(509.5, 5);
+    expect(sliceKokoroVoiceStyle(voiceBin, 999)[0]).toBeCloseTo(509.5, 5);
+
+    const createdProviders: string[] = [];
+    let simulatedClockMs = 1000;
+    const slowEvents: number[] = [];
+
+    const mockOrt: OrtRuntimeLike = {
+      env: { wasm: {} },
+      Tensor: class MockTensor implements OrtTensorLike {
+        readonly type: string;
+        readonly data: BigInt64Array | Float32Array;
+        readonly dims: readonly number[];
+        constructor(
+          type: 'int64' | 'float32',
+          data: BigInt64Array | Float32Array,
+          dims: readonly number[],
+        ) {
+          this.type = type;
+          this.data = data;
+          this.dims = dims;
+        }
+      },
+      InferenceSession: {
+        async create(_modelBytes, opts): Promise<OrtSessionLike> {
+          const ep = opts?.executionProviders?.[0] ?? 'wasm';
+          createdProviders.push(ep);
+          return {
+            async run(feeds) {
+              // Simulate WebGPU returning NaN on self-test so engine falls back to WASM!
+              if (ep === 'webgpu') {
+                const bad = new Float32Array(24_000);
+                bad[10] = Number.NaN;
+                return {
+                  waveform: { data: bad, dims: [1, bad.length] },
+                  duration: { data: new Float32Array([1, 5, 5, 5, 5, 5, 5, 5, 1]) },
+                };
+              }
+
+              // Advance simulated clock by 1200ms per synthesis to trigger RTF >= 0.9
+              simulatedClockMs += 1200;
+
+              const inputIds = feeds.input_ids!.data as BigInt64Array;
+              const nTokens = inputIds.length;
+              // Each token gets 4 frames (4 * 600 = 2400 samples = 100ms @ 24kHz)
+              const durations = new Float32Array(nTokens);
+              durations.fill(4);
+              const numSamples = Math.max(24_000, nTokens * 2400);
+              const wave = new Float32Array(numSamples);
+              for (let i = 0; i < numSamples; i++) {
+                wave[i] = Math.sin((2 * Math.PI * 440 * i) / 24_000) * 0.25;
+              }
+              return {
+                waveform: { data: wave, dims: [1, numSamples] },
+                duration: { data: durations, dims: [1, nTokens] },
+              };
+            },
+          };
+        },
+      },
+    };
+
+    const engine = new KokoroWebEngine({
+      coreEnv: {
+        loadOrt: async () => mockOrt,
+        probeWebGpu: async () => true,
+        fetchBinary: async (path) => {
+          if (path.endsWith('.bin')) return voiceBin;
+          return new Uint8Array([0x4f, 0x4e, 0x4e, 0x58]);
+        },
+        now: () => simulatedClockMs,
+      },
+      onEngineSlow: (ev) => {
+        slowEvents.push(ev.rtf);
+      },
+    });
+
+    const out = await engine.synthesize({
+      engine: 'kokoro',
+      voiceId: 'zf_001',
+      text: '你好世界',
+      lang: 'zh-CN',
+      phonemeIds: [[73, 127, 172, 88, 108, 169]],
+      phonemeSpeeds: [1.0],
+      phonemeSpans: [
+        [
+          { t0: 0, t1: 3, c0: 0, c1: 2 },
+          { t0: 3, t1: 6, c0: 2, c1: 4 },
+        ],
+      ],
+    });
+
+    // Probed WebGPU first, failed self-test on NaN, fell back to WASM cleanly!
+    expect(createdProviders).toEqual(['webgpu', 'wasm']);
+    expect(out.backend).toBe('wasm');
+
+    // Valid 24 kHz mono PCM16 WAV + exact WordMark[] from phonemeSpans & durations
+    const parsed = parseWav(out.wav);
+    expect(parsed.sampleRate).toBe(24_000);
+    expect(parsed.numChannels).toBe(1);
+    expect(out.marks).toEqual([
+      { start: 0, end: 2, timeMs: 100, durationMs: 300, word: '你好' },
+      { start: 2, end: 4, timeMs: 400, durationMs: 300, word: '世界' },
+    ]);
+    expect(slowEvents.length).toBeGreaterThanOrEqual(1);
+    expect(slowEvents[0]).toBeGreaterThanOrEqual(0.9);
+
+    await engine.dispose();
+  });
+
+  it('annotates Utterances with phonemeIds/phonemeSpans in ReadAloudController and orders mid-session setVoice(kokoro) batches cleanly (§7.5)', async () => {
+    const host = createMockPlatformHost({
+      initialModelStatus: {
+        state: 'ready',
+        installedVoices: ['zf_001', 'af_maple'],
+        bytesDone: 129_967_797,
+        bytesTotal: 129_967_797,
+        installedBytes: 129_967_797,
+      },
+    });
+    useSpeechModelStore.getState().setStatus(host.getModelStatus());
+
+    const player = createMockSpeechPlayer();
+    const callOrder: string[] = [];
+    const origEnqueue = player.enqueue.bind(player);
+    const origSetVoice = player.setVoice.bind(player);
+    player.enqueue = (items, opts) => {
+      if (opts?.replaceFromId) {
+        callOrder.push(`enqueue:replaceFrom=${opts.replaceFromId}:count=${items.length}:hasPhonemes=${Boolean(items[0]?.phonemeIds?.length)}`);
+      }
+      origEnqueue(items, opts);
+    };
+    player.setVoice = (v) => {
+      callOrder.push(`setVoice:${v.kind}:${v.voiceId}`);
+      origSetVoice(v);
+    };
+
+    const ctl = new ReadAloudController({
+      host,
+      player,
+      getSettings: () => ({
+        ...DEFAULT_APP_SETTINGS,
+        preferredVoices: {
+          en: { kind: 'kokoro', voiceId: 'af_maple' },
+        },
+      }),
+      getIsEink: () => false,
+    });
+
+    // resolvePreferredVoice honours kokoro when ready & installed, and falls back to system if not installed
+    expect(ctl.resolvePreferredVoice('en')).toEqual({ kind: 'kokoro', voiceId: 'af_maple' });
+    expect(ctl.resolvePreferredVoice('zh')).toEqual({ kind: 'system', voiceId: null });
+
+    await ctl.start({
+      bookId: 'b_dickens',
+      startLocator: { section: 0, offset: 0 },
+    });
+
+    // Initial queue has phonemeIds & phonemeSpans attached!
+    const firstQueued = player.getQueue()[0]!;
+    expect(firstQueued.phonemeIds?.length).toBeGreaterThan(0);
+    expect(firstQueued.phonemeSpans?.length).toBeGreaterThan(0);
+
+    // Mid-session switch to another kokoro voice ('zf_001'): first annotates current + next 3 (count=4),
+    // calls player.enqueue(firstBatch, { replaceFromId }) BEFORE player.setVoice!
+    callOrder.length = 0;
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_001' });
+
+    await vi.waitFor(() => {
+      expect(callOrder.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(callOrder[0]).toMatch(/^enqueue:replaceFrom=.*:count=4:hasPhonemes=true$/);
+    expect(callOrder[1]).toBe('setVoice:kokoro:zf_001');
+
+    ctl.dispose();
   });
 });

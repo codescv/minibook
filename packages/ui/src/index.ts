@@ -7,6 +7,7 @@ import { useRouteStore } from './app/routes';
 import { useSettingsStore } from './host/HostContext';
 import { useImportStore } from './library/ImportController';
 import { useReadAloudStore } from './speech/ReadAloudController';
+import { useSpeechModelStore } from './speech/speech-model-store';
 
 export interface MountedMiniBookApp {
   unmount(): void;
@@ -21,6 +22,7 @@ export function mountMiniBookApp(
   useSettingsStore.getState().reset();
   useImportStore.getState().reset();
   useReadAloudStore.getState().reset();
+  useSpeechModelStore.getState().setStatus(null);
 
   const root = createRoot(container);
   root.render(createElement(StrictMode, null, createElement(App, { host, speechPlayer })));
@@ -32,6 +34,7 @@ export function mountMiniBookApp(
       useSettingsStore.getState().reset();
       useImportStore.getState().reset();
       useReadAloudStore.getState().reset();
+      useSpeechModelStore.getState().setStatus(null);
     },
   };
 }
@@ -65,6 +68,41 @@ export {
   useReadAloudStore,
   type ReadAloudStoreState,
 } from './speech/ReadAloudController';
+export {
+  KokoroG2PClient,
+  isKokoroCompatibleLang,
+  type KokoroG2PClientOptions,
+  type MinimalWorkerLike,
+} from './speech/KokoroG2PClient';
+export {
+  KokoroWebEngine,
+  type KokoroWebEngineOptions,
+} from './speech/KokoroWebEngine';
+export {
+  KokoroSynthesisCore,
+  sliceKokoroVoiceStyle,
+  KOKORO_SELF_TEST_IDS,
+  KOKORO_SELF_TEST_VOICE,
+  type KokoroCoreEnv,
+  type KokoroSynthesizePayload,
+  type KokoroSynthesizeOutput,
+  type OrtRuntimeLike,
+  type OrtSessionLike,
+  type OrtTensorLike,
+} from './speech/kokoro.worker';
+export {
+  useSpeechModelStore,
+  useSpeechModelStatus,
+  SpeechModelUiThrottle,
+  computeModelProgressPct,
+  stepEinkPct,
+  formatSteppedEinkPct,
+  formatKokoroVoiceLabel,
+  formatModelBackendBadge,
+  formatModelErrorInfo,
+  getSpeechModelsApi,
+} from './speech/speech-model-store';
+export { QWEN_PRESETS, type QwenPresetItem } from './settings/SettingsScreen';
 export { AutoPageTurn, type AutoPageTurnViewAdapter } from './speech/AutoPageTurn';
 export {
   computePaginationGeometry,
