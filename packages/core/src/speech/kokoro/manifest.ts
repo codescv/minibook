@@ -858,6 +858,81 @@ export function kokoroVoiceSliceByteOffset(unpaddedTokenCount: number): number {
   return kokoroStyleRowIndex(unpaddedTokenCount) * KOKORO_VOICE_DIM * 4;
 }
 
+/**
+ * Extracts the 256-float style vector (`float32[1, 256]`) for `unpaddedTokenCount` from a
+ * `522,240`-byte `(510, 1, 256)` little-endian `.bin` voice pack (`TTS_V2_SPEC.md` §1 E4, §5).
+ */
+export function extractKokoroVoiceStyleRow(
+  voiceBinBytes: Uint8Array,
+  unpaddedTokenCount: number,
+): Float32Array {
+  if (voiceBinBytes.byteLength !== KOKORO_VOICE_BIN_BYTES) {
+    throw new Error(
+      `Invalid Kokoro voice pack byte length: expected ${KOKORO_VOICE_BIN_BYTES}, got ${voiceBinBytes.byteLength}`,
+    );
+  }
+  const byteOffset = kokoroVoiceSliceByteOffset(unpaddedTokenCount);
+  const out = new Float32Array(KOKORO_VOICE_DIM);
+  const view = new DataView(
+    voiceBinBytes.buffer,
+    voiceBinBytes.byteOffset + byteOffset,
+    KOKORO_VOICE_DIM * 4,
+  );
+  for (let i = 0; i < KOKORO_VOICE_DIM; i++) {
+    out[i] = view.getFloat32(i * 4, true);
+  }
+  return out;
+}
+
+/**
+ * Splits a 256-float Kokoro voice row into Core ML `timbre` (`[0..128)`) and `style` (`[128..256)`)
+ * (`TTS_V2_SPEC.md` §1 E4, §5.3).
+ */
+export function splitKokoroCoreMLVoiceRow(styleRow256: Float32Array): {
+  readonly timbre: Float32Array;
+  readonly style: Float32Array;
+} {
+  if (styleRow256.length !== KOKORO_VOICE_DIM) {
+    throw new Error(`Expected ${KOKORO_VOICE_DIM}-element style row, got ${styleRow256.length}`);
+  }
+  return {
+    timbre: styleRow256.slice(0, 128),
+    style: styleRow256.slice(128, 256),
+  };
+}
+
+/**
+ * Validates synthesized audio samples against NaN/Inf and silence (`TTS_V2_SPEC.md` §5):
+ * Self-test uses `minPeak: 0.01` and `duration` in `[500, 4000] ms`; runtime uses `minPeak: 1e-3`.
+ */
+export function validateKokoroWaveform(
+  samples: Float32Array | readonly number[],
+  opts?: {
+    readonly sampleRate?: number;
+    readonly minPeak?: number;
+    readonly minDurationMs?: number;
+    readonly maxDurationMs?: number;
+  },
+): { readonly valid: boolean; readonly finite: boolean; readonly peak: number; readonly durationMs: number } {
+  const sampleRate = opts?.sampleRate ?? KOKORO_SAMPLE_RATE;
+  const minPeak = opts?.minPeak ?? 1e-3;
+  const durationMs = samples.length > 0 ? (samples.length / sampleRate) * 1000 : 0;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i]!;
+    if (!Number.isFinite(v)) {
+      return { valid: false, finite: false, peak, durationMs };
+    }
+    const abs = Math.abs(v);
+    if (abs > peak) peak = abs;
+  }
+  const durationOk =
+    (opts?.minDurationMs === undefined || durationMs >= opts.minDurationMs) &&
+    (opts?.maxDurationMs === undefined || durationMs <= opts.maxDurationMs);
+  const valid = samples.length > 0 && peak >= minPeak && durationOk;
+  return { valid, finite: true, peak, durationMs };
+}
+
 /** Resolves ordered mirror base URLs (`TTS_V2_SPEC.md` §3.2). */
 export function resolveModelSources(
   settings: {

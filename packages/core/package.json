@@ -14,7 +14,8 @@
     "./errors": "./src/errors.ts"
   },
   "files": [
-    "src"
+    "src",
+    "assets"
   ],
   "scripts": {
     "build": "tsc --noEmit",
