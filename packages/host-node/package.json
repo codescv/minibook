@@ -1,6 +1,6 @@
 {
   "name": "@minibook/host-node",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MiniBook PC Web App runtime: pure Node.js loopback server (Hono, node:sqlite, HTTP 206 Range book & derived stream serving, Edge/OpenAI speech proxy) + browser REST PlatformHost.",
   "license": "MIT",
   "type": "module",
@@ -42,6 +42,7 @@
     "@types/ws": "^8.18.0",
     "@vitejs/plugin-react": "^5.0.0",
     "esbuild": "^0.25.5",
+    "onnxruntime-web": "1.31.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tsx": "^4.20.0",

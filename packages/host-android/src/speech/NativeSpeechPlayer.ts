@@ -207,6 +207,15 @@ export class NativeSpeechPlayer implements SpeechPlayer {
           });
         }),
       );
+      h.push(
+        await this.plugin.addListener('engine-slow', (ev) => {
+          this.emit({
+            type: 'engine-slow',
+            rtf: ev.rtf,
+            engine: ev.engine ?? 'kokoro',
+          });
+        }),
+      );
       this.nativeHandles = h;
       this.attached = true;
     })().finally(() => {

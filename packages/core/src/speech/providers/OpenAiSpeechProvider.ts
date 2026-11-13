@@ -22,11 +22,13 @@ export function resolveOpenAiSpeechUrl(baseUrl: string): string {
   return `${trimmed}/v1/audio/speech`;
 }
 
-export function resolveOpenAiVoicesUrl(baseUrl: string): string {
+export function resolveOpenAiVoicesUrl(baseUrl: string, model?: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
   const withoutSpeech = trimmed.replace(/\/audio\/speech$/i, '');
-  if (/\/v\d+$/i.test(withoutSpeech)) return `${withoutSpeech}/audio/voices`;
-  return `${withoutSpeech}/v1/audio/voices`;
+  const base = /\/v\d+$/i.test(withoutSpeech)
+    ? `${withoutSpeech}/audio/voices`
+    : `${withoutSpeech}/v1/audio/voices`;
+  return model ? `${base}?model=${encodeURIComponent(model)}` : base;
 }
 
 /**
@@ -49,6 +51,7 @@ export class OpenAiSpeechProvider {
       /** Bearer header value (e.g. `'Bearer {{secret:custom-speech-api-key}}'` or `'Bearer sk-...'`). */
       readonly apiKeyHeader?: string;
       readonly responseFormat?: 'mp3' | 'wav';
+      readonly extraBody?: Readonly<Record<string, unknown>>;
       readonly timeoutMs?: number;
     },
     signal?: AbortSignal,
@@ -69,6 +72,7 @@ export class OpenAiSpeechProvider {
     }
 
     const bodyJson = JSON.stringify({
+      ...(req.extraBody ?? {}),
       model: req.model || 'tts-1',
       input: req.text,
       voice: req.voiceId || 'alloy',
@@ -97,7 +101,18 @@ export class OpenAiSpeechProvider {
       throw new MiniBookError('speech-auth', `Speech server authentication failed (HTTP ${res.status})`);
     }
     if (res.status < 200 || res.status >= 300) {
-      throw new MiniBookError('speech-unavailable', `Speech server returned HTTP ${res.status}`);
+      let detail = '';
+      if (res.body.byteLength > 0 && res.body.byteLength <= 16_384) {
+        try {
+          const errJson = JSON.parse(new TextDecoder('utf-8').decode(res.body)) as Record<string, unknown>;
+          if (typeof errJson['detail'] === 'string' && errJson['detail'].trim()) {
+            detail = `: ${errJson['detail'].trim()}`;
+          }
+        } catch {
+          // ignore non-JSON body
+        }
+      }
+      throw new MiniBookError('speech-unavailable', `Speech server returned HTTP ${res.status}${detail}`);
     }
     if (res.body.byteLength === 0) {
       throw new MiniBookError('speech-unavailable', 'Speech server returned empty audio body');
@@ -122,10 +137,10 @@ export class OpenAiSpeechProvider {
   }
 
   async listVoices(
-    opts: { readonly baseUrl: string; readonly apiKeyHeader?: string },
+    opts: { readonly baseUrl: string; readonly apiKeyHeader?: string; readonly model?: string },
     signal?: AbortSignal,
   ): Promise<Voice[]> {
-    const url = resolveOpenAiVoicesUrl(opts.baseUrl);
+    const url = resolveOpenAiVoicesUrl(opts.baseUrl, opts.model);
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (opts.apiKeyHeader) {
       headers['Authorization'] = opts.apiKeyHeader.startsWith('Bearer ')
@@ -147,7 +162,9 @@ export class OpenAiSpeechProvider {
           ? parsed
           : parsed && typeof parsed === 'object' && Array.isArray((parsed as { voices?: unknown[] }).voices)
             ? (parsed as { voices: unknown[] }).voices
-            : [];
+            : parsed && typeof parsed === 'object' && Array.isArray((parsed as { data?: unknown[] }).data)
+              ? (parsed as { data: unknown[] }).data
+              : [];
         const out: Voice[] = [];
         for (const item of list) {
           if (typeof item === 'string') {

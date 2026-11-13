@@ -19,6 +19,10 @@ import type {
   HardwareKey,
   KeyPolicy,
   SleepTimerConfig,
+  SpeechEngineId,
+  SpeechModelId,
+  SpeechModelStatus,
+  SpeechModelVariant,
   SpeechSession,
   SpeechState,
   Utterance,
@@ -172,6 +176,32 @@ export interface NativeSpeechCachePutResponse {
 }
 
 // ---------------------------------------------------------------------------
+// §4b. On-Device Neural Models (`models.*` / `modelStatus`, `modelDownload`, `modelPause`, `modelRemove`)
+// ---------------------------------------------------------------------------
+
+export interface NativeModelFileSpec {
+  readonly path: string;
+  readonly size: number;
+  readonly sha256: string;
+  /** Optional per-file Hugging Face repo override (e.g. `.bin` voices vs Core ML stages on iOS). */
+  readonly repo?: string;
+  /** Optional per-file commit revision override. */
+  readonly revision?: string;
+}
+
+export interface NativeModelDownloadRequest {
+  readonly id: SpeechModelId;
+  readonly variant: SpeechModelVariant;
+  readonly files: readonly NativeModelFileSpec[];
+  readonly repo: string;
+  readonly revision: string;
+  /** Ordered mirror base URLs (`https://huggingface.co`, `https://hf-mirror.com`, custom mirror). */
+  readonly sources: readonly string[];
+  /** Redirect host allow-list (`huggingface.co`, `hf-mirror.com`, `.hf.co`, `.huggingface.co`, `.hf-mirror.com`). */
+  readonly allowHosts: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // §5. Native Event Payloads (`MiniBookPluginEventMap`)
 // ---------------------------------------------------------------------------
 
@@ -228,6 +258,11 @@ export interface MiniBookPluginEventMap {
     readonly remainingMs?: number;
     readonly expired?: boolean;
   };
+  readonly 'engine-slow': {
+    readonly rtf: number;
+    readonly engine?: SpeechEngineId;
+  };
+  readonly 'speech-model': SpeechModelStatus;
   readonly 'hardware-key': {
     readonly key: HardwareKey;
   };
@@ -281,6 +316,13 @@ export interface MiniBookPlugin {
     cachePut(opts: NativeSpeechCachePutRequest): Promise<NativeSpeechCachePutResponse>;
     cacheClear(): Promise<void>;
     cacheSize(): Promise<number>;
+  };
+
+  readonly models: {
+    status(opts: { readonly id: SpeechModelId }): Promise<SpeechModelStatus>;
+    download(opts: NativeModelDownloadRequest): Promise<SpeechModelStatus>;
+    pause(opts: { readonly id: SpeechModelId }): Promise<SpeechModelStatus>;
+    remove(opts: { readonly id: SpeechModelId }): Promise<void>;
   };
 
   readonly device: {
@@ -348,6 +390,12 @@ export interface MiniBookNativeBridge {
   speechCachePut(opts: NativeSpeechCachePutRequest): Promise<NativeSpeechCachePutResponse>;
   speechCacheClear(): Promise<void>;
   speechCacheSize(): Promise<{ bytes: number }>;
+
+  // models (`TTS_V2_SPEC.md` §5.2)
+  modelStatus(opts: { id: SpeechModelId }): Promise<SpeechModelStatus>;
+  modelDownload(opts: NativeModelDownloadRequest): Promise<SpeechModelStatus>;
+  modelPause(opts: { id: SpeechModelId }): Promise<SpeechModelStatus>;
+  modelRemove(opts: { id: SpeechModelId }): Promise<void>;
 
   // device
   deviceInfo(): Promise<DeviceInfo>;
@@ -432,6 +480,12 @@ export function wrapNativeBridge(bridge: MiniBookNativeBridge): MiniBookPlugin {
         const res = await bridge.speechCacheSize();
         return typeof res?.bytes === 'number' ? res.bytes : 0;
       },
+    },
+    models: {
+      status: (opts) => bridge.modelStatus(opts),
+      download: (opts) => bridge.modelDownload(opts),
+      pause: (opts) => bridge.modelPause(opts),
+      remove: (opts) => bridge.modelRemove(opts),
     },
     device: {
       info: () => bridge.deviceInfo(),

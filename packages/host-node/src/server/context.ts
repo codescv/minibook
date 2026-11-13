@@ -129,7 +129,7 @@ export function createNodeHostContext(options?: NodeHostOptions): NodeHostContex
 
   const info: HostInfo = {
     platform: 'desktop',
-    appVersion: options?.appVersion ?? '0.1.0',
+    appVersion: options?.appVersion ?? '0.2.0',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,
@@ -137,6 +137,7 @@ export function createNodeHostContext(options?: NodeHostOptions): NodeHostContex
       einkDetected: false,
       filePicker: true,
       openWith: true,
+      onDeviceNeuralSpeech: true,
     },
     device: {
       eink: false,

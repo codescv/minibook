@@ -54,6 +54,12 @@ patchIfExists('packages/host-android/src/capacitor-host.ts', (src) =>
 patchIfExists('packages/ui/src/host/mock-host.ts', (src) =>
   src.replace(/appVersion: options\?\.appVersion \?\? '[0-9]+\.[0-9]+\.[0-9]+'/, `appVersion: options?.appVersion ?? '${nextVersion}'`),
 );
+patchIfExists('packages/host-node/src/server/context.ts', (src) =>
+  src.replace(/appVersion: options\?\.appVersion \?\? '[0-9]+\.[0-9]+\.[0-9]+'/, `appVersion: options?.appVersion ?? '${nextVersion}'`),
+);
+patchIfExists('packages/host-node/src/client/rest-host.ts', (src) =>
+  src.replace(/appVersion: '[0-9]+\.[0-9]+\.[0-9]+'/, `appVersion: '${nextVersion}'`),
+);
 
 let nextVersionCode = 1;
 patchIfExists('packages/host-android/android/app/build.gradle', (gradle) =>

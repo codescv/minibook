@@ -37,6 +37,10 @@ export type MiniBookErrorCode =
   | 'network'
   | 'speech-unavailable'
   | 'speech-auth'
+  | 'model-integrity'
+  | 'storage-full'
+  | 'model-selftest'
+  | 'model-unstable'
   | 'cancelled'
   | 'unsupported';
 
@@ -383,13 +387,17 @@ export interface BookSession {
 // §4. Read Aloud (TTS) Contracts: Utterances, SpeechPlayer, Transports (§8)
 // ---------------------------------------------------------------------------
 
+export type SpeechEngineId = 'edge' | 'openai' | 'qwen' | 'kokoro';
+
+export type RemoteSpeechEngineId = 'edge' | 'openai' | 'qwen';
+
 export type VoiceQuality = 'compact' | 'enhanced' | 'neural' | 'remote';
 
 export interface Voice {
   readonly id: string;
   /** Android TTS engine package name (e.g. `'com.k2fsa.sherpa.onnx'`, `'org.nobody.multitts'`). */
   readonly engine?: string;
-  readonly provider?: 'system' | 'edge' | 'openai';
+  readonly provider?: 'system' | 'edge' | 'openai' | 'qwen' | 'kokoro';
   readonly name: string;
   readonly lang: string;
   readonly quality: VoiceQuality;
@@ -407,7 +415,9 @@ export interface SystemVoiceRef {
 export type VoiceRef =
   | SystemVoiceRef
   | { readonly kind: 'edge'; readonly voiceId: string }
-  | { readonly kind: 'openai'; readonly voiceId: string; readonly model: string };
+  | { readonly kind: 'openai'; readonly voiceId: string; readonly model: string }
+  | { readonly kind: 'qwen'; readonly voiceId: string; readonly model: string }
+  | { readonly kind: 'kokoro'; readonly voiceId: string };
 
 export interface WordMark {
   /** UTF-16 code-unit start relative to `Utterance.text` (add `u.start` for section offset). */
@@ -418,6 +428,17 @@ export interface WordMark {
   readonly timeMs: number;
   readonly durationMs?: number;
   readonly word?: string;
+}
+
+export interface KokoroWordSpan {
+  /** Start index into the chunk's `phonemeIds[c]` (0-based, without leading/trailing 0 pads). */
+  readonly t0: number;
+  /** Exclusive end index into the chunk's `phonemeIds[c]`. */
+  readonly t1: number;
+  /** UTF-16 code-unit start offset into `Utterance.text` (`0 <= c0 <= c1 <= text.length`). */
+  readonly c0: number;
+  /** UTF-16 code-unit end offset into `Utterance.text`. */
+  readonly c1: number;
 }
 
 /**
@@ -435,6 +456,15 @@ export interface Utterance {
   readonly text: string;
   readonly lang: string;
   readonly pauseAfterMs: number;
+  /**
+   * Kokoro v1.1-zh token ids (`tokenizer.json` vocab), one array per <= `KOKORO_MAX_CHUNK_TOKENS` chunk,
+   * WITHOUT leading/trailing pad id 0 (every runtime wraps `[0, ...ids, 0]`).
+   */
+  readonly phonemeIds?: readonly (readonly number[])[];
+  /** Per-chunk model `speed` pacing factor from `kokoroSpeed` (default `1.0`). */
+  readonly phonemeSpeeds?: readonly number[];
+  /** Optional word timing skeleton: for chunk `c`, token range `[t0, t1)` -> UTF-16 range `[c0, c1)` in `text`. */
+  readonly phonemeSpans?: readonly (readonly KokoroWordSpan[])[];
 }
 
 export interface SpeechSession {
@@ -500,6 +530,7 @@ export type SpeechEvent =
   | { readonly type: 'speech-fallback'; readonly reason: string; readonly utteranceId?: string }
   | { readonly type: 'speech-ended'; readonly reason: 'completed' | 'end-of-buffer' | 'stopped' | 'sleep-timer' }
   | { readonly type: 'sleep-timer'; readonly mode: SleepTimerMode; readonly remainingMs?: number; readonly expired?: boolean }
+  | { readonly type: 'engine-slow'; readonly rtf: number; readonly engine: SpeechEngineId }
   | { readonly type: 'speech-error'; readonly error: MiniBookErrorShape };
 
 export interface SpeechPlayer {
@@ -523,12 +554,15 @@ export interface SpeechPlayer {
 }
 
 export interface SynthRequest {
-  readonly engine: 'edge' | 'openai';
+  readonly engine: SpeechEngineId;
   readonly voiceId: string;
   readonly model?: string;
   readonly text: string;
   readonly lang: string;
   readonly baseUrl?: string;
+  readonly phonemeIds?: readonly (readonly number[])[];
+  readonly phonemeSpeeds?: readonly number[];
+  readonly phonemeSpans?: readonly (readonly KokoroWordSpan[])[];
 }
 
 export interface SynthResult {
@@ -618,6 +652,52 @@ export interface CustomSpeechServerConfig {
   readonly voice: string;
 }
 
+export type QwenProtocol = 'mlx-audio' | 'vllm-omni' | 'qwen-native';
+
+export interface QwenServerConfig {
+  readonly baseUrl: string;
+  readonly protocol: QwenProtocol;
+  readonly model: string;
+  readonly voice: string;
+  readonly instruct?: string;
+  readonly refAudio?: string;
+  readonly refText?: string;
+  readonly xVectorOnly?: boolean;
+}
+
+export type QwenServerSettings = QwenServerConfig;
+
+export type ModelDownloadSource = 'auto' | 'huggingface' | 'hf-mirror' | 'custom';
+
+export type SpeechModelId = 'kokoro-v1.1-zh';
+export type SpeechModelVariant = 'onnx-fp32' | 'onnx-q8' | 'coreml';
+export type SpeechModelState = 'absent' | 'downloading' | 'paused' | 'verifying' | 'ready' | 'error';
+export type SpeechModelBackend = 'webgpu' | 'wasm' | 'ort-cpu' | 'coreml-cpu';
+
+export interface SpeechModelStatus {
+  readonly id: SpeechModelId;
+  readonly state: SpeechModelState;
+  readonly variant: SpeechModelVariant;
+  readonly bytesDone: number;
+  readonly bytesTotal: number;
+  readonly installedBytes: number;
+  readonly installedVoices: readonly string[];
+  readonly source?: string;
+  readonly backend?: SpeechModelBackend;
+  readonly rtf?: number;
+  readonly error?: MiniBookErrorShape;
+}
+
+export interface SpeechModelsApi {
+  status(id: SpeechModelId): Promise<SpeechModelStatus>;
+  /** Start or resume (idempotent). Resolves once the job is accepted; progress arrives as HostEvent `'speech-model'`. */
+  download(id: SpeechModelId, opts?: { readonly voices?: readonly string[] }): Promise<SpeechModelStatus>;
+  /** Abort the transfer, KEEP `.part` files. */
+  pause(id: SpeechModelId): Promise<SpeechModelStatus>;
+  /** Unload the runtime and delete every file of the model including `.part`. */
+  remove(id: SpeechModelId): Promise<void>;
+}
+
 export interface AppSettings {
   // Appearance (`UI_SPEC.md` §4.4)
   readonly theme: ReadingTheme;
@@ -638,12 +718,15 @@ export interface AppSettings {
   readonly textBoldness: TextBoldnessStep;
   readonly keepScreenOn: boolean;
 
-  // Read Aloud (`PRODUCT_DESIGN.md` §4.7)
+  // Read Aloud (`PRODUCT_DESIGN.md` §4.7, `TTS_V2_SPEC.md` §2)
   readonly speechRate: number;
   /** Per-language voice preference keyed by primary subtag (`'en'`, `'zh'`, `'ja'`, `'default'`). */
   readonly preferredVoices: Readonly<Record<string, VoiceRef>>;
   readonly edgeVoicesEnabled: boolean;
   readonly customSpeechServer: CustomSpeechServerConfig | null;
+  readonly qwenServer: QwenServerConfig | null;
+  readonly modelDownloadSource: ModelDownloadSource;
+  readonly modelMirrorBaseUrl: string | null;
   readonly fallbackToSystemVoice: boolean;
 }
 
@@ -666,6 +749,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   preferredVoices: {},
   edgeVoicesEnabled: false,
   customSpeechServer: null,
+  qwenServer: null,
+  modelDownloadSource: 'auto',
+  modelMirrorBaseUrl: null,
   fallbackToSystemVoice: true,
 };
 
@@ -678,6 +764,7 @@ export interface HostCapabilities {
   readonly einkDetected: boolean;
   readonly filePicker: boolean;
   readonly openWith: boolean;
+  readonly onDeviceNeuralSpeech: boolean;
 }
 
 export interface DeviceInfo {
@@ -685,6 +772,7 @@ export interface DeviceInfo {
   readonly vendor: string | null;
   readonly model: string | null;
   readonly refresh: 'vendor' | 'software';
+  readonly onDeviceNeuralSpeech?: boolean;
 }
 
 export interface HostInfo {
@@ -757,6 +845,7 @@ export interface StateApi {
 export interface StorageUsage {
   readonly booksBytes: number;
   readonly speechCacheBytes: number;
+  readonly modelsBytes?: number;
 }
 
 export interface SettingsApi {
@@ -769,9 +858,11 @@ export interface SettingsApi {
 
 export interface SpeechHostApi {
   synthesize(req: SynthRequest, signal?: AbortSignal): Promise<SynthResult>;
-  listRemoteVoices(engine: 'edge' | 'openai'): Promise<Voice[]>;
+  listRemoteVoices(engine: RemoteSpeechEngineId): Promise<Voice[]>;
   clearCache(): Promise<void>;
   cacheSize(): Promise<number>;
+  /** Absent => this host has no on-device neural engine (UI hides every Kokoro row). */
+  readonly models?: SpeechModelsApi;
 }
 
 export interface KeyPolicy {
@@ -798,7 +889,8 @@ export type HostEvent =
   | { readonly type: 'import-progress'; readonly completed: number; readonly total: number; readonly currentName?: string }
   | { readonly type: 'hardware-key'; readonly key: HardwareKey }
   | { readonly type: 'incoming-file'; readonly files: readonly IncomingFileDescriptor[] }
-  | { readonly type: 'device-changed'; readonly device: DeviceInfo };
+  | { readonly type: 'device-changed'; readonly device: DeviceInfo }
+  | { readonly type: 'speech-model'; readonly status: SpeechModelStatus };
 
 export interface PlatformHost {
   readonly info: HostInfo;
@@ -808,5 +900,7 @@ export interface PlatformHost {
   readonly settings: SettingsApi;
   readonly speech: SpeechHostApi;
   readonly device: DeviceApi;
+  /** Optional convenience alias for `speech.models`. */
+  readonly models?: SpeechModelsApi;
   subscribe(listener: (event: HostEvent) => void): Unsubscribe;
 }

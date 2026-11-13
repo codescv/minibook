@@ -236,7 +236,10 @@ export class SynthService {
     });
   }
 
-  async listRemoteVoices(engine: 'edge' | 'openai', signal?: AbortSignal): Promise<Voice[]> {
+  async listRemoteVoices(engine: 'edge' | 'openai' | 'qwen', signal?: AbortSignal): Promise<Voice[]> {
+    if (engine === 'qwen') {
+      return [];
+    }
     if (engine === 'edge') {
       const now = this.now();
       if (this.cachedEdgeVoices && this.cachedEdgeVoices.expiresAt > now) {

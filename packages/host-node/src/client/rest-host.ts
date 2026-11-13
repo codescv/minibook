@@ -18,6 +18,7 @@ import {
   type LibraryBook,
   type LibraryBookDetail,
   type PlatformHost,
+  type RemoteSpeechEngineId,
   type SavedPosition,
   type StorageUsage,
   type SynthRequest,
@@ -79,7 +80,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
   let currentInfo: HostInfo = options?.initialInfo ?? {
     platform: 'desktop',
-    appVersion: '0.1.0',
+    appVersion: '0.2.0',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,
@@ -87,6 +88,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
       einkDetected: false,
       filePicker: true,
       openWith: true,
+      onDeviceNeuralSpeech: true,
     },
     device: {
       eink: false,
@@ -391,7 +393,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
         return { ...res, ref: resolvedRef };
       },
 
-      listRemoteVoices(engine: 'edge' | 'openai'): Promise<Voice[]> {
+      listRemoteVoices(engine: RemoteSpeechEngineId): Promise<Voice[]> {
         return client.request<Voice[]>(ROUTES.speechVoices.method, ROUTES.speechVoices.path, {
           query: { engine },
         });
@@ -407,6 +409,23 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
           ROUTES.speechCacheSize.path,
         );
         return res.bytes;
+      },
+
+      models: {
+        status(id) {
+          return client.request('GET', `/api/models/${encodeURIComponent(id)}`);
+        },
+        download(id, opts) {
+          return client.request('POST', `/api/models/${encodeURIComponent(id)}/download`, {
+            body: { variant: 'onnx-fp32', ...(opts?.voices ? { voices: opts.voices } : {}) },
+          });
+        },
+        pause(id) {
+          return client.request('POST', `/api/models/${encodeURIComponent(id)}/pause`);
+        },
+        async remove(id) {
+          await client.request<null>('DELETE', `/api/models/${encodeURIComponent(id)}`);
+        },
       },
     },
 

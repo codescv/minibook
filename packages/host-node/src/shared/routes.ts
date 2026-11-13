@@ -115,7 +115,7 @@ export const ROUTES = {
 
   // Speech synthesis proxy & disk cache
   speechSynthesize: jsonRoute<SynthRequest, SynthResult>('POST', '/api/speech/synthesize'),
-  speechVoices: jsonRoute<{ readonly engine: 'edge' | 'openai' }, readonly Voice[]>(
+  speechVoices: jsonRoute<{ readonly engine: 'edge' | 'openai' | 'qwen' }, readonly Voice[]>(
     'GET',
     '/api/speech/voices',
   ),

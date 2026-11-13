@@ -1,9 +1,15 @@
 import { MiniBookError } from '../errors.js';
-import type { AttachedAudio, SynthRequest, SynthResult, Utterance } from '../types.js';
+import type {
+  AttachedAudio,
+  SpeechEngineId,
+  SynthRequest,
+  SynthResult,
+  Utterance,
+} from '../types.js';
 import { containsCjkCharacters } from './lang.js';
 
 export interface SynthSchedulerConfig {
-  readonly engine: 'edge' | 'openai';
+  readonly engine: SpeechEngineId;
   readonly voiceId: string;
   readonly model?: string;
   readonly baseUrl?: string;
@@ -13,7 +19,7 @@ export interface SynthSchedulerConfig {
 export interface SynthSchedulerOptions {
   readonly synthesize: (req: SynthRequest, signal: AbortSignal) => Promise<SynthResult>;
   readonly attachAudio: (id: string, audio: AttachedAudio) => void;
-  readonly onEngineSlow?: (info: { readonly rtf: number; readonly engine: 'edge' | 'openai' }) => void;
+  readonly onEngineSlow?: (info: { readonly rtf: number; readonly engine: SpeechEngineId }) => void;
   readonly onUtteranceFailed?: (id: string, error: MiniBookError) => void;
   readonly isHidden?: () => boolean;
   readonly now?: () => number;
@@ -90,7 +96,9 @@ export class SynthScheduler {
     this.rtfSampleCount = 0;
     this.slowSignalled = false;
     this.soloMsPerChar = null;
-    this.effectiveConcurrency = Math.max(1, config?.maxConcurrency ?? 2);
+    const defaultConcurrency =
+      config?.engine === 'kokoro' || config?.engine === 'qwen' ? 1 : 2;
+    this.effectiveConcurrency = Math.max(1, config?.maxConcurrency ?? defaultConcurrency);
 
     // Reset all tracked utterances back to `'idle'` for the new voice
     for (const item of this.items.values()) {
@@ -298,6 +306,9 @@ export class SynthScheduler {
       ...(cfg.baseUrl !== undefined ? { baseUrl: cfg.baseUrl } : {}),
       text: u.text,
       lang: u.lang,
+      ...(cfg.engine === 'kokoro' && u.phonemeIds !== undefined ? { phonemeIds: u.phonemeIds } : {}),
+      ...(cfg.engine === 'kokoro' && u.phonemeSpeeds !== undefined ? { phonemeSpeeds: u.phonemeSpeeds } : {}),
+      ...(cfg.engine === 'kokoro' && u.phonemeSpans !== undefined ? { phonemeSpans: u.phonemeSpans } : {}),
     };
 
     this.opts.synthesize(req, controller.signal).then(
@@ -376,7 +387,7 @@ export class SynthScheduler {
     synthMs: number,
     durationMs: number,
     overlapped: boolean,
-    engine: 'edge' | 'openai',
+    engine: SpeechEngineId,
   ): void {
     const charLen = Math.max(1, u.text.length);
     const msPerChar = synthMs / charLen;

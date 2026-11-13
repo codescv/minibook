@@ -155,10 +155,19 @@ export {
   parseUtteranceId,
 } from './speech/utterance.js';
 export {
+  computeKokoroModelCacheTag,
+  computeQwenModelCacheTag,
   computeSpeechCacheKey,
   computeSpeechCacheKeySync,
 } from './speech/cache-key.js';
 export { estimateAudioDurationMs } from './speech/transports.js';
+export {
+  type ParsedWav,
+  concatWav,
+  encodeMonoPcm16Wav,
+  parseWav,
+  wordMarksFromKokoroDurations,
+} from './speech/wav.js';
 export {
   SynthScheduler,
   type SynthSchedulerConfig,
@@ -179,6 +188,17 @@ export {
   resolveOpenAiSpeechUrl,
   resolveOpenAiVoicesUrl,
 } from './speech/providers/OpenAiSpeechProvider.js';
+export {
+  QWEN_CUSTOM_VOICES_EN,
+  QWEN_CUSTOM_VOICES_ZH,
+  QwenSpeechProvider,
+  type QwenSpeechProviderDeps,
+  type QwenSynthOutput,
+  type QwenSynthRequest,
+  estimateTextSecondsForQwen,
+  splitForQwen,
+} from './speech/providers/QwenSpeechProvider.js';
+export * from './speech/kokoro/index.js';
 
 // Utilities
 export {

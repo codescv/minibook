@@ -309,6 +309,41 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
     return { bytes: total };
   }
 
+  async modelStatus(opts: { id: 'kokoro-v1.1-zh' }) {
+    return {
+      id: opts.id,
+      state: 'absent' as const,
+      variant: 'onnx-q8' as const,
+      bytesDone: 0,
+      bytesTotal: 129_967_797,
+      installedBytes: 0,
+      installedVoices: [] as string[],
+    };
+  }
+  async modelDownload(opts: { id: 'kokoro-v1.1-zh'; variant: 'onnx-fp32' | 'onnx-q8' | 'coreml'; files: readonly { size: number }[] }) {
+    return {
+      id: opts.id,
+      state: 'downloading' as const,
+      variant: opts.variant,
+      bytesDone: 0,
+      bytesTotal: opts.files.reduce((s, f) => s + f.size, 0),
+      installedBytes: 0,
+      installedVoices: [] as string[],
+    };
+  }
+  async modelPause(opts: { id: 'kokoro-v1.1-zh' }) {
+    return {
+      id: opts.id,
+      state: 'paused' as const,
+      variant: 'onnx-q8' as const,
+      bytesDone: 0,
+      bytesTotal: 129_967_797,
+      installedBytes: 0,
+      installedVoices: [] as string[],
+    };
+  }
+  async modelRemove(_opts: { id: 'kokoro-v1.1-zh' }) {}
+
   async deviceInfo() {
     return this.einkDevice;
   }

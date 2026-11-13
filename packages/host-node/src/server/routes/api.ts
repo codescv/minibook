@@ -356,8 +356,8 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
   api.get('/speech/voices', async (c) => {
     try {
       const engine = c.req.query('engine');
-      if (engine !== 'edge' && engine !== 'openai') {
-        throw new MiniBookError('invalid-argument', 'Query param engine must be "edge" or "openai"');
+      if (engine !== 'edge' && engine !== 'openai' && engine !== 'qwen') {
+        throw new MiniBookError('invalid-argument', 'Query param engine must be "edge", "openai", or "qwen"');
       }
       const voices = await ctx.synth.listRemoteVoices(engine, c.req.raw.signal);
       return jsonSuccess(c, voices);

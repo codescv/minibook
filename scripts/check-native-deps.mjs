@@ -10,6 +10,10 @@
  *     `node-gyp-build`, `prebuild-install`, `node-pre-gyp`, `cmake-js`
  *   - a hard dependency on a known native module (see NATIVE_NAMES)
  *
+ * Additionally (`TTS_V2_SPEC.md` §5.1), scans ALL workspace packages' prod + dev trees
+ * to ensure `onnxruntime-node` is never installed and no `onnxruntime-*` package ships
+ * `*.node` or `binding.gyp`.
+ *
  * Usage: `pnpm run check:native` (exit code 1 on any finding).
  */
 import { execFileSync } from 'node:child_process';
@@ -27,6 +31,7 @@ const NATIVE_NAMES = new Set([
   'utp-native',
   'bufferutil',
   'utf-8-validate',
+  'onnxruntime-node',
   'node-gyp',
   'node-gyp-build',
   'prebuild-install',
@@ -37,12 +42,8 @@ const NATIVE_NAMES = new Set([
 const SCRIPT_MARKERS = /node-gyp|prebuild-install|node-pre-gyp|cmake-js|node-gyp-build/;
 
 /** @returns {Array<{name:string, version:string, path:string}>} */
-function listProdPackages(filter) {
-  const out = execFileSync(
-    'pnpm',
-    ['ls', '--prod', '--depth', 'Infinity', '--json', '--filter', filter],
-    { cwd: ROOT, encoding: 'utf8' },
-  );
+function listPackages(args) {
+  const out = execFileSync('pnpm', args, { cwd: ROOT, encoding: 'utf8' });
   const seen = new Map();
   const visit = (deps) => {
     if (!deps) return;
@@ -56,6 +57,7 @@ function listProdPackages(filter) {
   };
   for (const project of JSON.parse(out)) {
     visit(project.dependencies);
+    visit(project.devDependencies);
     visit(project.optionalDependencies);
   }
   return [...seen.values()];
@@ -81,7 +83,7 @@ function findNativeFiles(dir, depth = 0, acc = []) {
 
 const findings = [];
 for (const filter of RUNTIME_PACKAGES) {
-  for (const pkg of listProdPackages(filter)) {
+  for (const pkg of listPackages(['ls', '--prod', '--depth', 'Infinity', '--json', '--filter', filter])) {
     if (!pkg.path || pkg.name.startsWith('@minibook/')) continue;
     if (NATIVE_NAMES.has(pkg.name)) {
       findings.push(`${filter}: depends on known native module ${pkg.name}@${pkg.version}`);
@@ -103,8 +105,20 @@ for (const filter of RUNTIME_PACKAGES) {
   }
 }
 
+// Workspace-wide guard (prod + dev) against native onnxruntime bindings (`TTS_V2_SPEC.md` §5.1)
+for (const pkg of listPackages(['ls', '-r', '--depth', 'Infinity', '--json'])) {
+  if (!pkg.path || pkg.name.startsWith('@minibook/')) continue;
+  if (pkg.name === 'onnxruntime-node') {
+    findings.push(`workspace: banned native binding ${pkg.name}@${pkg.version} is installed`);
+  } else if (pkg.name.startsWith('onnxruntime-')) {
+    for (const file of findNativeFiles(pkg.path)) {
+      findings.push(`workspace: ${pkg.name} ships ${file.slice(pkg.path.length + 1)}`);
+    }
+  }
+}
+
 if (findings.length > 0) {
-  console.error('✖ Native addon(s) detected in runtime dependency tree:\n  ' + findings.join('\n  '));
+  console.error('✖ Native addon(s) detected in dependency tree:\n  ' + findings.join('\n  '));
   process.exit(1);
 }
-console.log('✔ No native addons in runtime dependency tree of ' + RUNTIME_PACKAGES.join(', '));
+console.log('✔ No native addons in runtime dependency tree of ' + RUNTIME_PACKAGES.join(', ') + ' (and onnxruntime-* verified clean)');

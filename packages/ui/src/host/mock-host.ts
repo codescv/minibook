@@ -681,6 +681,7 @@ class MockBookSessionImpl implements SearchFallbackSession {
 
 export interface MockPlatformHostOptions {
   readonly platform?: HostPlatform;
+  readonly appVersion?: string;
   readonly capabilities?: Partial<HostCapabilities>;
   readonly device?: Partial<DeviceInfo>;
   readonly initialSettings?: Partial<AppSettings>;
@@ -718,7 +719,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: '0.1.0',
+      appVersion: options?.appVersion ?? '0.2.0',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,
@@ -726,6 +727,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
         einkDetected,
         filePicker: true,
         openWith: platform !== 'desktop',
+        onDeviceNeuralSpeech: true,
         ...options?.capabilities,
       },
       device: {
@@ -1114,6 +1116,36 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       this.speechCacheBytes = 0;
     },
     cacheSize: async () => this.speechCacheBytes,
+    models: {
+      status: async (id) => ({
+        id,
+        state: 'absent',
+        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
+        bytesDone: 0,
+        bytesTotal: this.info.platform === 'ios' ? 85_044_651 : this.info.platform === 'android' ? 129_967_797 : 341_980_642,
+        installedBytes: 0,
+        installedVoices: [],
+      }),
+      download: async (id) => ({
+        id,
+        state: 'ready',
+        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
+        bytesDone: 129_967_797,
+        bytesTotal: 129_967_797,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
+      }),
+      pause: async (id) => ({
+        id,
+        state: 'paused',
+        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
+        bytesDone: 0,
+        bytesTotal: 129_967_797,
+        installedBytes: 0,
+        installedVoices: [],
+      }),
+      remove: async () => {},
+    },
   };
 
   readonly device: PlatformHost['device'] = {

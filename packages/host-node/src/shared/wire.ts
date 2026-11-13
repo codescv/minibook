@@ -41,5 +41,10 @@ export function statusForErrorCode(
     case 'network':
     case 'speech-unavailable':
       return 502;
+    case 'model-integrity':
+    case 'storage-full':
+    case 'model-selftest':
+    case 'model-unstable':
+      return 500;
   }
 }

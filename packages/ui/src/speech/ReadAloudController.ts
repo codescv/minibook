@@ -665,6 +665,24 @@ export class ReadAloudController {
         voiceId: voice.voiceId,
         maxConcurrency: 2,
       });
+    } else if (voice.kind === 'kokoro') {
+      if (this.host.info.capabilities.nativeSpeechQueue) {
+        this.scheduler.configure(null);
+        return;
+      }
+      this.scheduler.configure({
+        engine: 'kokoro',
+        voiceId: voice.voiceId,
+        maxConcurrency: 1,
+      });
+    } else if (voice.kind === 'qwen') {
+      this.scheduler.configure({
+        engine: 'qwen',
+        voiceId: voice.voiceId,
+        model: voice.model,
+        ...(settings.qwenServer?.baseUrl ? { baseUrl: settings.qwenServer.baseUrl } : {}),
+        maxConcurrency: 1,
+      });
     } else {
       this.scheduler.configure({
         engine: 'openai',

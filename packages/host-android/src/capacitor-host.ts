@@ -5,11 +5,17 @@
 import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import {
   EdgeSpeechProvider,
+  KOKORO_MANIFEST,
   MiniBookError,
   OpenAiSpeechProvider,
+  QwenSpeechProvider,
   computeBookId,
   computeSpeechCacheKey,
   inspectBook,
+  resolveAllowedModelHosts,
+  resolveManifestFilesForVariant,
+  resolveModelSources,
+  totalManifestBytesForVariant,
   type AppSettings,
   type BookId,
   type Bookmark,
@@ -28,7 +34,11 @@ import {
   type LibraryBookDetail,
   type OpenAiSynthOutput,
   type PlatformHost,
+  type RemoteSpeechEngineId,
   type SavedPosition,
+  type SpeechModelId,
+  type SpeechModelStatus,
+  type SpeechModelVariant,
   type StorageUsage,
   type SynthRequest,
   type SynthResult,
@@ -49,7 +59,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.1.0';
+export const CAPACITOR_HOST_VERSION = '0.2.0';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
@@ -171,6 +181,7 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       einkDetected: false,
       filePicker: true,
       openWith: true,
+      onDeviceNeuralSpeech: true,
     },
     device: deviceInfo,
   };
@@ -191,6 +202,8 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
   const edgeProvider =
     options?.edgeProvider ?? new EdgeSpeechProvider({ socket: socketTransport, http: httpTransport });
   const openAiProvider = options?.openAiProvider ?? new OpenAiSpeechProvider({ http: httpTransport });
+  const qwenProvider = new QwenSpeechProvider({ http: httpTransport });
+  const modelVariant: SpeechModelVariant = platform === 'ios' ? 'coreml' : 'onnx-q8';
 
   function emit(event: HostEvent): void {
     for (const l of listeners) {
@@ -327,6 +340,9 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           ...hostInfo.capabilities,
           einkDetected: fetched.eink,
           vendorRefresh: fetched.refresh === 'vendor',
+          ...(fetched.onDeviceNeuralSpeech !== undefined
+            ? { onDeviceNeuralSpeech: fetched.onDeviceNeuralSpeech }
+            : {}),
         },
         device: fetched,
       };
@@ -348,6 +364,11 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           if (ev.files && ev.files.length > 0) {
             emitDedupedIncomingFiles(ev.files);
           }
+        }),
+      );
+      nativeHandles.push(
+        await plugin.addListener('speech-model', (status) => {
+          emit({ type: 'speech-model', status });
         }),
       );
       const pending = await plugin.import.consumePending().catch(() => []);
@@ -721,11 +742,19 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         return flight;
       },
 
-      async listRemoteVoices(engine: 'edge' | 'openai'): Promise<Voice[]> {
+      async listRemoteVoices(engine: RemoteSpeechEngineId): Promise<Voice[]> {
         if (engine === 'edge') {
           return edgeProvider.listVoices();
         }
         const settings = await store.getSettings();
+        if (engine === 'qwen') {
+          if (!settings.qwenServer?.baseUrl?.trim()) return [];
+          const hasQwenKey = await plugin.secrets.has({ name: 'qwen-api-key' });
+          return qwenProvider.listVoices({
+            config: settings.qwenServer,
+            ...(hasQwenKey ? { apiKeyHeader: 'Bearer {{secret:qwen-api-key}}' } : {}),
+          });
+        }
         const baseUrl = settings.customSpeechServer?.baseUrl?.trim();
         if (!baseUrl) return [];
         const apiKeyHeader = await resolveSpeechSecretHeader();
@@ -745,6 +774,43 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
 
       cacheSize(): Promise<number> {
         return plugin.speech.cacheSize();
+      },
+
+      models: {
+        status(id: SpeechModelId): Promise<SpeechModelStatus> {
+          return plugin.models.status({ id });
+        },
+        async download(
+          id: SpeechModelId,
+          opts?: { readonly voices?: readonly string[] },
+        ): Promise<SpeechModelStatus> {
+          const settings = await store.getSettings();
+          const files = resolveManifestFilesForVariant(modelVariant, opts?.voices);
+          const repo =
+            modelVariant === 'coreml' ? KOKORO_MANIFEST.coreml.repo : KOKORO_MANIFEST.onnx.repo;
+          const revision =
+            modelVariant === 'coreml'
+              ? KOKORO_MANIFEST.coreml.revision
+              : KOKORO_MANIFEST.onnx.revision;
+          const sources = resolveModelSources(settings);
+          const allowHosts = resolveAllowedModelHosts(settings.modelMirrorBaseUrl);
+          void totalManifestBytesForVariant;
+          return plugin.models.download({
+            id,
+            variant: modelVariant,
+            files,
+            repo,
+            revision,
+            sources,
+            allowHosts,
+          });
+        },
+        pause(id: SpeechModelId): Promise<SpeechModelStatus> {
+          return plugin.models.pause({ id });
+        },
+        remove(id: SpeechModelId): Promise<void> {
+          return plugin.models.remove({ id });
+        },
       },
     },
 
