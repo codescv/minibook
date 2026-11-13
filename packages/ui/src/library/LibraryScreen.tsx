@@ -55,6 +55,7 @@ function formatAddedDate(ms: number): string {
 export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
   const t = useT();
   const { host, settings, isEink, refreshController } = useHostContext();
+  const screen = useRouteStore((s) => s.screen);
   const importItems = useImportStore((s) => s.items);
   const activeSheet = useRouteStore((s) => s.activeSheet);
   const infoBookId = useRouteStore((s) => s.infoBookId);
@@ -88,6 +89,12 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
     });
     return unsub;
   }, [host, reloadBooks]);
+
+  useEffect(() => {
+    if (screen === 'library') {
+      void reloadBooks();
+    }
+  }, [screen, reloadBooks]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -267,7 +274,7 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
       </div>
 
       {/* 1-Line Persistent Mini Read-Aloud Bar when listening in Library (`PRODUCT_DESIGN.md` §6) */}
-      {raActive && raBookId && (
+      {screen === 'library' && raActive && raBookId && (
         <footer className="mb-mini-bar" aria-label={t('readAloud')}>
           <IconButton
             label={raStatus === 'playing' || raStatus === 'buffering' ? t('pause') : t('play')}
@@ -287,7 +294,7 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
 
       {/* Book Info / Mark as Finished / Remove Sheet (`UI_SPEC.md` §4.1) */}
       <Sheet
-        open={activeSheet === 'book-info' && infoBook !== null}
+        open={screen === 'library' && activeSheet === 'book-info' && infoBook !== null}
         label={t('bookInfo')}
         onClose={(coveredHalf) => {
           useRouteStore.getState().closeSheetWithRefresh(coveredHalf, () => {

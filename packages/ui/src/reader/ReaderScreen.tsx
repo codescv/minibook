@@ -69,6 +69,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   const t = useT();
   const { host, settings, isEink, refreshController, updateSettings } = useHostContext();
 
+  const isReaderScreen = useRouteStore((s) => s.screen === 'reader');
   const chromeOpen = useRouteStore((s) => s.chromeOpen);
   const activeSheet = useRouteStore((s) => s.activeSheet);
   const imagePreviewUrl = useRouteStore((s) => s.imagePreviewUrl);
@@ -227,7 +228,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         readAloud.notifyManualPageTurn(startLoc, endOffset);
       }
 
-      // Asynchronously pre-render next adjacent unit for instant chapter turns (`§6.1`)
+      // Asynchronously pre-render next and (in normal mode) prev adjacent units for instant & 1:1 edge-drag chapter turns (`§6.1`)
       const totalUnits = chosenDoc.units?.length ?? 1;
       const nextUnitSameSec = chosenUnitIdx + 1 < totalUnits ? chosenUnitIdx + 1 : null;
       const nextSection =
@@ -238,18 +239,66 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         void sess
           .loadSection(nextSection, nextUnitSameSec ?? 0)
           .then((adjDoc) =>
-            mgr.prerenderAdjacent({
-              session: sess,
-              sectionDoc: adjDoc,
-              settings,
-              isEink,
-              frameWidth: w,
-              frameHeight: h,
-              safeTop,
-              safeBottom,
-            }),
+            mgr.prerenderAdjacent(
+              {
+                session: sess,
+                sectionDoc: adjDoc,
+                settings,
+                isEink,
+                frameWidth: w,
+                frameHeight: h,
+                safeTop,
+                safeBottom,
+              },
+              'next',
+            ),
           )
           .catch(() => {});
+      } else {
+        mgr.clearNeighbor('next');
+      }
+
+      if (!isEink) {
+        const prevUnitSameSec = chosenUnitIdx > 0 ? chosenUnitIdx - 1 : null;
+        const prevSection =
+          prevUnitSameSec !== null
+            ? targetSection
+            : [...sess.spine].reverse().find((s) => s.index < targetSection && s.linear)?.index ??
+              null;
+        if (prevSection !== null) {
+          void (async () => {
+            try {
+              let prevDoc: SectionDoc;
+              if (prevUnitSameSec !== null) {
+                prevDoc = await sess.loadSection(prevSection, prevUnitSameSec);
+              } else if (sess.loadSectionUnits) {
+                const prevUnits = await sess.loadSectionUnits(prevSection);
+                prevDoc = prevUnits[Math.max(0, prevUnits.length - 1)]!;
+              } else {
+                prevDoc = await sess.loadSection(prevSection, 0);
+              }
+              await mgr.prerenderAdjacent(
+                {
+                  session: sess,
+                  sectionDoc: prevDoc,
+                  settings,
+                  isEink,
+                  frameWidth: w,
+                  frameHeight: h,
+                  safeTop,
+                  safeBottom,
+                },
+                'prev',
+              );
+            } catch {
+              // Non-fatal pre-render failure
+            }
+          })();
+        } else {
+          mgr.clearNeighbor('prev');
+        }
+      } else {
+        mgr.clearNeighbor('prev');
       }
 
       return filled;
@@ -554,6 +603,14 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           : {}),
       });
       curUnit.updateStylesAndLayout(settings, isEink, geom);
+      frameManagerRef.current?.updateNeighborsStylesAndLayout({
+        settings,
+        isEink,
+        frameWidth: w,
+        frameHeight: h,
+        safeTop,
+        safeBottom,
+      });
       const newPage = curUnit.paginator.pageOf(anchor.offset);
       curUnit.paginator.goToPage(newPage, { animate: false, isEink });
       setPageIndex(newPage);
@@ -584,13 +641,14 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   ]);
 
   useEffect(() => {
+    if (!isReaderScreen) return;
     return registerPageableHandler({
       id: 'reader-paginator',
       layer: 'screen',
       nextPage: () => turnPage(1, true),
       prevPage: () => turnPage(-1, true),
     });
-  }, [turnPage]);
+  }, [turnPage, isReaderScreen]);
 
   // Connect ReadAloudController view adapter (exposing `visibleUnitRange` for `[P1-U3]`)
   useEffect(() => {

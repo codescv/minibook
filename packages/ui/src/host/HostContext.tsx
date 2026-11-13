@@ -200,6 +200,16 @@ export function useHostContext(): HostContextValue {
   return ctx;
 }
 
+export function useIsEink(): boolean {
+  const ctx = useContext(HostContext);
+  if (ctx) return ctx.isEink;
+  if (typeof document !== 'undefined') {
+    const attr = document.documentElement.getAttribute('data-eink');
+    if (attr === '1' || attr === 'true') return true;
+  }
+  return false;
+}
+
 export function useHost(): PlatformHost {
   return useHostContext().host;
 }

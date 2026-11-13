@@ -220,7 +220,13 @@ export function VoiceSheet({
           label: `${t('onDeviceNeuralVoice')} · ${t('downloadSizeMb', { mb: totalMb })}`,
           actionLabel: t('get'),
           onAction: () => {
-            void modelsApi.download(KOKORO_MODEL_ID);
+            void modelsApi.download(
+              KOKORO_MODEL_ID,
+              {
+                source: settings.modelDownloadSource,
+                mirrorBaseUrl: settings.modelMirrorBaseUrl,
+              } as never,
+            );
           },
         });
       } else if (state === 'downloading') {
@@ -244,7 +250,13 @@ export function VoiceSheet({
             : t('pausedPct', { pct: displayPct }),
           actionLabel: t('resume'),
           onAction: () => {
-            void modelsApi.download(KOKORO_MODEL_ID);
+            void modelsApi.download(
+              KOKORO_MODEL_ID,
+              {
+                source: settings.modelDownloadSource,
+                mirrorBaseUrl: settings.modelMirrorBaseUrl,
+              } as never,
+            );
           },
         });
       } else if (state === 'verifying') {
@@ -266,7 +278,13 @@ export function VoiceSheet({
             errInfo.actionKind === 'none'
               ? null
               : () => {
-                  void modelsApi.download(KOKORO_MODEL_ID);
+                  void modelsApi.download(
+                    KOKORO_MODEL_ID,
+                    {
+                      source: settings.modelDownloadSource,
+                      mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                    } as never,
+                  );
                 },
         });
       }
@@ -279,6 +297,8 @@ export function VoiceSheet({
     settings.edgeVoicesEnabled,
     settings.qwenServer,
     settings.customSpeechServer,
+    settings.modelDownloadSource,
+    settings.modelMirrorBaseUrl,
     modelsApi,
     supportsKokoroLang,
     modelStatus,

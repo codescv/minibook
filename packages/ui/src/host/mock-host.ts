@@ -1166,7 +1166,23 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     models: {
       status: async () => this.modelStatus,
       download: async (_id, opts) => {
-        const extraVoices = opts?.voices ?? [];
+        const rawOpts = opts as
+          | {
+              readonly voices?: readonly string[];
+              readonly source?: AppSettings['modelDownloadSource'];
+              readonly mirrorBaseUrl?: string | null;
+            }
+          | undefined;
+        if (rawOpts?.source !== undefined) {
+          this.settingsData = {
+            ...this.settingsData,
+            modelDownloadSource: rawOpts.source,
+            ...(rawOpts.mirrorBaseUrl !== undefined
+              ? { modelMirrorBaseUrl: rawOpts.mirrorBaseUrl }
+              : {}),
+          };
+        }
+        const extraVoices = rawOpts?.voices ?? [];
         const baseVoices =
           this.modelStatus.installedVoices.length > 0
             ? this.modelStatus.installedVoices
@@ -1178,6 +1194,14 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
             : this.settingsData.modelDownloadSource === 'hf-mirror'
               ? 'hf-mirror.com'
               : 'huggingface.co';
+        if (this.modelStatus.state === 'downloading') {
+          this.modelStatus = {
+            ...this.modelStatus,
+            source: sourceLabel,
+          };
+          this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+          return this.modelStatus;
+        }
         const { error: _prevErr, ...restReady } = this.modelStatus;
         this.modelStatus = {
           ...restReady,

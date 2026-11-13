@@ -65,6 +65,34 @@ export function Chrome({
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [dragFraction, setDragFraction] = useState<number | null>(null);
   const [pctInput, setPctInput] = useState<string>('');
+  const [mounted, setMounted] = useState<boolean>(open);
+  const [entered, setEntered] = useState<boolean>(open);
+
+  useEffect(() => {
+    if (isEink) {
+      setMounted(open);
+      setEntered(open);
+      return;
+    }
+    if (open) {
+      setMounted(true);
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          setEntered(true);
+        });
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      };
+    }
+    setEntered(false);
+    const timer = setTimeout(() => {
+      setMounted(false);
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [open, isEink]);
 
   // Auto-hide after 4s without interaction in normal mode; disabled in E-Ink mode (R4)
   useEffect(() => {
@@ -77,7 +105,16 @@ export function Chrome({
     return () => clearTimeout(timer);
   }, [open, isEink, activeSheet, goToPercentOpen, dragFraction, fraction, isBookmarked]);
 
-  if (!open) return null;
+  if (isEink ? !open : !open && !mounted) return null;
+
+  const phase: 'entering' | 'open' | 'closing' = isEink
+    ? 'open'
+    : !open
+      ? 'closing'
+      : entered
+        ? 'open'
+        : 'entering';
+  const isClosing = phase === 'closing';
 
   const displayFraction = dragFraction ?? fraction;
   const pct = Math.max(0, Math.min(100, Math.round(displayFraction * 100)));
@@ -111,7 +148,12 @@ export function Chrome({
 
   return (
     <>
-      <header className="mb-chrome-top">
+      <header
+        className="mb-chrome-top"
+        data-state={phase}
+        aria-hidden={isClosing ? 'true' : undefined}
+        style={isClosing ? { pointerEvents: 'none' } : undefined}
+      >
         <IconButton label={t('backToLibrary')} onClick={onBackToLibrary}>
           <ChevronLeftIcon />
           <span>{t('library')}</span>
@@ -163,7 +205,13 @@ export function Chrome({
         </div>
       </header>
 
-      <footer className="mb-chrome-bottom" aria-label="Reading position">
+      <footer
+        className="mb-chrome-bottom"
+        data-state={phase}
+        aria-label={isClosing ? undefined : 'Reading position'}
+        aria-hidden={isClosing ? 'true' : undefined}
+        style={isClosing ? { pointerEvents: 'none' } : undefined}
+      >
         <div className="mb-chrome-meta-row">
           <div className="mb-chrome-chapter-label">{headerLine}</div>
           {backJumpLabel && (
