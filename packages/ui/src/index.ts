@@ -50,6 +50,7 @@ export {
   MockSpeechPlayer,
   createMockSpeechPlayer,
   buildDefaultMockFixtures,
+  buildSingleFileFiveChapterFixture,
   type MockPlatformHostOptions,
   type MockBookFixture,
   type MockSectionFixture,

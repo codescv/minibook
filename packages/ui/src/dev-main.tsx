@@ -1,4 +1,6 @@
 import {
+  buildDefaultMockFixtures,
+  buildSingleFileFiveChapterFixture,
   createMockPlatformHost,
   createMockSpeechPlayer,
   mountMiniBookApp,
@@ -29,9 +31,13 @@ const matchSystem = params.get('theme') ? false : true;
 const platform = (params.get('platform') as HostPlatform | null) ?? 'desktop';
 const extraBooks = Number(params.get('extraBooks') ?? '0') || 0;
 const vendorRefresh = params.get('vendorRefresh') === '1';
+const includeSingleFile5 = params.get('singleFile5') === '1';
 
 const host = createMockPlatformHost({
   platform,
+  ...(includeSingleFile5
+    ? { books: [buildSingleFileFiveChapterFixture(), ...buildDefaultMockFixtures()] }
+    : {}),
   capabilities: {
     einkDetected: einkParam === 'on',
     vendorRefresh,

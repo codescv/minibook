@@ -15,12 +15,16 @@ import {
   type ImportSource,
   type InspectedBook,
   type LibraryBookDetail,
+  type Locator,
   type PlatformHost,
   type SearchHit,
+  type SectionDoc,
+  type SectionRef,
   type SectionText,
   type SegmentOptions,
   type SynthSchedulerConfig,
   type SynthSchedulerOptions,
+  type TocItem,
   type Utterance,
 } from '@minibook/core';
 
@@ -389,4 +393,221 @@ class FallbackSynthScheduler {
   }
 }
 
-export { fractionForLocator, locatorForFraction, reanchorLocator };
+// ---------------------------------------------------------------------------
+// Section Character-Length & Book-% Share Resolution (`[P1-F1]` / ARCH §5.4)
+// ---------------------------------------------------------------------------
+
+const sessionCharLengths = new WeakMap<BookSession, Map<number, number>>();
+const sessionCharLengthRevisions = new WeakMap<BookSession, number>();
+const sessionPendingLengthLoads = new WeakMap<BookSession, Map<number, Promise<number>>>();
+
+function getCharLenMap(session: BookSession): Map<number, number> {
+  let map = sessionCharLengths.get(session);
+  if (!map) {
+    map = new Map<number, number>();
+    sessionCharLengths.set(session, map);
+  }
+  return map;
+}
+
+export function getSessionCharLengthRevision(session: BookSession | null): number {
+  if (!session) return 0;
+  return sessionCharLengthRevisions.get(session) ?? 0;
+}
+
+export function fullSectionLengthFromDoc(doc: SectionDoc): number {
+  if (doc.units && doc.units.length > 0) {
+    const last = doc.units[doc.units.length - 1]!;
+    return Math.max(last.end, doc.unit.end, doc.text.text.length);
+  }
+  return Math.max(doc.unit.end, doc.text.text.length);
+}
+
+export function recordSectionCharLength(
+  session: BookSession,
+  sectionIndex: number,
+  charLength: number,
+): number {
+  const clean = Math.max(0, Math.floor(charLength));
+  const map = getCharLenMap(session);
+  if (map.get(sectionIndex) !== clean) {
+    map.set(sectionIndex, clean);
+    sessionCharLengthRevisions.set(session, (sessionCharLengthRevisions.get(session) ?? 0) + 1);
+  }
+  return clean;
+}
+
+export function recordSectionDocLength(session: BookSession, doc: SectionDoc): number {
+  return recordSectionCharLength(session, doc.index, fullSectionLengthFromDoc(doc));
+}
+
+export function getKnownSectionCharLength(
+  session: BookSession,
+  sectionIndex: number,
+): number | undefined {
+  const cached = getCharLenMap(session).get(sectionIndex);
+  if (cached !== undefined) return cached;
+  const ref = session.spine.find((s) => s.index === sectionIndex) as
+    | (SectionRef & { readonly charCount?: number; readonly charLength?: number })
+    | undefined;
+  const persisted = ref?.charCount ?? ref?.charLength;
+  if (typeof persisted === 'number' && Number.isFinite(persisted) && persisted >= 0) {
+    getCharLenMap(session).set(sectionIndex, persisted);
+    return persisted;
+  }
+  return undefined;
+}
+
+function collectMaxTocOffsetForSection(
+  items: readonly TocItem[],
+  sectionIndex: number,
+  curMax = 0,
+): number {
+  let maxOff = curMax;
+  for (const item of items) {
+    if (item.locator.section === sectionIndex && item.locator.offset > maxOff) {
+      maxOff = item.locator.offset;
+    }
+    if (item.children.length > 0) {
+      maxOff = collectMaxTocOffsetForSection(item.children, sectionIndex, maxOff);
+    }
+  }
+  return maxOff;
+}
+
+export function estimateSectionCharLength(session: BookSession, sectionIndex: number): number {
+  const known = getKnownSectionCharLength(session, sectionIndex);
+  if (known !== undefined) return known;
+
+  const map = getCharLenMap(session);
+  let sumChars = 0;
+  let sumBytes = 0;
+  for (const s of session.spine) {
+    const c = map.get(s.index);
+    if (c !== undefined && c > 0 && s.sizeHint > 0) {
+      sumChars += c;
+      sumBytes += s.sizeHint;
+    }
+  }
+  const ratio = sumBytes > 0 ? sumChars / sumBytes : 1;
+  const ref = session.spine.find((s) => s.index === sectionIndex);
+  const rawEstimate = Math.round(Math.max(1, ref?.sizeHint ?? 1) * ratio);
+  const minFromToc = collectMaxTocOffsetForSection(session.toc, sectionIndex);
+  return Math.max(1, rawEstimate, minFromToc + 1);
+}
+
+export async function loadFullSectionText(
+  session: BookSession,
+  sectionIndex: number,
+): Promise<SectionText> {
+  if (session.loadSectionText) {
+    const txt = await session.loadSectionText(sectionIndex);
+    recordSectionCharLength(session, sectionIndex, txt.text.length);
+    return txt;
+  }
+  if (session.loadSectionUnits) {
+    const units = await session.loadSectionUnits(sectionIndex);
+    if (units.length === 1) {
+      const only = units[0]!;
+      recordSectionDocLength(session, only);
+      return only.text;
+    }
+    let fullStr = '';
+    const blocks: Array<{
+      start: number;
+      end: number;
+      kind: SectionText['blocks'][number]['kind'];
+      lang: string | null;
+    }> = [];
+    for (const u of units) {
+      const base = fullStr.length;
+      fullStr += u.text.text;
+      for (const b of u.text.blocks) {
+        blocks.push({
+          start: base + b.start,
+          end: base + b.end,
+          kind: b.kind,
+          lang: b.lang,
+        });
+      }
+    }
+    recordSectionCharLength(session, sectionIndex, fullStr.length);
+    return { text: fullStr, blocks };
+  }
+  const doc = await session.loadSection(sectionIndex, 0);
+  recordSectionDocLength(session, doc);
+  return doc.text;
+}
+
+export async function ensureSectionCharLength(
+  session: BookSession,
+  sectionIndex: number,
+): Promise<number> {
+  const known = getKnownSectionCharLength(session, sectionIndex);
+  if (known !== undefined) return known;
+
+  let pendingMap = sessionPendingLengthLoads.get(session);
+  if (!pendingMap) {
+    pendingMap = new Map<number, Promise<number>>();
+    sessionPendingLengthLoads.set(session, pendingMap);
+  }
+  const existing = pendingMap.get(sectionIndex);
+  if (existing) return existing;
+
+  const task = (async (): Promise<number> => {
+    try {
+      const txt = await loadFullSectionText(session, sectionIndex);
+      return recordSectionCharLength(session, sectionIndex, txt.text.length);
+    } finally {
+      pendingMap.delete(sectionIndex);
+    }
+  })();
+
+  pendingMap.set(sectionIndex, task);
+  return task;
+}
+
+export function fractionForSessionLocator(
+  session: BookSession,
+  locator: Locator,
+  explicitSectionCharLength?: number,
+): number {
+  const charLen =
+    explicitSectionCharLength ?? estimateSectionCharLength(session, locator.section);
+  return fractionForLocator(session.spine, locator, Math.max(1, charLen));
+}
+
+export function sectionShareForFraction(
+  spine: readonly SectionRef[],
+  fraction: number,
+): { readonly section: number; readonly share: number } {
+  const clamped = Math.max(0, Math.min(1, fraction));
+  const linear = spine.filter((s) => s.linear);
+  const items = linear.length > 0 ? linear : spine;
+  if (items.length === 0) return { section: 0, share: 0 };
+
+  for (let i = 0; i < items.length; i++) {
+    const s = items[i]!;
+    const fStart = fractionForLocator(spine, { section: s.index, offset: 0 }, 1);
+    const fEnd = fractionForLocator(spine, { section: s.index, offset: 1 }, 1);
+    if (clamped <= fEnd + 1e-12 || i === items.length - 1) {
+      const span = fEnd - fStart;
+      const share = span > 1e-9 ? Math.max(0, Math.min(1, (clamped - fStart) / span)) : 0;
+      return { section: s.index, share };
+    }
+  }
+  const last = items[items.length - 1]!;
+  return { section: last.index, share: 1 };
+}
+
+export async function resolveLocatorForFraction(
+  session: BookSession,
+  fraction: number,
+): Promise<Locator> {
+  const { section, share } = sectionShareForFraction(session.spine, fraction);
+  const charLen = await ensureSectionCharLength(session, section);
+  const offset = charLen > 0 ? Math.min(charLen, Math.round(share * charLen)) : 0;
+  return { section, offset };
+}
+
+export { fractionForLocator, reanchorLocator };

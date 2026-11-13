@@ -233,17 +233,34 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
       'flash:off',
     ]);
 
-    // Cadence Off (`0`): never triggers flash even on manual refresh (`ARCHITECTURE.md` §9.4)
+    // Cadence Off (`0`): suppresses periodic & tall-sheet refreshes, while manual ⟳ button still works on demand (`#43 P2-a`)
+    swTrace.length = 0;
+    await swCtl.runTurn({
+      isEink: true,
+      cadence: 0,
+      closedSheetCoveredHalfScreen: true,
+      swap: () => {
+        swTrace.push('swap-off');
+      },
+    });
+    expect(swTrace).toEqual(['swap-off']);
+
     swTrace.length = 0;
     await swCtl.runTurn({
       isEink: true,
       cadence: 0,
       userPressedRefresh: true,
       swap: () => {
-        swTrace.push('swap-off');
+        swTrace.push('swap-manual');
       },
     });
-    expect(swTrace).toEqual(['swap-off']);
+    expect(swTrace).toEqual([
+      'flash:black',
+      'paint',
+      'swap-manual',
+      'flash:white',
+      'flash:off',
+    ]);
 
     // Concurrent calls during flash serialize cleanly without overlapping overlays
     swTrace.length = 0;

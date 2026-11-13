@@ -449,4 +449,52 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
     expect(roundTrip.fromRangeOffset).toBe(120);
     expect(roundTrip.fromPointValid).toBe(true);
   });
+
+  test('[P1-F1] renders exact 0/20/40/60/80% TOC labels on 5-chapter single-file EPUB and round-trips Go to % within 1 page', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 758, height: 1024 });
+    await page.goto('/?eink=on&platform=android&singleFile5=1&book=b_single5');
+    await page.waitForSelector('iframe.mb-reader-frame');
+
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const f = document.querySelector<HTMLIFrameElement>('iframe.mb-reader-frame');
+          return f?.contentDocument?.body?.textContent?.includes('Chapter 1: Part 1') ?? false;
+        }),
+      )
+      .toBe(true);
+
+    // Summon Chrome and open Contents sheet -> verify 5 anchored chapters show 0%, 20%, 40%, 60%, 80%
+    await page.mouse.click(379, 512);
+    await page.getByRole('button', { name: 'Contents', exact: true }).first().click();
+    await expect(page.getByRole('dialog', { name: 'Contents' })).toBeVisible();
+
+    const tocLabels = await page
+      .locator('.mb-sheet [role="list"] .mb-list-row-meta')
+      .allTextContents();
+    expect(tocLabels.map((s) => s.trim())).toEqual(['0%', '20%', '40%', '60%', '80%']);
+
+    // Close Contents sheet; verify Go to % round-trips within <= 1 page across both virtual render units (20%, 60%, 85%, 98%)
+    await page.keyboard.press('Escape');
+    for (const targetPct of [20, 60, 85, 98]) {
+      if (!(await page.locator('.mb-chrome-top').count())) {
+        await page.mouse.click(379, 512);
+      }
+      await page.getByRole('button', { name: 'Go to %' }).click();
+      const input = page.getByRole('textbox', { name: 'Go to %' });
+      await input.fill(String(targetPct));
+      await page.getByRole('button', { name: 'Go', exact: true }).click();
+
+      // Wait for unit/page navigation to settle and check displayed percentage in stepped scrubber (`N %`)
+      await expect
+        .poll(async () => {
+          const txt = await page.locator('.mb-eink-scrubber-controls span').textContent();
+          const parsed = Number((txt ?? '').replace(/[^0-9]/g, ''));
+          return Math.abs(parsed - targetPct);
+        })
+        .toBeLessThanOrEqual(2);
+    }
+  });
 });

@@ -352,10 +352,6 @@ body,
   transition: var(--mb-transition-sheet);
 }
 
-.mb-sheet[data-list-sheet="true"] {
-  height: 74%;
-}
-
 @media (min-width: 840px) {
   .mb-sheet[data-popover="true"] {
     top: calc(var(--mb-chrome-height) + var(--m-safe-top) + 8px);
@@ -368,10 +364,6 @@ body,
     border: var(--mb-sheet-border-width) solid var(--mb-line);
     box-shadow: var(--mb-shadow-popover);
     padding: 16px 18px;
-  }
-
-  .mb-sheet[data-popover="true"][data-list-sheet="true"] {
-    height: min(560px, calc(100% - var(--mb-chrome-height) - var(--m-safe-top) - 28px));
   }
 }
 
