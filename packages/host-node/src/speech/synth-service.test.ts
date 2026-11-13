@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_APP_SETTINGS, MiniBookError, type AppSettings } from '@minibook/core';
+import { DEFAULT_APP_SETTINGS, MiniBookError, encodeMonoPcm16Wav, type AppSettings } from '@minibook/core';
 import { openDatabase, type Database } from '../db/sqlite.js';
 import { FileSecretStore } from '../settings/secrets.js';
 import { assertAllowedOutboundSpeechUrl } from './allowlist.js';
@@ -183,5 +183,97 @@ describe('SynthService, outbound speech allowlist, secret substitution & single-
 
     synth.clearCache();
     expect(synth.cacheSize()).toBe(0);
+  });
+
+  it('allows configured qwenServer origins (/v1/audio/speech, /synthesize, /health), injects qwen-api-key, and blocks caller baseUrl overrides', async () => {
+    expect(() =>
+      assertAllowedOutboundSpeechUrl('http://192.168.1.20:8000/v1/audio/speech', {
+        allowEdge: false,
+        configuredQwenBaseUrl: 'http://192.168.1.20:8000',
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertAllowedOutboundSpeechUrl('http://192.168.1.20:8000/synthesize', {
+        allowEdge: false,
+        configuredQwenBaseUrl: 'http://192.168.1.20:8000',
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertAllowedOutboundSpeechUrl('http://192.168.1.20:8000/health', {
+        allowEdge: false,
+        configuredQwenBaseUrl: 'http://192.168.1.20:8000/synthesize',
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertAllowedOutboundSpeechUrl('http://192.168.1.20:8000/admin', {
+        allowEdge: false,
+        configuredQwenBaseUrl: 'http://192.168.1.20:8000',
+      }),
+    ).toThrow(MiniBookError);
+
+    secrets.set('qwen-api-key', 'sk-qwen-local');
+    const wavBytes = encodeMonoPcm16Wav(new Float32Array(2400).fill(0.1), 24_000).wav;
+    let seenAuth = '';
+    let seenUrl = '';
+
+    const transport = createNodeHttpTransport({
+      secrets,
+      getAllowedCustomBaseUrl: () => null,
+      getAllowedQwenBaseUrl: () => settings.qwenServer?.baseUrl ?? null,
+      fetchImpl: async (input, init) => {
+        seenUrl = String(input);
+        const hdrs = init?.headers as Record<string, string>;
+        seenAuth = hdrs['Authorization'] ?? '';
+        return new Response(new Uint8Array(wavBytes), {
+          status: 200,
+          headers: { 'Content-Type': 'audio/wav' },
+        });
+      },
+    });
+
+    settings = {
+      ...settings,
+      qwenServer: {
+        baseUrl: 'http://192.168.1.20:8000',
+        protocol: 'mlx-audio',
+        model: 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16',
+        voice: 'Vivian',
+      },
+    };
+
+    const synth = new SynthService({
+      getSettings: () => settings,
+      secrets,
+      cache,
+      httpTransport: transport,
+    });
+
+    const voices = await synth.listRemoteVoices('qwen');
+    expect(voices.some((v) => v.id === 'Vivian' && v.provider === 'qwen')).toBe(true);
+
+    const res = await synth.synthesize({
+      engine: 'qwen',
+      voiceId: 'Vivian',
+      text: '你好，世界。',
+      lang: 'zh-CN',
+    });
+    expect(seenUrl).toBe('http://192.168.1.20:8000/v1/audio/speech');
+    expect(seenAuth).toBe('Bearer sk-qwen-local');
+    expect(res.mime).toBe('audio/wav');
+    expect(res.cached).toBe(false);
+
+    // Caller override to unconfigured origin is rejected
+    await expect(
+      synth.synthesize({
+        engine: 'qwen',
+        voiceId: 'Vivian',
+        text: 'Other sentence',
+        lang: 'zh-CN',
+        baseUrl: 'http://10.0.0.5:8000',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-argument' });
   });
 });

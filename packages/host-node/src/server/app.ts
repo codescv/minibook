@@ -1,6 +1,7 @@
 /**
- * Assembles the MiniBook Hono server application (`ARCHITECTURE.md` §3.1, §6.1, §12):
+ * Assembles the MiniBook Hono server application (`ARCHITECTURE.md` §3.1, §6.1, §12, `TTS_V2_SPEC.md` §5.1):
  *   - Loopback DNS-rebinding & CSRF guard (`createLoopbackGuard`)
+ *   - Cross-Origin Isolation headers (COOP/COEP/CORP) on every response for multi-threaded WASM SIMD
  *   - SSE event stream (`/api/events`)
  *   - Typed JSON + HTTP 206 Range endpoints (`/api/*`)
  *   - Static SPA asset serving (`dist/web/*` with `index.html` fallback + strict CSP header)
@@ -13,10 +14,11 @@ import { createLoopbackGuard } from './guard.js';
 import { createApiRoutes } from './routes/api.js';
 import { createEventsRoutes } from './routes/events.js';
 
-/** App-level CSP (`ARCHITECTURE.md` §6.1 Layer 2). */
+/** App-level CSP (`ARCHITECTURE.md` §6.1 Layer 2, `TTS_V2_SPEC.md` §5.1). */
 export const DESKTOP_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "worker-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -32,6 +34,8 @@ const STATIC_MIME: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.gz': 'application/gzip',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
@@ -45,6 +49,12 @@ const STATIC_MIME: Readonly<Record<string, string>> = {
   '.webmanifest': 'application/manifest+json',
 };
 
+export const CROSS_ORIGIN_ISOLATION_HEADERS: Readonly<Record<string, string>> = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+};
+
 export interface ServerAppOptions {
   readonly webRootDir?: string;
   readonly extraAllowedOrigins?: readonly string[];
@@ -52,6 +62,13 @@ export interface ServerAppOptions {
 
 export function createServerApp(ctx: NodeHostContext, options?: ServerAppOptions): Hono {
   const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    await next();
+    for (const [k, v] of Object.entries(CROSS_ORIGIN_ISOLATION_HEADERS)) {
+      c.res.headers.set(k, v);
+    }
+  });
 
   app.use(
     '*',
@@ -84,6 +101,7 @@ export function createServerApp(ctx: NodeHostContext, options?: ServerAppOptions
               status: 200,
               headers: {
                 'Content-Type': contentType,
+                ...CROSS_ORIGIN_ISOLATION_HEADERS,
                 ...(ext === '.html'
                   ? {
                       'Cache-Control': 'no-cache',
@@ -106,6 +124,7 @@ export function createServerApp(ctx: NodeHostContext, options?: ServerAppOptions
             'Content-Type': 'text/html; charset=utf-8',
             'Cache-Control': 'no-cache',
             'Content-Security-Policy': DESKTOP_CONTENT_SECURITY_POLICY,
+            ...CROSS_ORIGIN_ISOLATION_HEADERS,
           },
         });
       }

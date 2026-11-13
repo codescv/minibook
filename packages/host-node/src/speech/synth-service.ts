@@ -1,7 +1,8 @@
 /**
- * Server-side speech synthesis service (`ARCHITECTURE.md` §8.4, §12):
- *   - Hosts `EdgeSpeechProvider` (via `ws`) and `OpenAiSpeechProvider` (via `fetch`)
- *   - Enforces strict outbound URL allowlist (Edge endpoints + configured custom server only)
+ * Server-side speech synthesis service (`ARCHITECTURE.md` §8.4, §12, `TTS_V2_SPEC.md` §6.2):
+ *   - Hosts `EdgeSpeechProvider` (via `ws`), `OpenAiSpeechProvider` (via `fetch`),
+ *     and `QwenSpeechProvider` (`mlx-audio` / `vllm-omni` / `qwen-native`)
+ *   - Enforces strict outbound URL allowlist (Edge + configured `customSpeechServer` + configured `qwenServer`)
  *   - Injects stored API-key secrets via `{{secret:<name>}}`
  *   - Per-key single-flight deduplication + persistent disk/SQLite audio cache
  */
@@ -9,15 +10,21 @@ import {
   EdgeSpeechProvider,
   MiniBookError,
   OpenAiSpeechProvider,
+  QwenSpeechProvider,
+  computeQwenModelCacheTag,
   computeSpeechCacheKey,
   type AppSettings,
   type EdgeSynthOutput,
   type HttpTransport,
   type OpenAiSynthOutput,
+  type QwenServerConfig,
+  type QwenSynthOutput,
+  type RemoteSpeechEngineId,
   type SocketTransport,
   type SynthRequest,
   type SynthResult,
   type Voice,
+  type WordMark,
 } from '@minibook/core';
 import type { FileSecretStore } from '../settings/secrets.js';
 import { assertAllowedOutboundSpeechUrl } from './allowlist.js';
@@ -63,6 +70,24 @@ export interface OpenAiProviderLike {
   ): Promise<Voice[]>;
 }
 
+export interface QwenProviderLike {
+  synthesize(
+    req: {
+      readonly config: QwenServerConfig;
+      readonly text: string;
+      readonly voiceId?: string;
+      readonly lang?: string;
+      readonly apiKeyHeader?: string;
+      readonly timeoutMs?: number;
+    },
+    signal?: AbortSignal,
+  ): Promise<QwenSynthOutput>;
+  listVoices(
+    opts: { readonly config: QwenServerConfig; readonly apiKeyHeader?: string },
+    signal?: AbortSignal,
+  ): Promise<Voice[]>;
+}
+
 export interface SynthServiceOptions {
   readonly getSettings: () => AppSettings;
   readonly secrets: FileSecretStore;
@@ -72,6 +97,7 @@ export interface SynthServiceOptions {
   readonly socketTransport?: SocketTransport;
   readonly edgeProvider?: EdgeProviderLike;
   readonly openAiProvider?: OpenAiProviderLike;
+  readonly qwenProvider?: QwenProviderLike;
   readonly now?: () => number;
 }
 
@@ -88,6 +114,7 @@ export class SynthService {
   private readonly getLastSecretName: (() => string | null) | undefined;
   private readonly edgeProvider: EdgeProviderLike;
   private readonly openAiProvider: OpenAiProviderLike;
+  private readonly qwenProvider: QwenProviderLike;
   private readonly now: () => number;
   private readonly inFlight = new Map<string, InFlightFlight>();
   private cachedEdgeVoices: { readonly voices: Voice[]; readonly expiresAt: number } | null = null;
@@ -104,6 +131,7 @@ export class SynthService {
       createNodeHttpTransport({
         secrets: options.secrets,
         getAllowedCustomBaseUrl: () => this.getSettings().customSpeechServer?.baseUrl ?? null,
+        getAllowedQwenBaseUrl: () => this.getSettings().qwenServer?.baseUrl ?? null,
         allowEdge: () => true,
       });
     const socket =
@@ -116,10 +144,21 @@ export class SynthService {
     this.edgeProvider =
       options.edgeProvider ?? new EdgeSpeechProvider({ socket, http, now: this.now });
     this.openAiProvider = options.openAiProvider ?? new OpenAiSpeechProvider({ http });
+    this.qwenProvider = options.qwenProvider ?? new QwenSpeechProvider({ http });
   }
 
   getCachedAudio(key: string): CachedSpeechEntry | null {
     return this.cache.get(key);
+  }
+
+  putCachedAudio(params: {
+    readonly key: string;
+    readonly audio: Uint8Array;
+    readonly mime: string;
+    readonly durationMs?: number;
+    readonly marks?: readonly WordMark[];
+  }): CachedSpeechEntry {
+    return this.cache.put(params);
   }
 
   clearCache(): void {
@@ -141,6 +180,7 @@ export class SynthService {
     const settings = this.getSettings();
     let effectiveModel = req.model;
     let effectiveBaseUrl: string | undefined;
+    let effectiveQwenConfig: QwenServerConfig | undefined;
 
     if (req.engine === 'openai') {
       const configured = settings.customSpeechServer?.baseUrl?.trim();
@@ -160,6 +200,30 @@ export class SynthService {
       }
       effectiveBaseUrl = configured;
       effectiveModel = req.model ?? settings.customSpeechServer?.model ?? 'tts-1';
+    } else if (req.engine === 'qwen') {
+      const configuredCfg = settings.qwenServer;
+      const configured = configuredCfg?.baseUrl?.trim();
+      if (!configuredCfg || !configured) {
+        throw new MiniBookError(
+          'speech-unavailable',
+          'Local GPU / Qwen speech server URL is not configured in Settings',
+        );
+      }
+      if (req.baseUrl !== undefined && req.baseUrl.trim() !== '') {
+        const suffix = configuredCfg.protocol === 'qwen-native' ? '/synthesize' : '/v1/audio/speech';
+        const probeBase = req.baseUrl.trim().replace(/\/+$/, '');
+        const probeUrl =
+          configuredCfg.protocol === 'qwen-native' && /\/synthesize$/i.test(probeBase)
+            ? probeBase
+            : `${probeBase}${suffix}`;
+        assertAllowedOutboundSpeechUrl(probeUrl, {
+          allowEdge: false,
+          configuredQwenBaseUrl: configured,
+        });
+      }
+      effectiveBaseUrl = configured;
+      effectiveQwenConfig = configuredCfg;
+      effectiveModel = computeQwenModelCacheTag(configuredCfg);
     } else if (req.engine === 'edge') {
       if (req.baseUrl !== undefined) {
         throw new MiniBookError('invalid-argument', 'Edge speech engine does not accept a custom baseUrl');
@@ -172,6 +236,7 @@ export class SynthService {
       engine: req.engine,
       voiceId: req.voiceId,
       ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+      ...(effectiveQwenConfig !== undefined ? { qwenConfig: effectiveQwenConfig } : {}),
       text: req.text,
     });
 
@@ -200,6 +265,7 @@ export class SynthService {
         req,
         effectiveBaseUrl,
         effectiveModel,
+        effectiveQwenConfig,
         controller.signal,
       ).finally(() => {
         this.inFlight.delete(key);
@@ -236,10 +302,7 @@ export class SynthService {
     });
   }
 
-  async listRemoteVoices(engine: 'edge' | 'openai' | 'qwen', signal?: AbortSignal): Promise<Voice[]> {
-    if (engine === 'qwen') {
-      return [];
-    }
+  async listRemoteVoices(engine: RemoteSpeechEngineId, signal?: AbortSignal): Promise<Voice[]> {
     if (engine === 'edge') {
       const now = this.now();
       if (this.cachedEdgeVoices && this.cachedEdgeVoices.expiresAt > now) {
@@ -248,6 +311,19 @@ export class SynthService {
       const voices = await this.edgeProvider.listVoices(signal);
       this.cachedEdgeVoices = { voices, expiresAt: now + EDGE_VOICES_TTL_MS };
       return voices;
+    }
+
+    if (engine === 'qwen') {
+      const qwenCfg = this.getSettings().qwenServer;
+      if (!qwenCfg?.baseUrl?.trim()) return [];
+      const apiKeyHeader = this.resolveQwenBearerPlaceholder();
+      return this.qwenProvider.listVoices(
+        {
+          config: qwenCfg,
+          ...(apiKeyHeader !== undefined ? { apiKeyHeader } : {}),
+        },
+        signal,
+      );
     }
 
     const configured = this.getSettings().customSpeechServer?.baseUrl?.trim();
@@ -264,7 +340,7 @@ export class SynthService {
 
   private resolveBearerPlaceholder(): string | undefined {
     const last = this.getLastSecretName?.();
-    if (last && this.secrets.has(last)) {
+    if (last && last !== 'qwen-api-key' && this.secrets.has(last)) {
       return `Bearer {{secret:${last}}}`;
     }
     for (const candidate of SPEECH_SECRET_CANDIDATES) {
@@ -275,11 +351,19 @@ export class SynthService {
     return undefined;
   }
 
+  private resolveQwenBearerPlaceholder(): string | undefined {
+    if (this.secrets.has('qwen-api-key')) {
+      return 'Bearer {{secret:qwen-api-key}}';
+    }
+    return undefined;
+  }
+
   private async runSingleSynthesis(
     key: string,
     req: SynthRequest,
     effectiveBaseUrl: string | undefined,
     effectiveModel: string | undefined,
+    effectiveQwenConfig: QwenServerConfig | undefined,
     signal: AbortSignal,
   ): Promise<SynthResult> {
     const t0 = this.now();
@@ -305,6 +389,35 @@ export class SynthService {
         mime: stored.mime,
         ...(stored.durationMs !== undefined ? { durationMs: stored.durationMs } : {}),
         ...(stored.marks !== undefined ? { marks: stored.marks } : {}),
+        synthMs,
+        bytes: stored.bytes,
+        cached: false,
+      };
+    }
+
+    if (req.engine === 'qwen') {
+      const apiKeyHeader = this.resolveQwenBearerPlaceholder();
+      const out = await this.qwenProvider.synthesize(
+        {
+          config: effectiveQwenConfig!,
+          text: req.text,
+          voiceId: req.voiceId,
+          ...(req.lang ? { lang: req.lang } : {}),
+          ...(apiKeyHeader !== undefined ? { apiKeyHeader } : {}),
+        },
+        signal,
+      );
+      const synthMs = Math.max(1, this.now() - t0);
+      const stored = this.cache.put({
+        key,
+        audio: out.audio,
+        mime: out.mime,
+        ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
+      });
+      return {
+        ref: `/api/speech/audio/${stored.key}`,
+        mime: stored.mime,
+        ...(stored.durationMs !== undefined ? { durationMs: stored.durationMs } : {}),
         synthMs,
         bytes: stored.bytes,
         cached: false,

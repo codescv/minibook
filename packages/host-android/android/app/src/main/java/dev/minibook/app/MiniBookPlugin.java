@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
@@ -82,6 +83,7 @@ public class MiniBookPlugin extends Plugin {
     private final ExecutorService ioPool = Executors.newCachedThreadPool();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ConcurrentHashMap<String, WebSocket> sockets = new ConcurrentHashMap<>();
+    @Nullable private volatile ModelDownloadManager modelDownloader;
 
     private final OkHttpClient okHttp = new OkHttpClient.Builder()
         .followRedirects(true)
@@ -106,6 +108,10 @@ public class MiniBookPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         ReadAloudService.removeEventSink(speechSink);
+        if (modelDownloader != null) {
+            modelDownloader.shutdown();
+            modelDownloader = null;
+        }
         for (WebSocket ws : sockets.values()) {
             try {
                 ws.close(1000, "destroy");
@@ -1090,8 +1096,152 @@ public class MiniBookPlugin extends Plugin {
     }
 
     // -------------------------------------------------------------------------
+    // §4b. On-Device Neural Models (`modelStatus`, `modelDownload`, `modelPause`, `modelRemove`)
+    // -------------------------------------------------------------------------
+
+    private synchronized ModelDownloadManager getModelDownloader() {
+        if (modelDownloader == null) {
+            KokoroModelStore store = new KokoroModelStore(getMiniBookDataRoot());
+            modelDownloader = new ModelDownloadManager(
+                getContext(),
+                store,
+                status -> notifyListeners("speech-model", toJSObject(status)),
+                ReadAloudService::unloadLocalModels
+            );
+        }
+        return modelDownloader;
+    }
+
+    @PluginMethod
+    public void modelStatus(PluginCall call) {
+        final String id = call.getString("id", KokoroModelStore.MODEL_ID);
+        ioPool.execute(() -> {
+            try {
+                JSONObject st = getModelDownloader().getStatus(id);
+                call.resolve(toJSObject(st));
+            } catch (IllegalArgumentException e) {
+                call.reject(e.getMessage(), "invalid-argument", e);
+            } catch (Exception e) {
+                call.reject("modelStatus failed: " + e.getMessage(), "unsupported", e);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void modelDownload(PluginCall call) {
+        final String id = call.getString("id", KokoroModelStore.MODEL_ID);
+        final String variant = call.getString("variant", KokoroModelStore.DEFAULT_VARIANT);
+        final String defaultRepo = call.getString("repo", "onnx-community/Kokoro-82M-v1.1-zh-ONNX");
+        final String defaultRev = call.getString("revision", "");
+        final JSArray filesArr = call.getArray("files");
+        final JSArray sourcesArr = call.getArray("sources");
+        final JSArray allowHostsArr = call.getArray("allowHosts");
+
+        if (filesArr == null || filesArr.length() == 0 || sourcesArr == null || sourcesArr.length() == 0) {
+            call.reject("files and sources are required", "invalid-argument");
+            return;
+        }
+
+        final List<ModelDownloadManager.FileSpec> files = new ArrayList<>(filesArr.length());
+        for (int i = 0; i < filesArr.length(); i++) {
+            JSONObject obj = filesArr.optJSONObject(i);
+            if (obj == null) continue;
+            String p = obj.optString("path", "");
+            long sz = obj.optLong("size", 0L);
+            String sha = obj.optString("sha256", "");
+            String repo = obj.optString("repo", defaultRepo);
+            String rev = obj.optString("revision", defaultRev);
+            if (p.isEmpty() || sz <= 0L || sha.isEmpty() || repo.isEmpty() || rev.isEmpty()) {
+                call.reject("Invalid file spec at index " + i, "invalid-argument");
+                return;
+            }
+            files.add(new ModelDownloadManager.FileSpec(p, sz, sha, repo, rev));
+        }
+
+        final List<String> sources = new ArrayList<>(sourcesArr.length());
+        for (int i = 0; i < sourcesArr.length(); i++) {
+            String s = sourcesArr.optString(i, "").trim();
+            if (!s.isEmpty()) sources.add(s);
+        }
+
+        final List<String> allowHosts = new ArrayList<>();
+        if (allowHostsArr != null) {
+            for (int i = 0; i < allowHostsArr.length(); i++) {
+                String h = allowHostsArr.optString(i, "").trim();
+                if (!h.isEmpty()) allowHosts.add(h);
+            }
+        }
+        if (allowHosts.isEmpty()) {
+            allowHosts.add("huggingface.co");
+            allowHosts.add("hf-mirror.com");
+            allowHosts.add(".hf.co");
+            allowHosts.add(".huggingface.co");
+            allowHosts.add(".hf-mirror.com");
+        }
+
+        ioPool.execute(() -> {
+            try {
+                ModelDownloadManager.DownloadRequest req = new ModelDownloadManager.DownloadRequest(
+                    id,
+                    variant,
+                    files,
+                    sources,
+                    allowHosts
+                );
+                JSONObject st = getModelDownloader().startDownload(req);
+                call.resolve(toJSObject(st));
+            } catch (IllegalArgumentException e) {
+                call.reject(e.getMessage(), "invalid-argument", e);
+            } catch (Exception e) {
+                call.reject("modelDownload failed: " + e.getMessage(), "network", e);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void modelPause(PluginCall call) {
+        final String id = call.getString("id", KokoroModelStore.MODEL_ID);
+        ioPool.execute(() -> {
+            try {
+                JSONObject st = getModelDownloader().pause(id);
+                call.resolve(toJSObject(st));
+            } catch (IllegalArgumentException e) {
+                call.reject(e.getMessage(), "invalid-argument", e);
+            } catch (Exception e) {
+                call.reject("modelPause failed: " + e.getMessage(), "unsupported", e);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void modelRemove(PluginCall call) {
+        final String id = call.getString("id", KokoroModelStore.MODEL_ID);
+        ioPool.execute(() -> {
+            try {
+                getModelDownloader().remove(id);
+                call.resolve(new JSObject());
+            } catch (IllegalArgumentException e) {
+                call.reject(e.getMessage(), "invalid-argument", e);
+            } catch (Exception e) {
+                call.reject("modelRemove failed: " + e.getMessage(), "corrupt-book", e);
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // §5. Device & E-Ink (`device*`)
     // -------------------------------------------------------------------------
+
+    private static boolean supportsOnDeviceNeuralSpeech() {
+        String[] abis = Build.SUPPORTED_ABIS;
+        if (abis == null) return false;
+        for (String abi : abis) {
+            if ("arm64-v8a".equals(abi) || "x86_64".equals(abi)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     @PluginMethod
     public void deviceInfo(PluginCall call) {
@@ -1101,6 +1251,7 @@ public class MiniBookPlugin extends Plugin {
         out.put("vendor", info.vendor != null ? info.vendor : JSONObject.NULL);
         out.put("model", info.model != null ? info.model : JSONObject.NULL);
         out.put("refresh", info.refresh);
+        out.put("onDeviceNeuralSpeech", supportsOnDeviceNeuralSpeech());
         call.resolve(out);
     }
 
@@ -1261,12 +1412,18 @@ public class MiniBookPlugin extends Plugin {
             return raw;
         }
 
-        // Restrict {{secret:*}} substitution strictly to the configured customSpeechServer origin
-        HttpUrl allowedOrigin = readConfiguredCustomSpeechOrigin();
-        if (allowedOrigin == null
-            || !targetUrl.scheme().equalsIgnoreCase(allowedOrigin.scheme())
-            || !targetUrl.host().equalsIgnoreCase(allowedOrigin.host())
-            || targetUrl.port() != allowedOrigin.port()) {
+        // Restrict {{secret:*}} substitution strictly to configured customSpeechServer / qwenServer origins
+        List<HttpUrl> allowedOrigins = readConfiguredSpeechOrigins();
+        boolean originAllowed = false;
+        for (HttpUrl allowedOrigin : allowedOrigins) {
+            if (targetUrl.scheme().equalsIgnoreCase(allowedOrigin.scheme())
+                && targetUrl.host().equalsIgnoreCase(allowedOrigin.host())
+                && targetUrl.port() == allowedOrigin.port()) {
+                originAllowed = true;
+                break;
+            }
+        }
+        if (!originAllowed) {
             throw new MissingSecretException(
                 "Secret header substitution denied for unconfigured origin: "
                     + targetUrl.scheme() + "://" + targetUrl.host()
@@ -1293,25 +1450,27 @@ public class MiniBookPlugin extends Plugin {
         return out;
     }
 
-    @Nullable
-    private HttpUrl readConfiguredCustomSpeechOrigin() {
+    private List<HttpUrl> readConfiguredSpeechOrigins() {
+        List<HttpUrl> origins = new ArrayList<>(2);
         try {
             File settingsFile = AtomicFiles.resolveInJail(
                 getMiniBookDataRoot(),
                 "settings.json",
                 false
             );
-            if (!settingsFile.exists() || !settingsFile.isFile()) return null;
+            if (!settingsFile.exists() || !settingsFile.isFile()) return origins;
             byte[] raw = java.nio.file.Files.readAllBytes(settingsFile.toPath());
             JSONObject obj = new JSONObject(new String(raw, StandardCharsets.UTF_8));
-            JSONObject custom = obj.optJSONObject("customSpeechServer");
-            if (custom == null) return null;
-            String baseUrl = custom.optString("baseUrl", "").trim();
-            if (baseUrl.isEmpty()) return null;
-            return HttpUrl.parse(baseUrl);
-        } catch (Exception e) {
-            return null;
-        }
+            for (String key : new String[] { "customSpeechServer", "qwenServer" }) {
+                JSONObject cfg = obj.optJSONObject(key);
+                if (cfg == null) continue;
+                String baseUrl = cfg.optString("baseUrl", "").trim();
+                if (baseUrl.isEmpty()) continue;
+                HttpUrl parsed = HttpUrl.parse(baseUrl);
+                if (parsed != null) origins.add(parsed);
+            }
+        } catch (Exception ignored) {}
+        return origins;
     }
 
     private static JSObject toJSObject(JSONObject obj) {

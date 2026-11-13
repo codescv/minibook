@@ -14,6 +14,9 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    androidResources {
+        noCompress += ['gz', 'bin', 'onnx']
+    }
     signingConfigs {
         release {
             storeFile file('minibook-release.keystore')
@@ -25,11 +28,17 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.release
+            ndk {
+                abiFilters "arm64-v8a", "x86_64"
+            }
         }
         release {
             signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            ndk {
+                abiFilters "arm64-v8a"
+            }
         }
     }
     testOptions {
@@ -59,9 +68,11 @@ dependencies {
     implementation "androidx.media3:media3-exoplayer:1.5.1"
     implementation "androidx.media3:media3-extractor:1.5.1"
     implementation "androidx.media3:media3-session:1.5.1"
+    implementation "com.microsoft.onnxruntime:onnxruntime-android:1.32.0"
 
     testImplementation "junit:junit:$junitVersion"
     testImplementation "org.json:json:20250517"
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
 }

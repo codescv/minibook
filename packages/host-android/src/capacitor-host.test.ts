@@ -3,9 +3,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  KOKORO_MODEL_ID,
   WindowedByteSource,
+  encodeMonoPcm16Wav,
   memoryByteSource,
   openBook,
+  type HostEvent,
   type InspectedBook,
   type SpeechEvent,
   type TxtBookIndex,
@@ -44,6 +47,10 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
   };
   journalCheckpoint: SpeechJournalCheckpoint | null = null;
   lastHttpHeaders: Record<string, string> = {};
+  lastHttpUrl = '';
+  httpStatusOverride = 200;
+  httpBodyOverride: Uint8Array | null = null;
+  httpContentTypeOverride = 'audio/mpeg';
 
   private readonly eventListeners = new Map<string, Set<(payload: unknown) => void>>();
 
@@ -203,10 +210,11 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
       });
     }
     this.lastHttpHeaders = resolvedHeaders;
+    this.lastHttpUrl = opts.url;
     return {
-      status: 200,
-      headers: { 'content-type': 'audio/mpeg' },
-      bodyBase64: bytesToBase64(new Uint8Array([0xff, 0xfb, 0x90, 0x64])),
+      status: this.httpStatusOverride,
+      headers: { 'content-type': this.httpContentTypeOverride },
+      bodyBase64: bytesToBase64(this.httpBodyOverride ?? new Uint8Array([0xff, 0xfb, 0x90, 0x64])),
     };
   }
 
@@ -747,5 +755,79 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
       expect(sec0.xhtml.length).toBeGreaterThan(0);
       session.close();
     }
+  });
+
+  it('forwards speech-model and engine-slow events and synthesizes qwen via plugin HTTP transport', async () => {
+    const bridge = new InMemoryNativeBridge();
+    const wav = encodeMonoPcm16Wav(new Float32Array(2400).fill(0.2), 24_000).wav;
+    bridge.httpContentTypeOverride = 'audio/wav';
+    bridge.httpBodyOverride = wav;
+
+    const plugin = wrapNativeBridge(bridge);
+    const host = createCapacitorPlatformHost({
+      plugin,
+      platform: 'android',
+      fetchImpl: null,
+    });
+
+    await host.settings.update({
+      qwenServer: {
+        baseUrl: 'http://192.168.1.20:8000',
+        protocol: 'mlx-audio',
+        model: 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16',
+        voice: 'Vivian',
+      },
+    });
+    await host.settings.setSecret('qwen-api-key', 'sk-qwen-android');
+
+    const hostEvents: HostEvent[] = [];
+    const unsubHost = host.subscribe((e) => hostEvents.push(e));
+    const player = new NativeSpeechPlayer(plugin);
+    const playerEvents: SpeechEvent[] = [];
+    const unsubPlayer = player.subscribe((e) => playerEvents.push(e));
+    await new Promise((r) => setTimeout(r, 15));
+
+    bridge.emitEvent('speech-model', {
+      id: KOKORO_MODEL_ID,
+      state: 'downloading',
+      variant: 'onnx-q8',
+      bytesDone: 50_000,
+      bytesTotal: 100_000,
+      installedBytes: 0,
+      installedVoices: [],
+    });
+    bridge.emitEvent('engine-slow', { rtf: 1.15, engine: 'kokoro' });
+
+    expect(hostEvents.some((e) => e.type === 'speech-model' && e.status.bytesDone === 50_000)).toBe(true);
+    expect(playerEvents.some((e) => e.type === 'engine-slow' && e.rtf === 1.15 && e.engine === 'kokoro')).toBe(true);
+
+    const voices = await host.speech.listRemoteVoices('qwen');
+    expect(voices.some((v) => v.id === 'Vivian' && v.provider === 'qwen')).toBe(true);
+
+    const res = await host.speech.synthesize({
+      engine: 'qwen',
+      voiceId: 'Vivian',
+      text: '你好，世界。',
+      lang: 'zh-CN',
+    });
+    expect(bridge.lastHttpUrl).toBe('http://192.168.1.20:8000/v1/audio/speech');
+    expect(bridge.lastHttpHeaders['Authorization']).toBe('Bearer sk-qwen-android');
+    expect(res.mime).toBe('audio/wav');
+    expect(res.cached).toBe(false);
+
+    const cached = await host.speech.synthesize({
+      engine: 'qwen',
+      voiceId: 'Vivian',
+      text: '你好，世界。',
+      lang: 'zh-CN',
+    });
+    expect(cached.cached).toBe(true);
+
+    const dlStatus = await host.speech.models!.download(KOKORO_MODEL_ID, { voices: ['zf_001'] });
+    expect(dlStatus.variant).toBe('onnx-q8');
+    expect(dlStatus.state).toBe('downloading');
+
+    unsubHost();
+    unsubPlayer();
   });
 });

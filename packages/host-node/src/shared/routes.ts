@@ -12,11 +12,16 @@ import type {
   HostInfo,
   LibraryBook,
   LibraryBookDetail,
+  RemoteSpeechEngineId,
   SavedPosition,
+  SpeechModelId,
+  SpeechModelStatus,
+  SpeechModelVariant,
   StorageUsage,
   SynthRequest,
   SynthResult,
   Voice,
+  WordMark,
 } from '@minibook/core';
 
 export type RouteHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -115,13 +120,33 @@ export const ROUTES = {
 
   // Speech synthesis proxy & disk cache
   speechSynthesize: jsonRoute<SynthRequest, SynthResult>('POST', '/api/speech/synthesize'),
-  speechVoices: jsonRoute<{ readonly engine: 'edge' | 'openai' | 'qwen' }, readonly Voice[]>(
+  speechVoices: jsonRoute<{ readonly engine: RemoteSpeechEngineId }, readonly Voice[]>(
     'GET',
     '/api/speech/voices',
   ),
   speechAudio: binaryRoute<void, Uint8Array>('GET', '/api/speech/audio/:key'),
+  speechCachePut: jsonRoute<
+    {
+      readonly key: string;
+      readonly mime: string;
+      readonly durationMs?: number;
+      readonly marks?: readonly WordMark[];
+      readonly audioBase64: string;
+    },
+    SynthResult
+  >('POST', '/api/speech/cache'),
   speechCacheClear: jsonRoute<void, null>('DELETE', '/api/speech/cache'),
   speechCacheSize: jsonRoute<void, { readonly bytes: number }>('GET', '/api/speech/cache/size'),
+
+  // On-device neural speech models
+  modelStatus: jsonRoute<void, SpeechModelStatus>('GET', '/api/models/:id'),
+  modelDownload: jsonRoute<
+    { readonly variant?: SpeechModelVariant; readonly voices?: readonly string[] },
+    SpeechModelStatus
+  >('POST', '/api/models/:id/download'),
+  modelPause: jsonRoute<void, SpeechModelStatus>('POST', '/api/models/:id/pause'),
+  modelRemove: jsonRoute<void, null>('DELETE', '/api/models/:id'),
+  modelFile: binaryRoute<void, Uint8Array>('GET', '/api/models/:id/file/*'),
 
   // SSE event stream
   events: { method: 'GET', path: '/api/events', kind: 'sse' } as RouteSpec<void, void>,
