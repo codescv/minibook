@@ -42,21 +42,21 @@ export function createNodeWsTransport(options: NodeWsTransportOptions): SocketTr
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          ws.terminate();
           reject(new MiniBookError('network', `Speech WebSocket handshake timed out (${timeoutMs}ms)`));
+          ws.terminate();
         }
       }, timeoutMs);
 
       const onAbort = () => {
         clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(new MiniBookError('cancelled', 'Speech WebSocket cancelled'));
+        }
         try {
           ws.close(1000, 'aborted');
         } catch {
           ws.terminate();
-        }
-        if (!settled) {
-          settled = true;
-          reject(new MiniBookError('cancelled', 'Speech WebSocket cancelled'));
         }
       };
 
@@ -85,7 +85,6 @@ export function createNodeWsTransport(options: NodeWsTransportOptions): SocketTr
         openOpts.signal?.removeEventListener('abort', onAbort);
         const code = res.statusCode ?? 502;
         res.resume();
-        ws.terminate();
         const err =
           code === 401 || code === 403
             ? new MiniBookError('speech-auth', `Edge WebSocket rejected handshake with HTTP ${code}`)
@@ -96,6 +95,7 @@ export function createNodeWsTransport(options: NodeWsTransportOptions): SocketTr
         } else {
           handlers.onError?.(err);
         }
+        ws.terminate();
       });
 
       ws.on('open', () => {
