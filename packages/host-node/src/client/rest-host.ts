@@ -18,6 +18,7 @@ import {
   type KeyPolicy,
   type LibraryBook,
   type LibraryBookDetail,
+  type ModelDownloadSource,
   type PlatformHost,
   type RemoteSpeechEngineId,
   type SavedPosition,
@@ -85,7 +86,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
   let currentInfo: HostInfo = options?.initialInfo ?? {
     platform: 'desktop',
-    appVersion: '0.2.0',
+    appVersion: '0.2.1',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,
@@ -177,13 +178,25 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
       const s = await client.request<SpeechModelStatus>('GET', `/api/models/${encodeURIComponent(id)}`);
       return enrichModelStatus(s);
     },
-    async download(id: 'kokoro-v1.1-zh', opts?: { readonly voices?: readonly string[] }) {
+    async download(
+      id: 'kokoro-v1.1-zh',
+      opts?: {
+        readonly voices?: readonly string[];
+        readonly source?: ModelDownloadSource;
+        readonly mirrorBaseUrl?: string | null;
+      },
+    ) {
       lastSelfTestError = null;
       const s = await client.request<SpeechModelStatus>(
         'POST',
         `/api/models/${encodeURIComponent(id)}/download`,
         {
-          body: { variant: 'onnx-fp32', ...(opts?.voices ? { voices: opts.voices } : {}) },
+          body: {
+            variant: 'onnx-fp32',
+            ...(opts?.voices ? { voices: opts.voices } : {}),
+            ...(opts?.source !== undefined ? { source: opts.source } : {}),
+            ...(opts?.mirrorBaseUrl !== undefined ? { mirrorBaseUrl: opts.mirrorBaseUrl } : {}),
+          },
         },
       );
       return enrichModelStatus(s);

@@ -5,6 +5,7 @@ import {
   MiniBookError,
   type AppSettings,
   type BookmarkInput,
+  type ModelDownloadSource,
   type SavedPosition,
   type SpeechModelId,
   type SpeechModelVariant,
@@ -475,15 +476,30 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
       const body = (await c.req.json().catch(() => ({}))) as {
         readonly variant?: unknown;
         readonly voices?: unknown;
+        readonly source?: unknown;
+        readonly mirrorBaseUrl?: unknown;
       };
       const variant: SpeechModelVariant | undefined =
         body?.variant === 'onnx-fp32' || body?.variant === 'onnx-q8' ? body.variant : undefined;
       const voices = Array.isArray(body?.voices)
         ? body.voices.filter((v): v is string => typeof v === 'string')
         : undefined;
+      const source: ModelDownloadSource | undefined =
+        body?.source === 'auto' ||
+        body?.source === 'huggingface' ||
+        body?.source === 'hf-mirror' ||
+        body?.source === 'custom'
+          ? body.source
+          : undefined;
+      const mirrorBaseUrl: string | null | undefined =
+        body?.mirrorBaseUrl === null || typeof body?.mirrorBaseUrl === 'string'
+          ? body.mirrorBaseUrl
+          : undefined;
       const status = await ctx.models.download(id, {
         ...(variant !== undefined ? { variant } : {}),
         ...(voices !== undefined ? { voices } : {}),
+        ...(source !== undefined ? { source } : {}),
+        ...(mirrorBaseUrl !== undefined ? { mirrorBaseUrl } : {}),
       });
       return jsonSuccess(c, status);
     } catch (err) {

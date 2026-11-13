@@ -33,6 +33,7 @@ import {
   type KeyPolicy,
   type LibraryBook,
   type LibraryBookDetail,
+  type ModelDownloadSource,
   type OpenAiSynthOutput,
   type PlatformHost,
   type RemoteSpeechEngineId,
@@ -60,7 +61,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.2.0';
+export const CAPACITOR_HOST_VERSION = '0.2.1';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
@@ -437,7 +438,11 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
     },
     async download(
       id: SpeechModelId,
-      opts?: { readonly voices?: readonly string[] },
+      opts?: {
+        readonly voices?: readonly string[];
+        readonly source?: ModelDownloadSource;
+        readonly mirrorBaseUrl?: string | null;
+      },
     ): Promise<SpeechModelStatus> {
       const settings = await store.getSettings();
       const files = resolveManifestFilesForVariant(modelVariant, opts?.voices);
@@ -447,8 +452,14 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         modelVariant === 'coreml'
           ? KOKORO_MANIFEST.coreml.revision
           : KOKORO_MANIFEST.onnx.revision;
-      const sources = resolveModelSources(settings);
-      const allowHosts = resolveAllowedModelHosts(settings.modelMirrorBaseUrl);
+      const effectiveSource = opts?.source ?? settings.modelDownloadSource;
+      const effectiveMirrorBaseUrl =
+        opts?.mirrorBaseUrl !== undefined ? opts.mirrorBaseUrl : settings.modelMirrorBaseUrl;
+      const sources = resolveModelSources({
+        modelDownloadSource: effectiveSource,
+        modelMirrorBaseUrl: effectiveMirrorBaseUrl,
+      });
+      const allowHosts = resolveAllowedModelHosts(effectiveMirrorBaseUrl);
       void totalManifestBytesForVariant;
       return plugin.models.download({
         id,

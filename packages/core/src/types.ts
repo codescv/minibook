@@ -690,8 +690,15 @@ export interface SpeechModelStatus {
 
 export interface SpeechModelsApi {
   status(id: SpeechModelId): Promise<SpeechModelStatus>;
-  /** Start or resume (idempotent). Resolves once the job is accepted; progress arrives as HostEvent `'speech-model'`. */
-  download(id: SpeechModelId, opts?: { readonly voices?: readonly string[] }): Promise<SpeechModelStatus>;
+  /** Start or resume (idempotent unless source/mirror changes). Resolves once the job is accepted; progress arrives as HostEvent `'speech-model'`. */
+  download(
+    id: SpeechModelId,
+    opts?: {
+      readonly voices?: readonly string[];
+      readonly source?: ModelDownloadSource;
+      readonly mirrorBaseUrl?: string | null;
+    },
+  ): Promise<SpeechModelStatus>;
   /** Abort the transfer, KEEP `.part` files. */
   pause(id: SpeechModelId): Promise<SpeechModelStatus>;
   /** Unload the runtime and delete every file of the model including `.part`. */

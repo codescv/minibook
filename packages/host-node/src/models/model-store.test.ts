@@ -363,4 +363,156 @@ describe('ModelStore downloader, mirror fallback, HTTP 206 resume & SHA-256 veri
     expect(errStatus.state).toBe('error');
     expect(errStatus.error?.code).toBe('storage-full');
   });
+
+  it('switches from hf-mirror.com to huggingface.co mid-download and while paused without lastGoodSource pollution', async () => {
+    const modelBytes = makeFakeBytes(16 * 1024, 71);
+    const voiceBytes = makeFakeBytes(4 * 1024, 73);
+    const manifest = makeTestManifest(modelBytes, voiceBytes);
+    // Download voice first (completes from hf-mirror.com -> sets lastGoodSource!), then large model
+    const orderedManifest = [manifest[1]!, manifest[0]!];
+
+    const requests: Array<{ host: string; path: string; range?: string }> = [];
+    let mirrorChunk1Sent!: () => void;
+    let mirrorChunk1Promise = new Promise<void>((r) => {
+      mirrorChunk1Sent = r;
+    });
+    let allowMirrorFinish = false;
+
+    const fakeFetch: typeof fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+      const headers = new Headers(init?.headers);
+      const range = headers.get('range') ?? undefined;
+      requests.push({ host: url.hostname, path: url.pathname, ...(range ? { range } : {}) });
+
+      const payload = url.pathname.includes('model.onnx') ? modelBytes : voiceBytes;
+
+      // Mirror streams partial chunk for model.onnx and stalls until aborted!
+      if (url.hostname === 'hf-mirror.com' && url.pathname.includes('model.onnx') && !allowMirrorFinish) {
+        const chunk1 = payload.subarray(0, 4096);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(chunk1);
+            mirrorChunk1Sent();
+            init?.signal?.addEventListener('abort', () => {
+              try {
+                controller.error(new DOMException('Aborted', 'AbortError'));
+              } catch {
+                // ignore
+              }
+            });
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { 'Content-Length': String(payload.byteLength) },
+          }),
+        );
+      }
+
+      if (range) {
+        const m = /^bytes=(\d+)-$/.exec(range);
+        if (m) {
+          const start = Number.parseInt(m[1]!, 10);
+          return Promise.resolve(
+            new Response(Buffer.from(payload.subarray(start)), {
+              status: 206,
+              headers: {
+                'Content-Range': `bytes ${start}-${payload.byteLength - 1}/${payload.byteLength}`,
+                'Content-Length': String(payload.byteLength - start),
+              },
+            }),
+          );
+        }
+      }
+      return Promise.resolve(
+        new Response(Buffer.from(payload), {
+          status: 200,
+          headers: { 'Content-Length': String(payload.byteLength) },
+        }),
+      );
+    };
+
+    // 1) Live mid-download switch: Asia/Shanghai `auto` starts on `hf-mirror.com` (and completes voice on it),
+    //    then switching to `huggingface` mid-download MUST immediately abort hf-mirror.com and resume on huggingface.co!
+    settings = { ...DEFAULT_APP_SETTINGS, modelDownloadSource: 'auto' };
+    const store = new ModelStore({
+      dataDir: tempDir,
+      getSettings: () => settings,
+      emit: (e) => events.push(e),
+      fetchImpl: fakeFetch,
+      retryDelaysMs: [0],
+      sourceEnvForTests: { timeZone: 'Asia/Shanghai', locale: 'zh-CN' },
+      resolveFilesForTests: () => orderedManifest,
+      minFreeMarginBytes: 0,
+    });
+
+    const initialDl = await store.download(KOKORO_MODEL_ID, { voices: ['zf_001'] });
+    expect(initialDl.source).toBe('hf-mirror.com');
+    await mirrorChunk1Promise;
+    await new Promise((r) => setTimeout(r, 20));
+
+    const requestsBeforeSwitch = requests.length;
+    const eventsBeforeSwitch = events.length;
+    // Pass `source: 'huggingface'` directly BEFORE `settings` is even persisted (tests race-free override too!)
+    const switched = await store.download(KOKORO_MODEL_ID, {
+      voices: ['zf_001'],
+      source: 'huggingface',
+      mirrorBaseUrl: null,
+    });
+    expect(switched.state).toBe('downloading');
+    expect(switched.source).toBe('huggingface.co');
+
+    await store.waitForIdle();
+    const ready = store.status(KOKORO_MODEL_ID);
+    expect(ready.state).toBe('ready');
+    expect(ready.source).toBe('huggingface.co');
+
+    const postSwitchRequests = requests.slice(requestsBeforeSwitch);
+    expect(postSwitchRequests.some((r) => r.host === 'hf-mirror.com')).toBe(false);
+    expect(postSwitchRequests.some((r) => r.host === 'huggingface.co' && r.range === 'bytes=4096-')).toBe(true);
+    const postSwitchEvents = events
+      .slice(eventsBeforeSwitch)
+      .filter((e): e is Extract<HostEvent, { type: 'speech-model' }> => e.type === 'speech-model');
+    expect(postSwitchEvents.length).toBeGreaterThan(0);
+    expect(postSwitchEvents.every((e) => e.status.source === 'huggingface.co')).toBe(true);
+
+    // 2) Paused switch: complete voice on `hf-mirror.com` (`lastGoodSource` = hf-mirror.com), pause during model.onnx,
+    //    then resume with `source: 'huggingface'` -> MUST NOT emit or hit `hf-mirror.com`!
+    await store.remove(KOKORO_MODEL_ID);
+    requests.length = 0;
+    events.length = 0;
+    mirrorChunk1Promise = new Promise<void>((r) => {
+      mirrorChunk1Sent = r;
+    });
+    allowMirrorFinish = false;
+
+    await store.download(KOKORO_MODEL_ID, { voices: ['zf_001'], source: 'auto' });
+    await mirrorChunk1Promise;
+    await new Promise((r) => setTimeout(r, 20));
+    const paused = await store.pause(KOKORO_MODEL_ID);
+    expect(paused.state).toBe('paused');
+
+    const reqCountAtPause = requests.length;
+    const eventsAtPause = events.length;
+    const resumed = await store.download(KOKORO_MODEL_ID, {
+      voices: ['zf_001'],
+      source: 'huggingface',
+      mirrorBaseUrl: null,
+    });
+    expect(resumed.state).toBe('downloading');
+    expect(resumed.source).toBe('huggingface.co');
+
+    await store.waitForIdle();
+    expect(store.status(KOKORO_MODEL_ID).state).toBe('ready');
+    expect(store.status(KOKORO_MODEL_ID).source).toBe('huggingface.co');
+    expect(requests.slice(reqCountAtPause).some((r) => r.host === 'hf-mirror.com')).toBe(false);
+    expect(requests.slice(reqCountAtPause).some((r) => r.host === 'huggingface.co' && r.range === 'bytes=4096-')).toBe(
+      true,
+    );
+    const postResumeEvents = events
+      .slice(eventsAtPause)
+      .filter((e): e is Extract<HostEvent, { type: 'speech-model' }> => e.type === 'speech-model');
+    expect(postResumeEvents.every((e) => e.status.source === 'huggingface.co')).toBe(true);
+  });
 });

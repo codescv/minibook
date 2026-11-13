@@ -48,6 +48,7 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
   journalCheckpoint: SpeechJournalCheckpoint | null = null;
   lastHttpHeaders: Record<string, string> = {};
   lastHttpUrl = '';
+  lastModelDownloadSources: readonly string[] = [];
   httpStatusOverride = 200;
   httpBodyOverride: Uint8Array | null = null;
   httpContentTypeOverride = 'audio/mpeg';
@@ -328,7 +329,13 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
       installedVoices: [] as string[],
     };
   }
-  async modelDownload(opts: { id: 'kokoro-v1.1-zh'; variant: 'onnx-fp32' | 'onnx-q8' | 'coreml'; files: readonly { size: number }[] }) {
+  async modelDownload(opts: {
+    id: 'kokoro-v1.1-zh';
+    variant: 'onnx-fp32' | 'onnx-q8' | 'coreml';
+    files: readonly { size: number }[];
+    sources?: readonly string[];
+  }) {
+    this.lastModelDownloadSources = opts.sources ?? [];
     return {
       id: opts.id,
       state: 'downloading' as const,
@@ -826,6 +833,14 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
     const dlStatus = await host.speech.models!.download(KOKORO_MODEL_ID, { voices: ['zf_001'] });
     expect(dlStatus.variant).toBe('onnx-q8');
     expect(dlStatus.state).toBe('downloading');
+
+    await host.settings.update({ modelDownloadSource: 'hf-mirror' });
+    await host.speech.models!.download(KOKORO_MODEL_ID, {
+      voices: ['zf_001'],
+      source: 'huggingface',
+      mirrorBaseUrl: null,
+    });
+    expect(bridge.lastModelDownloadSources).toEqual(['https://huggingface.co']);
 
     unsubHost();
     unsubPlayer();

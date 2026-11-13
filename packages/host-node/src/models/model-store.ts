@@ -44,6 +44,7 @@ import {
   type HostEvent,
   type KokoroManifestFile,
   type MiniBookErrorShape,
+  type ModelDownloadSource,
   type ResolvedKokoroDownloadFile,
   type SpeechModelBackend,
   type SpeechModelId,
@@ -92,6 +93,7 @@ export interface ModelStoreOptions {
     voices: readonly string[],
   ) => ResolvedKokoroDownloadFile[];
   readonly sourcesOverrideForTests?: readonly string[];
+  readonly sourceEnvForTests?: { readonly timeZone?: string; readonly locale?: string };
 }
 
 function defaultGetFreeBytes(dir: string): number | null {
@@ -197,6 +199,9 @@ export class ModelStore {
     | ((variant: SpeechModelVariant, voices: readonly string[]) => ResolvedKokoroDownloadFile[])
     | undefined;
   private readonly sourcesOverrideForTests: readonly string[] | undefined;
+  private readonly sourceEnvForTests:
+    | { readonly timeZone?: string; readonly locale?: string }
+    | undefined;
 
   private statusState: SpeechModelStatus;
   private activeAbort: AbortController | null = null;
@@ -204,7 +209,9 @@ export class ModelStore {
   private jobGeneration = 0;
   private pauseRequested = false;
   private lastProgressEmitMs = 0;
-  private lastGoodSourceIdx = 0;
+  private lastGoodSource: string | null = null;
+  private activeSources: string[] = [];
+  private activeVariant: SpeechModelVariant = 'onnx-fp32';
   private requestedVoices = new Set<string>();
 
   constructor(options: ModelStoreOptions) {
@@ -223,6 +230,7 @@ export class ModelStore {
     this.extraAllowedHostsForTests = options.extraAllowedHostsForTests ?? [];
     this.resolveFilesForTests = options.resolveFilesForTests;
     this.sourcesOverrideForTests = options.sourcesOverrideForTests;
+    this.sourceEnvForTests = options.sourceEnvForTests;
 
     this.statusState = this.reconcileFromDisk();
   }
@@ -382,12 +390,70 @@ export class ModelStore {
       : resolveManifestFilesForVariant(variant, voices);
   }
 
+  private static sourcesEqual(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+
+  private static hostnameForUrl(base: string | undefined): string | undefined {
+    if (!base) return undefined;
+    try {
+      const host = new URL(base).hostname;
+      return host || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resolveSourcesAndAllowHosts(opts?: {
+    readonly source?: ModelDownloadSource;
+    readonly mirrorBaseUrl?: string | null;
+  }): { readonly sources: string[]; readonly allowHosts: string[] } {
+    const settings = this.getSettings();
+    const effectiveSettings = {
+      modelDownloadSource: opts?.source ?? settings.modelDownloadSource,
+      modelMirrorBaseUrl:
+        opts?.mirrorBaseUrl !== undefined ? opts.mirrorBaseUrl : settings.modelMirrorBaseUrl,
+    };
+    let sources = this.sourcesOverrideForTests
+      ? [...this.sourcesOverrideForTests]
+      : resolveModelSources(effectiveSettings, this.sourceEnvForTests);
+    if (
+      !this.sourcesOverrideForTests &&
+      this.allowInsecureHttpForTests &&
+      effectiveSettings.modelMirrorBaseUrl
+    ) {
+      const custom = effectiveSettings.modelMirrorBaseUrl.trim().replace(/\/+$/, '');
+      if (/^http:\/\//i.test(custom) && !sources.includes(custom)) {
+        sources = [custom, ...sources];
+      }
+    }
+    const allowHosts = [
+      ...resolveAllowedModelHosts(effectiveSettings.modelMirrorBaseUrl),
+      ...this.extraAllowedHostsForTests,
+    ];
+    if (this.allowInsecureHttpForTests && effectiveSettings.modelMirrorBaseUrl) {
+      try {
+        const h = new URL(effectiveSettings.modelMirrorBaseUrl).hostname.toLowerCase();
+        if (h && !allowHosts.includes(h)) allowHosts.push(h);
+      } catch {
+        // ignore
+      }
+    }
+    return { sources, allowHosts };
+  }
+
   async download(
     id: SpeechModelId,
-    opts?: { readonly variant?: SpeechModelVariant; readonly voices?: readonly string[] },
+    opts?: {
+      readonly variant?: SpeechModelVariant;
+      readonly voices?: readonly string[];
+      readonly source?: ModelDownloadSource;
+      readonly mirrorBaseUrl?: string | null;
+    },
   ): Promise<SpeechModelStatus> {
     this.assertSupportedModelId(id);
     const variant: SpeechModelVariant = opts?.variant === 'onnx-q8' ? 'onnx-q8' : 'onnx-fp32';
+    const { sources, allowHosts } = this.resolveSourcesAndAllowHosts(opts);
 
     const existingVoices = this.detectInstalledVoicesOnDisk();
     const voiceSet = new Set<string>(existingVoices);
@@ -398,11 +464,35 @@ export class ModelStore {
       }
     }
 
+    const sourcesChanged = !ModelStore.sourcesEqual(sources, this.activeSources);
+    let myGen: number | null = null;
+
     if (this.activeJobPromise && (this.statusState.state === 'downloading' || this.statusState.state === 'verifying')) {
       for (const v of voiceSet) {
         this.requestedVoices.add(v);
       }
-      return this.statusState;
+      if (!sourcesChanged && variant === this.activeVariant) {
+        return this.statusState;
+      }
+      // Sources (or variant) changed while active: interrupt current HTTP transfer, clear incompatible lastGoodSource,
+      // and launch a new generation from sources[0] while keeping verified files and `.part` progress.
+      myGen = ++this.jobGeneration;
+      this.pauseRequested = false;
+      this.activeAbort?.abort();
+      this.activeAbort = null;
+      const prevJob = this.activeJobPromise;
+      this.activeJobPromise = null;
+      await prevJob.catch(() => undefined);
+      if (this.jobGeneration !== myGen || this.pauseRequested) {
+        return this.statusState;
+      }
+      for (const v of this.requestedVoices) {
+        voiceSet.add(v);
+      }
+    }
+
+    if (sourcesChanged || (this.lastGoodSource && !sources.includes(this.lastGoodSource))) {
+      this.lastGoodSource = null;
     }
 
     this.requestedVoices = voiceSet;
@@ -451,10 +541,20 @@ export class ModelStore {
     }
 
     this.pauseRequested = false;
-    this.jobGeneration += 1;
-    const myGen = this.jobGeneration;
+    if (myGen === null) {
+      myGen = ++this.jobGeneration;
+    }
+    const gen = myGen;
     const controller = new AbortController();
     this.activeAbort = controller;
+    this.activeSources = [...sources];
+    this.activeVariant = variant;
+
+    const preferredBase =
+      this.lastGoodSource && sources.includes(this.lastGoodSource)
+        ? this.lastGoodSource
+        : sources[0];
+    const initialSourceHost = ModelStore.hostnameForUrl(preferredBase);
 
     this.statusState = {
       id: KOKORO_MODEL_ID,
@@ -464,11 +564,18 @@ export class ModelStore {
       bytesTotal,
       installedBytes: this.statusState.installedBytes,
       installedVoices: existingVoices,
+      ...(initialSourceHost ? { source: initialSourceHost } : {}),
     };
     this.emitStatusImmediate();
 
-    this.activeJobPromise = this.runDownloadLoop(myGen, variant, controller.signal).finally(() => {
-      if (this.jobGeneration === myGen) {
+    this.activeJobPromise = this.runDownloadLoop(
+      gen,
+      variant,
+      sources,
+      allowHosts,
+      controller.signal,
+    ).finally(() => {
+      if (this.jobGeneration === gen) {
         this.activeAbort = null;
         this.activeJobPromise = null;
       }
@@ -504,6 +611,8 @@ export class ModelStore {
     if (this.activeJobPromise) {
       await this.activeJobPromise.catch(() => undefined);
     }
+    this.lastGoodSource = null;
+    this.activeSources = [];
     rmSync(this.kokoroRoot, { recursive: true, force: true });
     this.statusState = this.reconcileFromDisk();
     this.emitStatusImmediate();
@@ -544,31 +653,11 @@ export class ModelStore {
   private async runDownloadLoop(
     myGen: number,
     variant: SpeechModelVariant,
+    sources: readonly string[],
+    allowHosts: readonly string[],
     signal: AbortSignal,
   ): Promise<void> {
     try {
-      const settings = this.getSettings();
-      let sources = this.sourcesOverrideForTests
-        ? [...this.sourcesOverrideForTests]
-        : resolveModelSources(settings);
-      if (!this.sourcesOverrideForTests && this.allowInsecureHttpForTests && settings.modelMirrorBaseUrl) {
-        const custom = settings.modelMirrorBaseUrl.trim().replace(/\/+$/, '');
-        if (/^http:\/\//i.test(custom) && !sources.includes(custom)) {
-          sources = [custom, ...sources];
-        }
-      }
-      const allowHosts = [
-        ...resolveAllowedModelHosts(settings.modelMirrorBaseUrl),
-        ...this.extraAllowedHostsForTests,
-      ];
-      if (this.allowInsecureHttpForTests && settings.modelMirrorBaseUrl) {
-        try {
-          const h = new URL(settings.modelMirrorBaseUrl).hostname.toLowerCase();
-          if (h && !allowHosts.includes(h)) allowHosts.push(h);
-        } catch {
-          // ignore
-        }
-      }
 
       const completedBytesByPath = new Map<string, number>();
       let lastSourceHost = this.statusState.source;
@@ -636,6 +725,7 @@ export class ModelStore {
           allowHosts,
           signal,
           onBytesProgress: (fileBytes) => {
+            if (signal.aborted || this.jobGeneration !== myGen) return;
             completedBytesByPath.set(nextFile.path, fileBytes);
             let sum = 0;
             for (const mf of manifestFiles) {
@@ -652,9 +742,11 @@ export class ModelStore {
             this.emitStatusThrottled();
           },
           onSourceUsed: (host) => {
+            if (signal.aborted || this.jobGeneration !== myGen) return;
             lastSourceHost = host;
           },
           onVerifying: () => {
+            if (signal.aborted || this.jobGeneration !== myGen) return;
             this.statusState = {
               ...this.statusState,
               state: 'verifying',
@@ -731,7 +823,15 @@ export class ModelStore {
     }
 
     let integrityRetried = false;
-    let startSourceOffset = this.lastGoodSourceIdx % Math.max(1, sources.length);
+    let startSourceOffset = 0;
+    if (this.lastGoodSource) {
+      const idx = sources.indexOf(this.lastGoodSource);
+      if (idx >= 0) {
+        startSourceOffset = idx;
+      } else {
+        this.lastGoodSource = null;
+      }
+    }
 
     while (true) {
       if (signal.aborted || this.jobGeneration !== params.myGen) {
@@ -763,6 +863,10 @@ export class ModelStore {
           const srcIdx = (startSourceOffset + i) % sources.length;
           const base = sources[srcIdx]!;
           const url = buildModelResolveUrl(base, file.repo, file.revision, file.path);
+          const baseHost = ModelStore.hostnameForUrl(base);
+          if (baseHost) {
+            params.onSourceUsed(baseHost);
+          }
 
           const attemptRes = await this.downloadFromSingleSource({
             url,
@@ -777,7 +881,7 @@ export class ModelStore {
 
           offset = attemptRes.offset;
           if (attemptRes.completed) {
-            this.lastGoodSourceIdx = srcIdx;
+            this.lastGoodSource = base;
             break;
           }
         }
@@ -811,6 +915,7 @@ export class ModelStore {
       }
       if (!integrityRetried) {
         integrityRetried = true;
+        this.lastGoodSource = null;
         // Rotate so the other mirror is tried first on integrity retry (`TTS_V2_SPEC.md` §3.3)
         if (sources.length > 1) {
           startSourceOffset = (startSourceOffset + 1) % sources.length;
@@ -870,7 +975,7 @@ export class ModelStore {
         for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
           const reqHeaders: Record<string, string> = {
             'Accept-Encoding': 'identity',
-            'User-Agent': 'MiniBook/0.2.0',
+            'User-Agent': 'MiniBook/0.2.1',
           };
           if (offset > 0) {
             reqHeaders['Range'] = `bytes=${offset}-`;

@@ -1,6 +1,6 @@
 {
   "name": "@minibook/host-node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MiniBook PC Web App runtime: pure Node.js loopback server (Hono, node:sqlite, HTTP 206 Range book & derived stream serving, Edge/OpenAI speech proxy) + browser REST PlatformHost.",
   "license": "MIT",
   "type": "module",

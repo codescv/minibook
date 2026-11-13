@@ -117,8 +117,10 @@ public final class ModelDownloadManager {
     private final AtomicInteger generation = new AtomicInteger(0);
     private JSONObject currentStatus;
     @Nullable private Call activeCall;
+    @Nullable private Thread activeWorkerThread;
+    private List<String> activeSources = Collections.emptyList();
     private volatile boolean activeDownloading = false;
-    private volatile int lastGoodSourceIdx = 0;
+    private volatile @Nullable String lastGoodSource = null;
     private long lastProgressEmitMs = 0L;
 
     public ModelDownloadManager(
@@ -194,16 +196,72 @@ public final class ModelDownloadManager {
         }
     }
 
+    private static List<String> normalizeSources(List<String> raw) {
+        List<String> out = new ArrayList<>(raw.size());
+        for (String s : raw) {
+            if (s == null) continue;
+            String trimmed = s.trim().replaceAll("/+$", "");
+            if (!trimmed.isEmpty() && !out.contains(trimmed)) {
+                out.add(trimmed);
+            }
+        }
+        return out;
+    }
+
+    @Nullable
+    private static String extractHost(@Nullable String baseUrl) {
+        if (baseUrl == null || baseUrl.isEmpty()) return null;
+        try {
+            HttpUrl parsed = HttpUrl.parse(baseUrl);
+            if (parsed != null && !parsed.host().isEmpty()) {
+                return parsed.host();
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
     public JSONObject startDownload(DownloadRequest req) {
         if (!KokoroModelStore.MODEL_ID.equals(req.id)) {
             throw new IllegalArgumentException("Unsupported speech model id: " + req.id);
         }
 
+        final List<String> normalizedSources = normalizeSources(req.sources);
+        Call callToCancel = null;
+        Thread prevWorker = null;
+        boolean switchedSources = false;
+
         synchronized (stateLock) {
             if (activeDownloading) {
-                return cloneJson(currentStatus);
+                if (normalizedSources.equals(activeSources)) {
+                    return cloneJson(currentStatus);
+                }
+                switchedSources = true;
+                generation.incrementAndGet();
+                activeDownloading = false;
+                callToCancel = activeCall;
+                activeCall = null;
+                prevWorker = activeWorkerThread;
+            } else if (!normalizedSources.equals(activeSources)) {
+                switchedSources = true;
             }
         }
+
+        if (callToCancel != null) {
+            callToCancel.cancel();
+        }
+        if (prevWorker != null && prevWorker != Thread.currentThread()) {
+            prevWorker.interrupt();
+        }
+
+        String good = lastGoodSource;
+        if (good != null && (switchedSources || !normalizedSources.contains(good))) {
+            lastGoodSource = null;
+        }
+        String preferredSource =
+            (lastGoodSource != null && normalizedSources.contains(lastGoodSource))
+                ? lastGoodSource
+                : (normalizedSources.isEmpty() ? null : normalizedSources.get(0));
+        String initialHost = extractHost(preferredSource);
 
         // Merge any already-installed files/voices from installed.json so adding extra voices preserves existing ones
         List<FileSpec> mergedFiles = mergeWithInstalledFiles(req);
@@ -244,7 +302,7 @@ public final class ModelDownloadManager {
                 bytesTotal,
                 0L,
                 new JSONArray(store.detectInstalledVoicesOnDisk()),
-                null,
+                initialHost,
                 null,
                 null,
                 KokoroModelStore.makeErrorJson(
@@ -267,13 +325,14 @@ public final class ModelDownloadManager {
             bytesTotal,
             0L,
             new JSONArray(store.detectInstalledVoicesOnDisk()),
-            null,
+            initialHost,
             null,
             null,
             null
         );
         synchronized (stateLock) {
             activeDownloading = true;
+            activeSources = Collections.unmodifiableList(new ArrayList<>(normalizedSources));
             currentStatus = initial;
         }
         emitImmediate(initial);
@@ -282,10 +341,10 @@ public final class ModelDownloadManager {
             req.id,
             req.variant,
             mergedFiles,
-            req.sources,
+            normalizedSources,
             req.allowHosts
         );
-        executor.execute(() -> runDownloadJob(myGen, mergedReq));
+        executor.execute(() -> runDownloadJob(myGen, mergedReq, initialHost));
         return cloneJson(initial);
     }
 
@@ -295,13 +354,19 @@ public final class ModelDownloadManager {
         }
         generation.incrementAndGet();
         Call callToCancel;
+        Thread prevWorker;
         synchronized (stateLock) {
             activeDownloading = false;
+            activeSources = Collections.emptyList();
             callToCancel = activeCall;
             activeCall = null;
+            prevWorker = activeWorkerThread;
         }
         if (callToCancel != null) {
             callToCancel.cancel();
+        }
+        if (prevWorker != null && prevWorker != Thread.currentThread()) {
+            prevWorker.interrupt();
         }
 
         JSONObject reconciled = store.buildReconciledStatus(null, 0.0, null);
@@ -323,13 +388,20 @@ public final class ModelDownloadManager {
         }
         generation.incrementAndGet();
         Call callToCancel;
+        Thread prevWorker;
         synchronized (stateLock) {
             activeDownloading = false;
+            activeSources = Collections.emptyList();
+            lastGoodSource = null;
             callToCancel = activeCall;
             activeCall = null;
+            prevWorker = activeWorkerThread;
         }
         if (callToCancel != null) {
             callToCancel.cancel();
+        }
+        if (prevWorker != null && prevWorker != Thread.currentThread()) {
+            prevWorker.interrupt();
         }
         if (onBeforeRemove != null) {
             try {
@@ -422,7 +494,11 @@ public final class ModelDownloadManager {
         return false;
     }
 
-    private void runDownloadJob(int myGen, DownloadRequest req) {
+    private void runDownloadJob(int myGen, DownloadRequest req, @Nullable String initialHost) {
+        synchronized (stateLock) {
+            if (generation.get() != myGen) return;
+            activeWorkerThread = Thread.currentThread();
+        }
         PowerManager.WakeLock wakeLock = null;
         WifiManager.WifiLock wifiLock = null;
         if (appContext != null) {
@@ -459,7 +535,7 @@ public final class ModelDownloadManager {
                 }
             }
 
-            final String[] lastSourceHost = { null };
+            final String[] lastSourceHost = { initialHost };
 
             for (FileSpec f : req.files) {
                 if (generation.get() != myGen) return;
@@ -478,7 +554,16 @@ public final class ModelDownloadManager {
                 }
 
                 boolean integrityRetried = false;
-                int startSrcOffset = lastGoodSourceIdx % Math.max(1, req.sources.size());
+                int startSrcOffset = 0;
+                String good = lastGoodSource;
+                if (good != null) {
+                    int idx = req.sources.indexOf(good);
+                    if (idx >= 0) {
+                        startSrcOffset = idx;
+                    } else {
+                        lastGoodSource = null;
+                    }
+                }
 
                 while (true) {
                     if (generation.get() != myGen) return;
@@ -504,10 +589,8 @@ public final class ModelDownloadManager {
                             int srcIdx = (startSrcOffset + i) % req.sources.size();
                             String base = req.sources.get(srcIdx).replaceAll("/+$", "");
                             String url = base + "/" + f.repo + "/resolve/" + f.revision + "/" + f.path;
-                            try {
-                                HttpUrl parsed = HttpUrl.parse(base);
-                                if (parsed != null) lastSourceHost[0] = parsed.host();
-                            } catch (Exception ignored) {}
+                            String host = extractHost(base);
+                            if (host != null) lastSourceHost[0] = host;
 
                             long finalTotalBytes = totalBytes;
                             offset = downloadSingleSource(
@@ -518,6 +601,7 @@ public final class ModelDownloadManager {
                                 f.size,
                                 myGen,
                                 fileBytes -> {
+                                    if (generation.get() != myGen) return;
                                     bytesByPath.put(f.path, fileBytes);
                                     long doneSum = 0L;
                                     for (long v : bytesByPath.values()) doneSum += v;
@@ -534,13 +618,15 @@ public final class ModelDownloadManager {
                                         null
                                     );
                                     synchronized (stateLock) {
+                                        if (generation.get() != myGen) return;
                                         currentStatus = st;
                                     }
                                     emitThrottled(st);
                                 }
                             );
+                            if (generation.get() != myGen) return;
                             if (offset == f.size) {
-                                lastGoodSourceIdx = srcIdx;
+                                lastGoodSource = base;
                                 break;
                             }
                         }
@@ -582,6 +668,7 @@ public final class ModelDownloadManager {
                     emitImmediate(verifying);
 
                     String sha = computeSha256(partFile);
+                    if (generation.get() != myGen) return;
                     if (sha.equalsIgnoreCase(f.sha256)) {
                         AtomicFiles.moveAtomically(partFile, finalFile);
                         bytesByPath.put(f.path, f.size);
@@ -594,6 +681,7 @@ public final class ModelDownloadManager {
                     bytesByPath.put(f.path, 0L);
                     if (!integrityRetried) {
                         integrityRetried = true;
+                        lastGoodSource = null;
                         if (req.sources.size() > 1) {
                             startSrcOffset = (startSrcOffset + 1) % req.sources.size();
                         }
@@ -651,7 +739,9 @@ public final class ModelDownloadManager {
                 null
             );
             synchronized (stateLock) {
+                if (generation.get() != myGen) return;
                 activeDownloading = false;
+                activeSources = Collections.emptyList();
                 currentStatus = ready;
             }
             emitImmediate(ready);
@@ -669,10 +759,15 @@ public final class ModelDownloadManager {
                 e.getMessage() != null ? e.getMessage() : "Model download failed"
             );
         } finally {
+            Thread.interrupted();
             synchronized (stateLock) {
+                if (activeWorkerThread == Thread.currentThread()) {
+                    activeWorkerThread = null;
+                }
                 if (generation.get() == myGen) {
                     activeDownloading = false;
                     activeCall = null;
+                    activeSources = Collections.emptyList();
                 }
             }
             if (wifiLock != null && wifiLock.isHeld()) {
@@ -705,7 +800,7 @@ public final class ModelDownloadManager {
             Request.Builder rb = new Request.Builder()
                 .url(url)
                 .header("Accept-Encoding", "identity")
-                .header("User-Agent", "MiniBook/0.2.0");
+                .header("User-Agent", "MiniBook/0.2.1");
             if (offset > 0L) {
                 rb.header("Range", "bytes=" + offset + "-");
             }

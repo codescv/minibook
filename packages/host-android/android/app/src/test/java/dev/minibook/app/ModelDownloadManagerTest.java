@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import okhttp3.mockwebserver.Dispatcher;
 import okhttp3.mockwebserver.MockResponse;
@@ -315,5 +316,190 @@ public class ModelDownloadManagerTest {
         assertEquals("error", fullStatus.optString("state"));
         assertEquals("storage-full", fullStatus.getJSONObject("error").optString("code"));
         tightMgr.shutdown();
+    }
+
+    @Test
+    public void switchesSourceMidDownloadAndWhilePausedWithoutLastGoodSourcePollution() throws Exception {
+        byte[] voiceBytes = makeBytes(4 * 1024, 31);
+        byte[] modelBytes = makeBytes(32 * 1024, 37);
+        String voiceSha = sha256(voiceBytes);
+        String modelSha = sha256(modelBytes);
+
+        List<ModelDownloadManager.FileSpec> files = Arrays.asList(
+            new ModelDownloadManager.FileSpec("voices/zf_001.bin", voiceBytes.length, voiceSha, "repo", "rev1"),
+            new ModelDownloadManager.FileSpec("onnx/model_quantized.onnx", modelBytes.length, modelSha, "repo", "rev1")
+        );
+
+        MockWebServer mirrorSrv = newServer();
+        MockWebServer hfSrv = newServer();
+
+        AtomicInteger mirrorRequests = new AtomicInteger(0);
+        AtomicInteger hfRequests = new AtomicInteger(0);
+        List<String> hfRanges = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean blockMirrorModel = new AtomicBoolean(true);
+        CountDownLatch mirrorChunkSent = new CountDownLatch(1);
+        CountDownLatch releaseMirror = new CountDownLatch(1);
+
+        mirrorSrv.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                mirrorRequests.incrementAndGet();
+                if (request.getPath().contains("zf_001.bin")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(voiceBytes));
+                }
+                if (blockMirrorModel.get()) {
+                    Buffer partial = new Buffer().write(modelBytes, 0, 8192);
+                    mirrorChunkSent.countDown();
+                    try {
+                        releaseMirror.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException ignored) {}
+                    return new MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Length", String.valueOf(modelBytes.length))
+                        .throttleBody(1024, 1, TimeUnit.SECONDS)
+                        .setBody(partial);
+                }
+                return new MockResponse().setResponseCode(200).setBody(new Buffer().write(modelBytes));
+            }
+        });
+
+        hfSrv.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                hfRequests.incrementAndGet();
+                byte[] payload = request.getPath().contains("zf_001.bin") ? voiceBytes : modelBytes;
+                String range = request.getHeader("Range");
+                if (range != null && range.startsWith("bytes=")) {
+                    hfRanges.add(range);
+                    int start = Integer.parseInt(range.substring(6, range.length() - 1));
+                    return new MockResponse()
+                        .setResponseCode(206)
+                        .setHeader("Content-Range", "bytes " + start + "-" + (payload.length - 1) + "/" + payload.length)
+                        .setBody(new Buffer().write(payload, start, payload.length - start));
+                }
+                return new MockResponse().setResponseCode(200).setBody(new Buffer().write(payload));
+            }
+        });
+
+        String mirrorBase = "http://localhost:" + mirrorSrv.getPort();
+        String hfBase = "http://127.0.0.1:" + hfSrv.getPort();
+
+        List<JSONObject> events = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch readyLatch = new CountDownLatch(1);
+        ModelDownloadManager mgr = new ModelDownloadManager(
+            null,
+            store,
+            st -> {
+                events.add(st);
+                if ("ready".equals(st.optString("state"))) {
+                    readyLatch.countDown();
+                }
+            },
+            null,
+            new long[] { 0L, 5L },
+            2_000,
+            2_000,
+            0L,
+            dir -> 100_000_000L,
+            true
+        );
+
+        // 1) Live mid-download switch: start on [mirror (localhost), hf (127.0.0.1)].
+        //    voiceBytes completes from mirror (`lastGoodSource` = mirrorBase), then model hangs on mirror.
+        JSONObject startSt = mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            files,
+            Arrays.asList(mirrorBase, hfBase),
+            Arrays.asList("localhost", "127.0.0.1")
+        ));
+        assertEquals("localhost", startSt.optString("source"));
+        assertTrue("Mirror should receive model request", mirrorChunkSent.await(3, TimeUnit.SECONDS));
+
+        // Unblock mock response thread when OkHttp cancels call, wait briefly, then switch to [hfBase] only
+        int mirrorCountBeforeSwitch = mirrorRequests.get();
+        int eventsBeforeSwitch = events.size();
+        releaseMirror.countDown();
+
+        JSONObject switched = mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            files,
+            Collections.singletonList(hfBase),
+            Arrays.asList("localhost", "127.0.0.1")
+        ));
+        assertEquals("downloading", switched.optString("state"));
+        assertEquals("127.0.0.1", switched.optString("source"));
+
+        assertTrue("Switched download should reach ready", readyLatch.await(5, TimeUnit.SECONDS));
+        assertEquals("127.0.0.1", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("source"));
+        assertEquals("Zero requests may go to mirror after live switch", mirrorCountBeforeSwitch, mirrorRequests.get());
+        assertTrue("HF server must receive request", hfRequests.get() >= 1);
+        for (int i = eventsBeforeSwitch; i < events.size(); i++) {
+            assertEquals("127.0.0.1", events.get(i).optString("source"));
+        }
+
+        // 2) Paused switch: complete voice on mirror (`lastGoodSource` = mirrorBase), pause during model,
+        //    then call startDownload with [hfBase] -> MUST immediately report 127.0.0.1 and hit 0 mirror requests!
+        mgr.remove(KokoroModelStore.MODEL_ID);
+        mirrorRequests.set(0);
+        hfRequests.set(0);
+        events.clear();
+
+        CountDownLatch mirrorChunk2 = new CountDownLatch(1);
+        CountDownLatch releaseMirror2 = new CountDownLatch(1);
+        mirrorSrv.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                mirrorRequests.incrementAndGet();
+                if (request.getPath().contains("zf_001.bin")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(voiceBytes));
+                }
+                mirrorChunk2.countDown();
+                try {
+                    releaseMirror2.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {}
+                return new MockResponse().setResponseCode(503);
+            }
+        });
+
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            files,
+            Arrays.asList(mirrorBase, hfBase),
+            Arrays.asList("localhost", "127.0.0.1")
+        ));
+        assertTrue(mirrorChunk2.await(3, TimeUnit.SECONDS));
+        releaseMirror2.countDown();
+        mgr.pause(KokoroModelStore.MODEL_ID);
+
+        int mirrorAtPause = mirrorRequests.get();
+        int eventsAtPause = events.size();
+        // Resume in-process where `lastGoodSource` was `mirrorBase`
+        JSONObject pausedResume = mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            files,
+            Collections.singletonList(hfBase),
+            Arrays.asList("localhost", "127.0.0.1")
+        ));
+        assertEquals("downloading", pausedResume.optString("state"));
+        assertEquals("127.0.0.1", pausedResume.optString("source"));
+
+        // Wait via status poll on mgr
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while (System.currentTimeMillis() < deadline) {
+            if ("ready".equals(mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"))) break;
+            Thread.sleep(20L);
+        }
+        assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
+        assertEquals("127.0.0.1", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("source"));
+        assertEquals(mirrorAtPause, mirrorRequests.get());
+        for (int i = eventsAtPause; i < events.size(); i++) {
+            assertEquals("127.0.0.1", events.get(i).optString("source"));
+        }
+
+        mgr.shutdown();
     }
 }
