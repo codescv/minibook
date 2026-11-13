@@ -6,7 +6,10 @@ import {
   type AppSettings,
   type BookmarkInput,
   type SavedPosition,
+  type SpeechModelId,
+  type SpeechModelVariant,
   type SynthRequest,
+  type WordMark,
 } from '@minibook/core';
 import { Hono, type Context } from 'hono';
 import type { CommitImportRequestWire } from '../../shared/routes.js';
@@ -322,6 +325,7 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
       return jsonSuccess(c, {
         booksBytes: ctx.storage.totalBooksBytes(),
         speechCacheBytes: ctx.synth.cacheSize(),
+        modelsBytes: ctx.models.totalBytes(),
       });
     } catch (err) {
       return jsonFailure(c, err);
@@ -383,6 +387,61 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
     });
   });
 
+  api.post('/speech/cache', async (c) => {
+    try {
+      const body = (await c.req.json()) as {
+        readonly key?: unknown;
+        readonly mime?: unknown;
+        readonly durationMs?: unknown;
+        readonly marks?: unknown;
+        readonly audioBase64?: unknown;
+      };
+      const key = typeof body?.key === 'string' ? body.key.trim() : '';
+      if (!/^[a-f0-9]{16,64}$/i.test(key)) {
+        throw new MiniBookError('invalid-argument', 'Invalid speech cache key');
+      }
+      const mime = body?.mime === 'audio/wav' || body?.mime === 'audio/mpeg' ? body.mime : null;
+      if (!mime) {
+        throw new MiniBookError('invalid-argument', 'Speech cache mime must be audio/wav or audio/mpeg');
+      }
+      if (typeof body?.audioBase64 !== 'string' || body.audioBase64.length === 0) {
+        throw new MiniBookError('invalid-argument', 'audioBase64 is required');
+      }
+      const audio = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
+      const MAX_CLIENT_AUDIO_BYTES = 32 * 1024 * 1024;
+      if (audio.byteLength === 0 || audio.byteLength > MAX_CLIENT_AUDIO_BYTES) {
+        throw new MiniBookError(
+          audio.byteLength === 0 ? 'invalid-argument' : 'too-large',
+          `Speech audio must be 1..${MAX_CLIENT_AUDIO_BYTES} bytes`,
+        );
+      }
+      const durationMs =
+        typeof body.durationMs === 'number' && Number.isFinite(body.durationMs)
+          ? body.durationMs
+          : undefined;
+      const marks = Array.isArray(body.marks) ? (body.marks as readonly WordMark[]) : undefined;
+
+      const stored = ctx.synth.putCachedAudio({
+        key,
+        audio,
+        mime,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(marks !== undefined ? { marks } : {}),
+      });
+      return jsonSuccess(c, {
+        ref: `/api/speech/audio/${stored.key}`,
+        mime: stored.mime,
+        ...(stored.durationMs !== undefined ? { durationMs: stored.durationMs } : {}),
+        ...(stored.marks !== undefined ? { marks: stored.marks } : {}),
+        synthMs: 0,
+        bytes: stored.bytes,
+        cached: false,
+      });
+    } catch (err) {
+      return jsonFailure(c, err);
+    }
+  });
+
   api.delete('/speech/cache', (c) => {
     try {
       ctx.synth.clearCache();
@@ -398,6 +457,91 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
     } catch (err) {
       return jsonFailure(c, err);
     }
+  });
+
+  // --- On-device neural speech models (`/api/models/*`) ---
+  api.get('/models/:id', (c) => {
+    try {
+      const id = c.req.param('id') as SpeechModelId;
+      return jsonSuccess(c, ctx.models.status(id));
+    } catch (err) {
+      return jsonFailure(c, err);
+    }
+  });
+
+  api.post('/models/:id/download', async (c) => {
+    try {
+      const id = c.req.param('id') as SpeechModelId;
+      const body = (await c.req.json().catch(() => ({}))) as {
+        readonly variant?: unknown;
+        readonly voices?: unknown;
+      };
+      const variant: SpeechModelVariant | undefined =
+        body?.variant === 'onnx-fp32' || body?.variant === 'onnx-q8' ? body.variant : undefined;
+      const voices = Array.isArray(body?.voices)
+        ? body.voices.filter((v): v is string => typeof v === 'string')
+        : undefined;
+      const status = await ctx.models.download(id, {
+        ...(variant !== undefined ? { variant } : {}),
+        ...(voices !== undefined ? { voices } : {}),
+      });
+      return jsonSuccess(c, status);
+    } catch (err) {
+      return jsonFailure(c, err);
+    }
+  });
+
+  api.post('/models/:id/pause', async (c) => {
+    try {
+      const id = c.req.param('id') as SpeechModelId;
+      return jsonSuccess(c, await ctx.models.pause(id));
+    } catch (err) {
+      return jsonFailure(c, err);
+    }
+  });
+
+  api.delete('/models/:id', async (c) => {
+    try {
+      const id = c.req.param('id') as SpeechModelId;
+      await ctx.models.remove(id);
+      return jsonSuccess(c, null);
+    } catch (err) {
+      return jsonFailure(c, err);
+    }
+  });
+
+  api.on(['GET', 'HEAD'], '/models/:id/file/*', (c) => {
+    const id = c.req.param('id') as SpeechModelId;
+    const reqPath = new URL(c.req.url, 'http://127.0.0.1').pathname;
+    const marker = '/file/';
+    const idx = reqPath.indexOf(marker);
+    if (idx < 0) {
+      return new Response('Model file not found', { status: 404 });
+    }
+    let relPath: string;
+    try {
+      relPath = decodeURIComponent(reqPath.slice(idx + marker.length));
+    } catch {
+      return new Response('Invalid path encoding', { status: 400 });
+    }
+    let filePath: string | null = null;
+    try {
+      filePath = ctx.models.resolveModelFilePath(id, relPath);
+    } catch {
+      return new Response('Invalid model id', { status: 400 });
+    }
+    if (!filePath) {
+      return new Response('Model file not found', { status: 404 });
+    }
+    return serveFileWithRange({
+      method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
+      filePath,
+      rangeHeader: c.req.header('range'),
+      ifNoneMatchHeader: c.req.header('if-none-match'),
+      contentType: 'application/octet-stream',
+      etagSeed: `model-${id}-${relPath}`,
+      cacheControl: 'private, max-age=31536000, immutable',
+    });
   });
 
   return api;

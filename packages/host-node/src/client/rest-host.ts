@@ -4,6 +4,7 @@
  */
 import {
   MiniBookError,
+  computeSpeechCacheKey,
   type AppSettings,
   type BookId,
   type Bookmark,
@@ -20,6 +21,8 @@ import {
   type PlatformHost,
   type RemoteSpeechEngineId,
   type SavedPosition,
+  type SpeechModelBackend,
+  type SpeechModelStatus,
   type StorageUsage,
   type SynthRequest,
   type SynthResult,
@@ -40,12 +43,14 @@ import {
 } from './byte-source.js';
 import { HostEventStream } from './events.js';
 import { RestJsonClient, type RestClientConfig } from './http.js';
+import { KokoroWebEngine, type KokoroWorkerLike } from './kokoro/kokoro-web-engine.js';
 
 const UPLOAD_CHUNK_BYTES = 1024 * 1024;
 
 export interface CreateRestPlatformHostOptions extends RestClientConfig {
   readonly initialInfo?: HostInfo;
   readonly enableSse?: boolean;
+  readonly kokoroWorkerFactory?: () => KokoroWorkerLike;
 }
 
 async function readAllFromByteSource(src: ByteSource): Promise<Uint8Array> {
@@ -98,6 +103,58 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
     },
   };
 
+  let lastKnownBackend: SpeechModelBackend | undefined;
+  let lastKnownRtf: number | undefined;
+  let lastSelfTestError: MiniBookError | null = null;
+  const localModelListeners = new Set<(event: HostEvent) => void>();
+
+  const kokoroEngine = new KokoroWebEngine({
+    baseUrl: client.baseUrl,
+    ...(options?.kokoroWorkerFactory ? { workerFactory: options.kokoroWorkerFactory } : {}),
+    onTelemetry: ({ backend, rtf }) => {
+      lastKnownBackend = backend;
+      if (rtf !== undefined) lastKnownRtf = rtf;
+      void modelsApi
+        .status('kokoro-v1.1-zh')
+        .then((s) => {
+          for (const l of localModelListeners) {
+            try {
+              l({ type: 'speech-model', status: s });
+            } catch {
+              // ignore
+            }
+          }
+        })
+        .catch(() => undefined);
+    },
+    onSelfTestError: (err) => {
+      lastSelfTestError = err;
+      void modelsApi
+        .status('kokoro-v1.1-zh')
+        .then((s) => {
+          for (const l of localModelListeners) {
+            try {
+              l({ type: 'speech-model', status: s });
+            } catch {
+              // ignore
+            }
+          }
+        })
+        .catch(() => undefined);
+    },
+  });
+
+  function enrichModelStatus(status: SpeechModelStatus): SpeechModelStatus {
+    return {
+      ...status,
+      ...(lastKnownBackend !== undefined && !status.backend ? { backend: lastKnownBackend } : {}),
+      ...(lastKnownRtf !== undefined && status.rtf === undefined ? { rtf: lastKnownRtf } : {}),
+      ...(lastSelfTestError && status.state === 'ready'
+        ? { state: 'error' as const, error: lastSelfTestError.toShape() }
+        : {}),
+    };
+  }
+
   if (!options?.initialInfo) {
     void client
       .request<HostInfo>(ROUTES.info.method, ROUTES.info.path)
@@ -115,10 +172,43 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
     }
   }
 
+  const modelsApi = {
+    async status(id: 'kokoro-v1.1-zh') {
+      const s = await client.request<SpeechModelStatus>('GET', `/api/models/${encodeURIComponent(id)}`);
+      return enrichModelStatus(s);
+    },
+    async download(id: 'kokoro-v1.1-zh', opts?: { readonly voices?: readonly string[] }) {
+      lastSelfTestError = null;
+      const s = await client.request<SpeechModelStatus>(
+        'POST',
+        `/api/models/${encodeURIComponent(id)}/download`,
+        {
+          body: { variant: 'onnx-fp32', ...(opts?.voices ? { voices: opts.voices } : {}) },
+        },
+      );
+      return enrichModelStatus(s);
+    },
+    async pause(id: 'kokoro-v1.1-zh') {
+      const s = await client.request<SpeechModelStatus>(
+        'POST',
+        `/api/models/${encodeURIComponent(id)}/pause`,
+      );
+      return enrichModelStatus(s);
+    },
+    async remove(id: 'kokoro-v1.1-zh') {
+      kokoroEngine.dispose();
+      lastKnownBackend = undefined;
+      lastKnownRtf = undefined;
+      lastSelfTestError = null;
+      await client.request<null>('DELETE', `/api/models/${encodeURIComponent(id)}`);
+    },
+  };
+
   return {
     get info(): HostInfo {
       return currentInfo;
     },
+    models: modelsApi,
 
     library: {
       async list(): Promise<LibraryBook[]> {
@@ -380,6 +470,76 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
     speech: {
       async synthesize(req: SynthRequest, signal?: AbortSignal): Promise<SynthResult> {
+        if (req.engine === 'kokoro') {
+          if (!req.phonemeIds || req.phonemeIds.length === 0) {
+            throw new MiniBookError('invalid-argument', 'Kokoro synthesis requires phonemeIds');
+          }
+          const key = await computeSpeechCacheKey({
+            engine: 'kokoro',
+            voiceId: req.voiceId,
+            variant: 'onnx-fp32',
+            text: req.text,
+          });
+          const audioPath = `/api/speech/audio/${key}`;
+          const audioUrl = client.resolveUrl(audioPath);
+          try {
+            const headResp = await client.fetchImpl(audioUrl, {
+              method: 'HEAD',
+              ...(signal ? { signal } : {}),
+            });
+            if (headResp.ok) {
+              const len = Number.parseInt(headResp.headers.get('content-length') ?? '0', 10);
+              return {
+                ref: audioUrl,
+                mime: headResp.headers.get('content-type') || 'audio/wav',
+                synthMs: 0,
+                bytes: Number.isFinite(len) ? len : 0,
+                cached: true,
+              };
+            }
+          } catch (err) {
+            if (signal?.aborted) {
+              throw MiniBookError.wrap(err, 'cancelled');
+            }
+          }
+
+          const out = await kokoroEngine.synthesize(
+            {
+              voiceId: req.voiceId,
+              text: req.text,
+              phonemeIds: req.phonemeIds,
+              ...(req.phonemeSpeeds !== undefined ? { phonemeSpeeds: req.phonemeSpeeds } : {}),
+              ...(req.phonemeSpans !== undefined ? { phonemeSpans: req.phonemeSpans } : {}),
+            },
+            signal,
+          );
+
+          const cached = await client.request<SynthResult>(
+            ROUTES.speechCachePut.method,
+            ROUTES.speechCachePut.path,
+            {
+              body: {
+                key,
+                mime: 'audio/wav',
+                durationMs: out.durationMs,
+                ...(out.marks.length > 0 ? { marks: out.marks } : {}),
+                audioBase64: bytesToBase64(out.wav),
+              },
+              ...(signal ? { signal } : {}),
+            },
+          );
+          const resolvedRef =
+            cached.ref.startsWith('/') && client.baseUrl
+              ? `${client.baseUrl}${cached.ref}`
+              : cached.ref;
+          return {
+            ...cached,
+            ref: resolvedRef,
+            synthMs: out.synthMs,
+            cached: false,
+          };
+        }
+
         const res = await client.request<SynthResult>(
           ROUTES.speechSynthesize.method,
           ROUTES.speechSynthesize.path,
@@ -411,22 +571,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
         return res.bytes;
       },
 
-      models: {
-        status(id) {
-          return client.request('GET', `/api/models/${encodeURIComponent(id)}`);
-        },
-        download(id, opts) {
-          return client.request('POST', `/api/models/${encodeURIComponent(id)}/download`, {
-            body: { variant: 'onnx-fp32', ...(opts?.voices ? { voices: opts.voices } : {}) },
-          });
-        },
-        pause(id) {
-          return client.request('POST', `/api/models/${encodeURIComponent(id)}/pause`);
-        },
-        async remove(id) {
-          await client.request<null>('DELETE', `/api/models/${encodeURIComponent(id)}`);
-        },
-      },
+      models: modelsApi,
     },
 
     device: {
@@ -446,7 +591,18 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
     },
 
     subscribe(listener: (event: HostEvent) => void): Unsubscribe {
-      return events.subscribe(listener);
+      localModelListeners.add(listener);
+      const unsubSse = events.subscribe((ev) => {
+        if (ev.type === 'speech-model') {
+          listener({ type: 'speech-model', status: enrichModelStatus(ev.status) });
+        } else {
+          listener(ev);
+        }
+      });
+      return () => {
+        localModelListeners.delete(listener);
+        unsubSse();
+      };
     },
   };
 }

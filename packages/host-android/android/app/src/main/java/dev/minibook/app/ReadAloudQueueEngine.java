@@ -18,7 +18,13 @@ import org.json.JSONObject;
 public final class ReadAloudQueueEngine {
     public static final long ONLINE_FALLBACK_TIMEOUT_MS = 8_000L;
     public static final long OFFLINE_FALLBACK_TIMEOUT_MS = 2_000L;
+    public static final long LOCAL_SYNTH_FALLBACK_TIMEOUT_MS = 8_000L;
     public static final int QUEUE_LOW_THRESHOLD = 20;
+
+    public interface LocalSynth {
+        void onPlan(List<UtteranceItem> queue, int currentIndex, VoiceSpec voice, int generation);
+        void cancelAll();
+    }
 
     public interface CancelToken {
         void cancel();
@@ -72,7 +78,7 @@ public final class ReadAloudQueueEngine {
     }
 
     public static final class VoiceSpec {
-        public final String kind; // "system" | "edge" | "openai"
+        public final String kind; // "system" | "edge" | "openai" | "qwen" | "kokoro"
         @Nullable public final String voiceId;
         @Nullable public final String engine;
         @Nullable public final String model;
@@ -113,10 +119,24 @@ public final class ReadAloudQueueEngine {
             if ("system".equals(kind) && engine != null) {
                 putJson(obj, "engine", engine);
             }
-            if ("openai".equals(kind) && model != null) {
+            if (("openai".equals(kind) || "qwen".equals(kind)) && model != null) {
                 putJson(obj, "model", model);
             }
             return obj;
+        }
+    }
+
+    public static final class KokoroWordSpanSpec {
+        public final int t0;
+        public final int t1;
+        public final int c0;
+        public final int c1;
+
+        public KokoroWordSpanSpec(int t0, int t1, int c0, int c1) {
+            this.t0 = t0;
+            this.t1 = t1;
+            this.c0 = c0;
+            this.c1 = c1;
         }
     }
 
@@ -153,6 +173,9 @@ public final class ReadAloudQueueEngine {
         public final String text;
         public final String lang;
         public final long pauseAfterMs;
+        @Nullable public final long[][] phonemeIds;
+        @Nullable public final float[] phonemeSpeeds;
+        @Nullable public final List<List<KokoroWordSpanSpec>> phonemeSpans;
         @Nullable public AttachedAudioSpec audio;
 
         public UtteranceItem(
@@ -165,6 +188,22 @@ public final class ReadAloudQueueEngine {
             String lang,
             long pauseAfterMs
         ) {
+            this(id, section, start, end, blockIndex, text, lang, pauseAfterMs, null, null, null);
+        }
+
+        public UtteranceItem(
+            String id,
+            int section,
+            int start,
+            int end,
+            int blockIndex,
+            String text,
+            String lang,
+            long pauseAfterMs,
+            @Nullable long[][] phonemeIds,
+            @Nullable float[] phonemeSpeeds,
+            @Nullable List<List<KokoroWordSpanSpec>> phonemeSpans
+        ) {
             this.id = id;
             this.section = section;
             this.start = start;
@@ -173,9 +212,15 @@ public final class ReadAloudQueueEngine {
             this.text = text;
             this.lang = lang;
             this.pauseAfterMs = Math.max(0L, pauseAfterMs);
+            this.phonemeIds = phonemeIds;
+            this.phonemeSpeeds = phonemeSpeeds;
+            this.phonemeSpans = phonemeSpans;
         }
 
         public static UtteranceItem fromJson(JSONObject obj) {
+            long[][] parsedIds = parsePhonemeIds(obj.optJSONArray("phonemeIds"));
+            float[] parsedSpeeds = parsePhonemeSpeeds(obj.optJSONArray("phonemeSpeeds"));
+            List<List<KokoroWordSpanSpec>> parsedSpans = parsePhonemeSpans(obj.optJSONArray("phonemeSpans"));
             return new UtteranceItem(
                 obj.optString("id", ""),
                 obj.optInt("section", 0),
@@ -184,8 +229,68 @@ public final class ReadAloudQueueEngine {
                 obj.optInt("blockIndex", 0),
                 obj.optString("text", ""),
                 obj.optString("lang", "en"),
-                obj.optLong("pauseAfterMs", 200L)
+                obj.optLong("pauseAfterMs", 200L),
+                parsedIds,
+                parsedSpeeds,
+                parsedSpans
             );
+        }
+
+        @Nullable
+        private static long[][] parsePhonemeIds(@Nullable JSONArray arr) {
+            if (arr == null || arr.length() == 0) return null;
+            long[][] out = new long[arr.length()][];
+            for (int c = 0; c < arr.length(); c++) {
+                JSONArray chunk = arr.optJSONArray(c);
+                if (chunk == null) {
+                    out[c] = new long[0];
+                } else {
+                    long[] ids = new long[chunk.length()];
+                    for (int i = 0; i < chunk.length(); i++) {
+                        ids[i] = chunk.optLong(i, 0L);
+                    }
+                    out[c] = ids;
+                }
+            }
+            return out;
+        }
+
+        @Nullable
+        private static float[] parsePhonemeSpeeds(@Nullable JSONArray arr) {
+            if (arr == null || arr.length() == 0) return null;
+            float[] out = new float[arr.length()];
+            for (int i = 0; i < arr.length(); i++) {
+                double v = arr.optDouble(i, 1.0);
+                out[i] = (Double.isFinite(v) && v > 0.0) ? (float) v : 1.0f;
+            }
+            return out;
+        }
+
+        @Nullable
+        private static List<List<KokoroWordSpanSpec>> parsePhonemeSpans(@Nullable JSONArray arr) {
+            if (arr == null || arr.length() == 0) return null;
+            List<List<KokoroWordSpanSpec>> out = new ArrayList<>(arr.length());
+            for (int c = 0; c < arr.length(); c++) {
+                JSONArray chunk = arr.optJSONArray(c);
+                if (chunk == null) {
+                    out.add(Collections.emptyList());
+                    continue;
+                }
+                List<KokoroWordSpanSpec> spans = new ArrayList<>(chunk.length());
+                for (int i = 0; i < chunk.length(); i++) {
+                    JSONObject sp = chunk.optJSONObject(i);
+                    if (sp != null) {
+                        spans.add(new KokoroWordSpanSpec(
+                            sp.optInt("t0", 0),
+                            sp.optInt("t1", 0),
+                            sp.optInt("c0", 0),
+                            sp.optInt("c1", 0)
+                        ));
+                    }
+                }
+                out.add(spans);
+            }
+            return out;
         }
     }
 
@@ -245,6 +350,7 @@ public final class ReadAloudQueueEngine {
     private final FileBackend fileBackend;
     @Nullable private final SpeechJournal journal;
     private final EventListener listener;
+    @Nullable private LocalSynth localSynth;
 
     @Nullable private SessionSpec session;
     private final List<UtteranceItem> queue = new ArrayList<>();
@@ -279,6 +385,22 @@ public final class ReadAloudQueueEngine {
         this.fileBackend = fileBackend;
         this.journal = journal;
         this.listener = listener;
+    }
+
+    public void setLocalSynth(@Nullable LocalSynth localSynth) {
+        this.localSynth = localSynth;
+    }
+
+    private void notifyLocalSynthPlan() {
+        if (localSynth != null && session != null && currentIndex >= 0 && currentIndex < queue.size()) {
+            localSynth.onPlan(queue, currentIndex, session.voice, playbackGeneration);
+        }
+    }
+
+    private void cancelLocalSynth() {
+        if (localSynth != null) {
+            localSynth.cancelAll();
+        }
     }
 
     public static float clampRate(float r) {
@@ -362,10 +484,12 @@ public final class ReadAloudQueueEngine {
             if (autoContinueOnBufferTopUp) {
                 autoContinueOnBufferTopUp = false;
                 startCurrentUtterance();
+                return;
             } else {
                 emitState();
             }
         }
+        notifyLocalSynthPlan();
     }
 
     public void attachAudio(
@@ -417,6 +541,7 @@ public final class ReadAloudQueueEngine {
         inInterUtterancePause = false;
         autoContinueOnBufferTopUp = false;
         cancelFallbackTimer();
+        cancelLocalSynth();
         ttsBackend.stop();
         fileBackend.stop();
         setStatus("paused");
@@ -433,6 +558,7 @@ public final class ReadAloudQueueEngine {
         queueLowEmitted = false;
         cancelFallbackTimer();
         cancelSleepTimer();
+        cancelLocalSynth();
         ttsBackend.stop();
         fileBackend.stop();
         queue.clear();
@@ -458,6 +584,7 @@ public final class ReadAloudQueueEngine {
         inInterUtterancePause = false;
         autoContinueOnBufferTopUp = false;
         cancelFallbackTimer();
+        cancelLocalSynth();
         ttsBackend.stop();
         fileBackend.stop();
         currentIndex = idx;
@@ -469,6 +596,7 @@ public final class ReadAloudQueueEngine {
         if (shouldKeepPlaying) {
             startCurrentUtterance();
         } else {
+            notifyLocalSynthPlan();
             emitState();
         }
     }
@@ -501,9 +629,11 @@ public final class ReadAloudQueueEngine {
         session.voice = voice;
         stickyFallbackActive = false;
         usingFallback = false;
+        cancelLocalSynth();
         if (isAudible()) {
             startCurrentUtterance();
         } else {
+            notifyLocalSynthPlan();
             emitState();
         }
     }
@@ -604,7 +734,23 @@ public final class ReadAloudQueueEngine {
             return;
         }
 
-        // Synth engine ('edge' | 'openai')
+        final boolean isKokoro = "kokoro".equals(activeVoice.kind);
+        if (isKokoro) {
+            // Unannotated utterance (phonemeIds == null): speak with systemFallback immediately (NOT sticky)
+            if (item.phonemeIds == null || item.phonemeIds.length == 0) {
+                if (session.systemFallback != null) {
+                    usingFallback = true;
+                    speakWithSystemVoice(item, session.systemFallback, true, gen);
+                } else {
+                    onUtteranceFinished(item, true, gen);
+                }
+                notifyLocalSynthPlan();
+                return;
+            }
+            notifyLocalSynthPlan();
+        }
+
+        // Synth engine ('edge' | 'openai' | 'qwen' | 'kokoro')
         if (stickyFallbackActive && session.systemFallback != null) {
             usingFallback = true;
             speakWithSystemVoice(item, session.systemFallback, true, gen);
@@ -617,13 +763,19 @@ public final class ReadAloudQueueEngine {
             return;
         }
 
-        // Audio not yet attached -> enter BUFFERING and arm 8s (2s offline) fallback timer (§8.5)
+        // Audio not yet attached -> enter BUFFERING and arm fallback timer (§8.5, §5.2)
         setStatus("buffering");
         fileBackend.startBufferingKeepAlive();
-        long waitMs = networkChecker.isOnline()
-            ? ONLINE_FALLBACK_TIMEOUT_MS
-            : OFFLINE_FALLBACK_TIMEOUT_MS;
-        final String reason = networkChecker.isOnline() ? "network-timeout" : "offline";
+        final long waitMs;
+        final String reason;
+        if (isKokoro) {
+            waitMs = LOCAL_SYNTH_FALLBACK_TIMEOUT_MS;
+            reason = "local-synth-timeout";
+        } else {
+            boolean online = networkChecker.isOnline();
+            waitMs = online ? ONLINE_FALLBACK_TIMEOUT_MS : OFFLINE_FALLBACK_TIMEOUT_MS;
+            reason = online ? "network-timeout" : "offline";
+        }
 
         fallbackTimer = scheduler.postDelayed(waitMs, () -> {
             if (gen != playbackGeneration || !"buffering".equals(status)) return;
@@ -646,6 +798,29 @@ public final class ReadAloudQueueEngine {
             }
             // When systemFallback == null, stay in BUFFERING until attachAudio or user pauses (§8.5 #3)
         });
+    }
+
+    public void onLocalSynthFailed(String utteranceId, @Nullable String reason) {
+        UtteranceItem cur = getCurrentItem();
+        if (cur == null || !cur.id.equals(utteranceId) || !"buffering".equals(status)) {
+            return;
+        }
+        cancelFallbackTimer();
+        if (session != null && session.systemFallback != null) {
+            stickyFallbackActive = true;
+            stickyFallbackSection = cur.section;
+            stickyFallbackBlockIndex = cur.blockIndex;
+            usingFallback = true;
+
+            JSONObject fbPayload = new JSONObject();
+            putJson(fbPayload, "reason", reason != null ? reason : "local-synth-error");
+            putJson(fbPayload, "utteranceId", cur.id);
+            listener.onEvent("speech-fallback", fbPayload);
+
+            speakWithSystemVoice(cur, session.systemFallback, true, playbackGeneration);
+        } else {
+            onUtteranceFinished(cur, true, playbackGeneration);
+        }
     }
 
     private void speakWithSystemVoice(

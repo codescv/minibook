@@ -6,6 +6,7 @@ import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import {
   EdgeSpeechProvider,
   KOKORO_MANIFEST,
+  KOKORO_MODEL_ID,
   MiniBookError,
   OpenAiSpeechProvider,
   QwenSpeechProvider,
@@ -371,6 +372,11 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           emit({ type: 'speech-model', status });
         }),
       );
+      nativeHandles.push(
+        await plugin.addListener('speech-model', (status) => {
+          emit({ type: 'speech-model', status });
+        }),
+      );
       const pending = await plugin.import.consumePending().catch(() => []);
       if (pending.length > 0) {
         emitDedupedIncomingFiles(pending);
@@ -424,6 +430,43 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       // ignore journal read error
     }
   }
+
+  const modelsApi = {
+    status(id: SpeechModelId): Promise<SpeechModelStatus> {
+      return plugin.models.status({ id });
+    },
+    async download(
+      id: SpeechModelId,
+      opts?: { readonly voices?: readonly string[] },
+    ): Promise<SpeechModelStatus> {
+      const settings = await store.getSettings();
+      const files = resolveManifestFilesForVariant(modelVariant, opts?.voices);
+      const repo =
+        modelVariant === 'coreml' ? KOKORO_MANIFEST.coreml.repo : KOKORO_MANIFEST.onnx.repo;
+      const revision =
+        modelVariant === 'coreml'
+          ? KOKORO_MANIFEST.coreml.revision
+          : KOKORO_MANIFEST.onnx.revision;
+      const sources = resolveModelSources(settings);
+      const allowHosts = resolveAllowedModelHosts(settings.modelMirrorBaseUrl);
+      void totalManifestBytesForVariant;
+      return plugin.models.download({
+        id,
+        variant: modelVariant,
+        files,
+        repo,
+        revision,
+        sources,
+        allowHosts,
+      });
+    },
+    pause(id: SpeechModelId): Promise<SpeechModelStatus> {
+      return plugin.models.pause({ id });
+    },
+    remove(id: SpeechModelId): Promise<void> {
+      return plugin.models.remove({ id });
+    },
+  };
 
   const hostObj: PlatformHost = {
     get info(): HostInfo {
@@ -611,11 +654,15 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       },
 
       async storageUsage(): Promise<StorageUsage> {
-        const [booksBytes, speechCacheBytes] = await Promise.all([
+        const [booksBytes, speechCacheBytes, modelsBytes] = await Promise.all([
           store.booksStorageBytes(),
           plugin.speech.cacheSize(),
+          plugin.models
+            .status({ id: KOKORO_MODEL_ID })
+            .then((s) => s.installedBytes)
+            .catch(() => 0),
         ]);
-        return { booksBytes, speechCacheBytes };
+        return { booksBytes, speechCacheBytes, modelsBytes };
       },
     },
 
@@ -631,6 +678,9 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           engine: req.engine,
           voiceId: req.voiceId,
           ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+          ...(req.engine === 'qwen' && settings.qwenServer
+            ? { qwenConfig: settings.qwenServer }
+            : {}),
           text: req.text,
         });
 
@@ -685,6 +735,50 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
               mime: out.mime,
               ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
               marks: out.marks,
+              synthMs,
+              bytes: saved.bytes,
+              cached: false,
+            };
+          }
+
+          if (req.engine === 'qwen') {
+            const qwenCfg = settings.qwenServer;
+            if (!qwenCfg || !qwenCfg.baseUrl.trim()) {
+              throw new MiniBookError(
+                'speech-unavailable',
+                'Local GPU / Qwen speech server URL is not configured',
+              );
+            }
+            const hasQwenKey = await plugin.secrets.has({ name: 'qwen-api-key' });
+            const out = await qwenProvider.synthesize(
+              {
+                config: qwenCfg,
+                text: req.text,
+                voiceId: req.voiceId,
+                ...(req.lang ? { lang: req.lang } : {}),
+                ...(hasQwenKey ? { apiKeyHeader: 'Bearer {{secret:qwen-api-key}}' } : {}),
+              },
+              signal,
+            );
+            const synthMs = Math.max(1, Date.now() - t0);
+            const saved = await plugin.speech.cachePut({
+              key,
+              base64: bytesToBase64(out.audio),
+              ext: 'wav',
+            });
+            const entry: CachedAudioMeta = {
+              path: saved.path,
+              mime: out.mime,
+              bytes: saved.bytes,
+              ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
+              lastUsed: Date.now(),
+            };
+            audioCacheIndex.set(key, entry);
+            await persistSpeechCacheIndex();
+            return {
+              ref: saved.path,
+              mime: out.mime,
+              ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
               synthMs,
               bytes: saved.bytes,
               cached: false,
@@ -776,43 +870,10 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         return plugin.speech.cacheSize();
       },
 
-      models: {
-        status(id: SpeechModelId): Promise<SpeechModelStatus> {
-          return plugin.models.status({ id });
-        },
-        async download(
-          id: SpeechModelId,
-          opts?: { readonly voices?: readonly string[] },
-        ): Promise<SpeechModelStatus> {
-          const settings = await store.getSettings();
-          const files = resolveManifestFilesForVariant(modelVariant, opts?.voices);
-          const repo =
-            modelVariant === 'coreml' ? KOKORO_MANIFEST.coreml.repo : KOKORO_MANIFEST.onnx.repo;
-          const revision =
-            modelVariant === 'coreml'
-              ? KOKORO_MANIFEST.coreml.revision
-              : KOKORO_MANIFEST.onnx.revision;
-          const sources = resolveModelSources(settings);
-          const allowHosts = resolveAllowedModelHosts(settings.modelMirrorBaseUrl);
-          void totalManifestBytesForVariant;
-          return plugin.models.download({
-            id,
-            variant: modelVariant,
-            files,
-            repo,
-            revision,
-            sources,
-            allowHosts,
-          });
-        },
-        pause(id: SpeechModelId): Promise<SpeechModelStatus> {
-          return plugin.models.pause({ id });
-        },
-        remove(id: SpeechModelId): Promise<void> {
-          return plugin.models.remove({ id });
-        },
-      },
+      models: modelsApi,
     },
+
+    models: modelsApi,
 
     device: {
       setImmersive(enabled: boolean): Promise<void> {

@@ -1,7 +1,7 @@
 /**
  * Strict outbound URL allowlist for the desktop speech synthesis proxy
- * (`ARCHITECTURE.md` §12, §13: "Outbound requests are allowed only to the Edge endpoints
- * and the configured custom base URL — no open proxy").
+ * (`ARCHITECTURE.md` §12, §13, `TTS_V2_SPEC.md` §6.2: "Outbound requests are allowed only
+ * to the Edge endpoints and the configured custom / Qwen server base URLs — no open proxy").
  */
 import { MiniBookError } from '@minibook/core';
 
@@ -27,6 +27,23 @@ const EDGE_ALLOWED_ENDPOINTS: ReadonlyArray<{
   },
 ];
 
+const CUSTOM_SPEECH_SUFFIXES = new Set([
+  '/audio/speech',
+  '/v1/audio/speech',
+  '/audio/voices',
+  '/v1/audio/voices',
+  '/voices',
+  '/v1/voices',
+  '/models',
+  '/v1/models',
+]);
+
+const QWEN_SPEECH_SUFFIXES = new Set([
+  ...CUSTOM_SPEECH_SUFFIXES,
+  '/synthesize',
+  '/health',
+]);
+
 function normalizePathPrefix(pathname: string): string {
   const clean = pathname.replace(/\/+$/, '');
   return clean === '' ? '' : clean;
@@ -49,9 +66,10 @@ export function isAllowedEdgeUrl(rawUrl: string): boolean {
   );
 }
 
-export function isAllowedCustomSpeechUrl(
+function matchesConfiguredBaseUrl(
   rawUrl: string,
   configuredBaseUrl: string | null | undefined,
+  allowedSuffixes: ReadonlySet<string>,
 ): boolean {
   if (!configuredBaseUrl || !configuredBaseUrl.trim()) return false;
   let target: URL;
@@ -70,16 +88,26 @@ export function isAllowedCustomSpeechUrl(
   const targetPath = target.pathname;
   if (!targetPath.startsWith(basePrefix)) return false;
   const suffix = targetPath.slice(basePrefix.length);
-  // Only allow OpenAI-compatible speech & voices/models paths underneath baseUrl
+  return allowedSuffixes.has(suffix);
+}
+
+export function isAllowedCustomSpeechUrl(
+  rawUrl: string,
+  configuredBaseUrl: string | null | undefined,
+): boolean {
+  return matchesConfiguredBaseUrl(rawUrl, configuredBaseUrl, CUSTOM_SPEECH_SUFFIXES);
+}
+
+export function isAllowedQwenSpeechUrl(
+  rawUrl: string,
+  configuredQwenBaseUrl: string | null | undefined,
+): boolean {
+  if (!configuredQwenBaseUrl || !configuredQwenBaseUrl.trim()) return false;
+  // Allow stripping trailing `/synthesize` when building `/health` against a full `/synthesize` baseUrl
+  const normalizedBase = configuredQwenBaseUrl.trim().replace(/\/synthesize\/?$/i, '');
   return (
-    suffix === '/audio/speech' ||
-    suffix === '/v1/audio/speech' ||
-    suffix === '/audio/voices' ||
-    suffix === '/v1/audio/voices' ||
-    suffix === '/voices' ||
-    suffix === '/v1/voices' ||
-    suffix === '/models' ||
-    suffix === '/v1/models'
+    matchesConfiguredBaseUrl(rawUrl, configuredQwenBaseUrl, QWEN_SPEECH_SUFFIXES) ||
+    matchesConfiguredBaseUrl(rawUrl, normalizedBase, QWEN_SPEECH_SUFFIXES)
   );
 }
 
@@ -88,6 +116,7 @@ export function assertAllowedOutboundSpeechUrl(
   options: {
     readonly allowEdge: boolean;
     readonly configuredCustomBaseUrl?: string | null;
+    readonly configuredQwenBaseUrl?: string | null;
   },
 ): URL {
   let parsed: URL;
@@ -101,6 +130,9 @@ export function assertAllowedOutboundSpeechUrl(
     return parsed;
   }
   if (isAllowedCustomSpeechUrl(rawUrl, options.configuredCustomBaseUrl)) {
+    return parsed;
+  }
+  if (isAllowedQwenSpeechUrl(rawUrl, options.configuredQwenBaseUrl)) {
     return parsed;
   }
 

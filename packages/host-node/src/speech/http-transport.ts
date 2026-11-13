@@ -13,6 +13,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export interface NodeHttpTransportOptions {
   readonly secrets: FileSecretStore;
   readonly getAllowedCustomBaseUrl: () => string | null;
+  readonly getAllowedQwenBaseUrl?: () => string | null;
   readonly allowEdge?: () => boolean;
   readonly fetchImpl?: typeof fetch;
 }
@@ -23,9 +24,11 @@ export function createNodeHttpTransport(options: NodeHttpTransportOptions): Http
   return async (req: TransportHttpRequest): Promise<TransportHttpResponse> => {
     const allowEdge = options.allowEdge ? options.allowEdge() : true;
     const configuredCustomBaseUrl = options.getAllowedCustomBaseUrl();
+    const configuredQwenBaseUrl = options.getAllowedQwenBaseUrl?.() ?? null;
     assertAllowedOutboundSpeechUrl(req.url, {
       allowEdge,
       configuredCustomBaseUrl,
+      configuredQwenBaseUrl,
     });
 
     const headers = options.secrets.substituteHeaders(req.headers);

@@ -17,6 +17,7 @@ import {
 } from '@minibook/core';
 import { BooksRepository, SettingsRepository, StateRepository } from '../db/repositories/index.js';
 import { openDatabase, type Database } from '../db/sqlite.js';
+import { ModelStore, type ModelStoreOptions } from '../models/model-store.js';
 import { FileSecretStore } from '../settings/secrets.js';
 import { SpeechAudioCache } from '../speech/audio-cache.js';
 import { SynthService, type EdgeProviderLike, type OpenAiProviderLike } from '../speech/synth-service.js';
@@ -34,6 +35,7 @@ export interface NodeHostOptions {
   readonly openAiProvider?: OpenAiProviderLike;
   readonly fetchImpl?: typeof fetch;
   readonly openExternalImpl?: (url: string) => Promise<void>;
+  readonly modelStoreOptions?: Partial<Omit<ModelStoreOptions, 'dataDir' | 'getSettings' | 'emit'>>;
 }
 
 export interface NodeHostContext {
@@ -46,6 +48,7 @@ export interface NodeHostContext {
   readonly secrets: FileSecretStore;
   readonly storage: BookFileStorage;
   readonly synth: SynthService;
+  readonly models: ModelStore;
   emit(event: HostEvent): void;
   subscribe(listener: (event: HostEvent) => void): Unsubscribe;
   recordSecretName(name: string, hasValue: boolean): void;
@@ -157,6 +160,14 @@ export function createNodeHostContext(options?: NodeHostOptions): NodeHostContex
     }
   }
 
+  const models = new ModelStore({
+    dataDir,
+    getSettings: () => settingsRepo.get(),
+    emit,
+    ...(options?.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options?.modelStoreOptions ?? {}),
+  });
+
   function commitStagedBook(
     ticketId: string,
     inspected: InspectedBook,
@@ -234,6 +245,7 @@ export function createNodeHostContext(options?: NodeHostOptions): NodeHostContex
     secrets,
     storage,
     synth,
+    models,
     emit,
     subscribe(listener: (event: HostEvent) => void): Unsubscribe {
       listeners.add(listener);

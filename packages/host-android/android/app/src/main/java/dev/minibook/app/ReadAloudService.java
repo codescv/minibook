@@ -114,6 +114,9 @@ public class ReadAloudService extends MediaSessionService {
     private FilePlayerBackend fileBackend;
     private SpeechJournal speechJournal;
     private ReadAloudQueueEngine queueEngine;
+    @Nullable private KokoroModelStore kokoroModelStore;
+    @Nullable private KokoroOnnxBackend kokoroBackend;
+    @Nullable private KokoroSynthQueue kokoroSynthQueue;
     private ReadAloudPlayer mediaPlayer;
     @Nullable private MediaSession mediaSession;
     @Nullable private PowerManager.WakeLock wakeLock;
@@ -224,6 +227,64 @@ public class ReadAloudService extends MediaSessionService {
             }
         );
 
+        kokoroModelStore = new KokoroModelStore(miniBookData);
+        kokoroBackend = new KokoroOnnxBackend();
+        File speechCacheDir = new File(getCacheDir(), "speech");
+        kokoroSynthQueue = new KokoroSynthQueue(
+            kokoroModelStore,
+            kokoroBackend,
+            speechCacheDir,
+            new KokoroSynthQueue.QueueCallback() {
+                @Override
+                public void attachAudio(
+                    String utteranceId,
+                    String wavPath,
+                    long durationMs,
+                    List<ReadAloudQueueEngine.WordMarkSpec> marks
+                ) {
+                    MAIN_HANDLER.post(() -> {
+                        if (queueEngine != null) {
+                            queueEngine.attachAudio(utteranceId, wavPath, durationMs, marks);
+                        }
+                    });
+                }
+
+                @Override
+                public void onSynthFailed(String utteranceId, String errorCode, String message) {
+                    MAIN_HANDLER.post(() -> {
+                        if (queueEngine != null) {
+                            queueEngine.onLocalSynthFailed(utteranceId, errorCode);
+                        }
+                        if ("model-selftest".equals(errorCode) && kokoroModelStore != null) {
+                            JSONObject errStatus = kokoroModelStore.buildReconciledStatus(
+                                "ort-cpu",
+                                0.0,
+                                KokoroModelStore.makeErrorJson("model-selftest", message)
+                            );
+                            for (PluginEventSink sink : EVENT_SINKS) {
+                                sink.onSpeechEvent("speech-model", errStatus);
+                            }
+                        }
+                    });
+                }
+
+                @Override
+                public void onEngineSlow(double rtf) {
+                    MAIN_HANDLER.post(() -> {
+                        JSONObject payload = new JSONObject();
+                        try {
+                            payload.put("rtf", rtf);
+                            payload.put("engine", "kokoro");
+                        } catch (Exception ignored) {}
+                        for (PluginEventSink sink : EVENT_SINKS) {
+                            sink.onSpeechEvent("engine-slow", payload);
+                        }
+                    });
+                }
+            }
+        );
+        queueEngine.setLocalSynth(kokoroSynthQueue);
+
         mediaPlayer = new ReadAloudPlayer(Looper.getMainLooper(), new ReadAloudPlayer.Controls() {
             @Override
             public ReadAloudQueueEngine engine() {
@@ -314,6 +375,14 @@ public class ReadAloudService extends MediaSessionService {
         if (queueEngine != null) {
             queueEngine.stop();
         }
+        if (kokoroSynthQueue != null) {
+            kokoroSynthQueue.shutdown();
+            kokoroSynthQueue = null;
+        }
+        if (kokoroBackend != null) {
+            kokoroBackend.close();
+            kokoroBackend = null;
+        }
         if (mediaSession != null) {
             mediaSession.release();
             mediaSession = null;
@@ -333,6 +402,18 @@ public class ReadAloudService extends MediaSessionService {
 
     public SystemTtsBackend getTtsBackend() {
         return ttsBackend;
+    }
+
+    public static void unloadLocalModels() {
+        ReadAloudService svc = instance;
+        if (svc != null) {
+            if (svc.kokoroSynthQueue != null) {
+                svc.kokoroSynthQueue.cancelAll();
+            }
+            if (svc.kokoroBackend != null) {
+                svc.kokoroBackend.close();
+            }
+        }
     }
 
     public void startPlayback() {
