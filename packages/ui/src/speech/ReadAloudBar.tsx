@@ -1,0 +1,123 @@
+import { useEffect, useRef, type ReactElement } from 'react';
+import { useRouteStore } from '../app/routes';
+import { IconButton } from '../components/IconButton';
+import {
+  CloseIcon,
+  MoonIcon,
+  PauseIcon,
+  PlayIcon,
+  SkipNextIcon,
+  SkipPrevIcon,
+} from '../components/icons';
+import { useT } from '../i18n';
+import { useReadAloudStore, type ReadAloudController } from './ReadAloudController';
+
+export interface ReadAloudBarProps {
+  readonly controller: ReadAloudController;
+  readonly isEink: boolean;
+}
+
+/**
+ * Compact Read-Aloud floating bar (`PRODUCT_DESIGN.md` §4.6 & `UI_SPEC.md` §4.6):
+ * Exact 6 controls: `✕ · ⏮ · ⏸/▶ · ⏭ · 1.0× · ⏾`.
+ * Auto-hides after 4s in normal mode; never auto-hides in E-Ink mode (R4).
+ */
+export function ReadAloudBar({ controller, isEink }: ReadAloudBarProps): ReactElement | null {
+  const t = useT();
+  const active = useReadAloudStore((s) => s.active);
+  const status = useReadAloudStore((s) => s.status);
+  const rate = useReadAloudStore((s) => s.rate);
+  const sleepTimer = useReadAloudStore((s) => s.sleepTimer);
+  const barOpen = useRouteStore((s) => s.readAloudBarOpen);
+  const activeSheet = useRouteStore((s) => s.activeSheet);
+
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+
+  useEffect(() => {
+    if (!active || !barOpen || isEink || activeSheet !== null) return;
+    const timer = setTimeout(() => {
+      useRouteStore.getState().setReadAloudBarOpen(false);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [active, barOpen, isEink, activeSheet, status, rate]);
+
+  if (!active || !barOpen) return null;
+
+  const isPlaying = status === 'playing' || status === 'buffering';
+
+  const startSkipPress = (dir: -1 | 1): void => {
+    longPressFired.current = false;
+    if (longPressRef.current) clearTimeout(longPressRef.current);
+    longPressRef.current = setTimeout(() => {
+      longPressFired.current = true;
+      controller.stepParagraph(dir);
+    }, 450);
+  };
+
+  const endSkipPress = (dir: -1 | 1): void => {
+    if (longPressRef.current) {
+      clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+    if (!longPressFired.current) {
+      controller.stepSentence(dir);
+    }
+  };
+
+  return (
+    <nav className="mb-tts-bar" aria-label={t('readAloud')}>
+      <IconButton label={t('stopReadAloud')} onClick={() => controller.stop()}>
+        <CloseIcon />
+      </IconButton>
+
+      <IconButton
+        label={t('prevSentence')}
+        onPointerDown={() => startSkipPress(-1)}
+        onPointerUp={() => endSkipPress(-1)}
+        onPointerCancel={() => {
+          if (longPressRef.current) clearTimeout(longPressRef.current);
+        }}
+      >
+        <SkipPrevIcon />
+      </IconButton>
+
+      <button
+        type="button"
+        className="mb-tts-play-btn"
+        aria-label={isPlaying ? t('pause') : t('play')}
+        onClick={() => controller.togglePlayPause()}
+      >
+        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+      </button>
+
+      <IconButton
+        label={t('nextSentence')}
+        onPointerDown={() => startSkipPress(1)}
+        onPointerUp={() => endSkipPress(1)}
+        onPointerCancel={() => {
+          if (longPressRef.current) clearTimeout(longPressRef.current);
+        }}
+      >
+        <SkipNextIcon />
+      </IconButton>
+
+      <button
+        type="button"
+        className="mb-tts-speed-pill"
+        aria-label={`${t('voiceAndSpeed')}: ${rate.toFixed(1)}x`}
+        onClick={() => useRouteStore.getState().openSheet('voice')}
+      >
+        {rate.toFixed(1)}×
+      </button>
+
+      <IconButton
+        label={t('sleepTimer')}
+        active={sleepTimer.mode !== 'off'}
+        onClick={() => useRouteStore.getState().openSheet('sleep')}
+      >
+        <MoonIcon />
+      </IconButton>
+    </nav>
+  );
+}

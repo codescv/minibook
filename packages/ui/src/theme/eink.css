@@ -1,0 +1,182 @@
+/*
+ * @minibook/ui — Android E-Ink Mode (`墨水屏模式`) Strict 1-Bit Layer (eink.css)
+ *
+ * Active when `data-eink="1"` (removed when off).
+ * Enforces PRODUCT_DESIGN.md §8.2 & ARCHITECTURE.md §9.2:
+ *   - Strict two colours: `#FFFFFF` and `#000000` ONLY
+ *   - Zero shadows, scrims, blurs, gradients, or alpha fills
+ *   - Zero rounded corners (`0px`)
+ *   - Zero motion (`0s` / `none`)
+ *   - Sentence-level solid 2px `#000000` underline only (no word highlight)
+ */
+
+:root[data-eink="1"],
+:root[data-eink="true"] {
+  color-scheme: light;
+
+  /* R1 — Strict Two Colours (#FFFFFF and #000000 ONLY) */
+  --mb-bg: #FFFFFF !important;
+  --mb-fg: #000000 !important;
+  --mb-fg-quiet: #000000 !important;
+  --mb-fg-caption: #000000 !important;
+  --mb-line: #000000 !important;
+  --mb-accent: #000000 !important;
+  --mb-accent-fg: #FFFFFF !important;
+  --mb-danger: #000000 !important;
+  --mb-switch-knob-bg: #FFFFFF !important;
+
+  --mb-bg-elevated: #FFFFFF !important;
+  --mb-bg-sheet: #FFFFFF !important;
+  --mb-bg-control: #FFFFFF !important;
+  --mb-bg-control-active: #000000 !important;
+  --mb-bg-cover-fallback: #FFFFFF !important;
+
+  /* Zero Shadows, Scrims, Spines, or Blur */
+  --mb-scrim: transparent !important;
+  --mb-shadow: none !important;
+  --mb-shadow-popover: none !important;
+  --mb-shadow-cover: none !important;
+  --mb-shadow-segment: none !important;
+  --mb-shadow-knob: none !important;
+  --mb-swatch-ring: none !important;
+  --mb-cover-border: #000000 !important;
+  --mb-cover-spine-bg: none !important;
+
+  /* Zero Rounded Corners */
+  --mb-radius-none: 0px !important;
+  --mb-radius-hl: 0px !important;
+  --mb-radius-xs: 0px !important;
+  --mb-radius-sm: 0px !important;
+  --mb-radius-seg: 0px !important;
+  --mb-radius: 0px !important;
+  --mb-radius-lg: 0px !important;
+  --mb-radius-sheet: 0px !important;
+  --mb-radius-pill: 0px !important;
+
+  /* High-Contrast Structural Borders */
+  --mb-hairline-width: 1px !important;
+  --mb-border-width: 2px !important;
+  --mb-sheet-border-width: 2px !important;
+
+  /* R2 — Zero Motion */
+  --mb-dur: 0s !important;
+  --mb-dur-page: 0s !important;
+  --mb-dur-sheet: 0s !important;
+  --mb-transition-fast: none !important;
+  --mb-transition-sheet: none !important;
+  --mb-transition-knob: none !important;
+  --mb-opacity-full: 1 !important;
+  --mb-opacity-disabled: 1 !important;
+  --mb-filter-none: none !important;
+
+  /* R4 — Sentence-Level Solid 2px Underline Only */
+  --mb-hl-sentence: transparent !important;
+  --mb-hl-sentence-underline: 2px solid #000000 !important;
+  --mb-hl-word-underline: none !important;
+  --mb-hl-search: transparent !important;
+
+  /* §8.4 — Typography Weight & Boldness Compensation */
+  --mb-ui-body-weight: 500;
+  --mb-ui-label-weight: 600;
+  --mb-page-caption-weight: 600;
+  --mb-book-weight: 500;
+  --mb-bold: 1;
+}
+
+/* Global E-Ink Enforcer Guard (ARCHITECTURE.md §9.2) */
+:root[data-eink="1"] *,
+:root[data-eink="1"] *::before,
+:root[data-eink="1"] *::after,
+:root[data-eink="true"] *,
+:root[data-eink="true"] *::before,
+:root[data-eink="true"] *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+  mix-blend-mode: normal !important;
+  background-image: none !important;
+  border-radius: 0 !important;
+  -webkit-font-smoothing: antialiased;
+  caret-color: transparent;
+}
+
+:root[data-eink="1"] ::selection,
+:root[data-eink="true"] ::selection {
+  background: #000000;
+  color: #FFFFFF;
+}
+
+/* R5 — Touch / Active Inversion Feedback */
+:root[data-eink="1"] button:active,
+:root[data-eink="1"] [role="button"]:active,
+:root[data-eink="1"] [data-active="true"],
+:root[data-eink="1"] [aria-pressed="true"],
+:root[data-eink="1"] [aria-selected="true"],
+:root[data-eink="true"] button:active,
+:root[data-eink="true"] [role="button"]:active,
+:root[data-eink="true"] [data-active="true"],
+:root[data-eink="true"] [aria-pressed="true"],
+:root[data-eink="true"] [aria-selected="true"] {
+  background-color: #000000 !important;
+  color: #FFFFFF !important;
+  border-color: #000000 !important;
+}
+
+:root[data-eink="1"] button:active *,
+:root[data-eink="1"] [data-active="true"] *,
+:root[data-eink="1"] [aria-pressed="true"] *,
+:root[data-eink="1"] [aria-selected="true"] * {
+  color: #FFFFFF !important;
+}
+
+:root[data-eink="1"] button:active svg,
+:root[data-eink="1"] [data-active="true"] svg,
+:root[data-eink="1"] [aria-pressed="true"] svg,
+:root[data-eink="1"] [aria-selected="true"] svg {
+  stroke: #FFFFFF !important;
+}
+
+:root[data-eink="1"] button[aria-pressed="true"] svg[data-filled="true"] {
+  fill: #FFFFFF !important;
+}
+
+/* Disabled controls in E-Ink mode: 1px crisp solid #000000 border, zero fill (zero dash-cap AA) */
+:root[data-eink="1"] button:disabled {
+  border: 1px solid #000000 !important;
+  background-color: #FFFFFF !important;
+  color: #000000 !important;
+}
+
+/* E-Ink Book Content Stroke Boldness Compensation */
+:root[data-eink="1"] .mb-reader-content,
+:root[data-eink="true"] .mb-reader-content {
+  font-weight: var(--mb-book-weight);
+  -webkit-text-stroke: calc(var(--mb-bold, 1) * 0.2px) #000000;
+  paint-order: stroke fill;
+}
+
+/* E-Ink Custom Highlight API & Overlay Rule */
+:root[data-eink="1"] ::highlight(mb-sentence),
+:root[data-eink="1"] .mb-tts-sentence-active,
+:root[data-eink="true"] ::highlight(mb-sentence),
+:root[data-eink="true"] .mb-tts-sentence-active {
+  background: transparent !important;
+  background-color: transparent !important;
+  text-decoration: underline 2px solid #000000 !important;
+  text-underline-offset: 0.18em !important;
+}
+
+/* FlashOverlay solid states (#000000 and #FFFFFF) */
+.mb-flash-overlay[data-phase="black"] {
+  background-color: #000000 !important;
+}
+
+.mb-flash-overlay[data-phase="white"] {
+  background-color: #FFFFFF !important;
+}

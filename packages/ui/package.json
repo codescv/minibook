@@ -10,7 +10,9 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./dev": "./src/host/mock-host.ts",
+    "./styles.css": "./src/theme/styles.css"
   },
   "files": [
     "src"
