@@ -1,9 +1,16 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Security', () => {
-  test('enforces Cw <= 34em, n*(Cw+G)==Vw, and text rects inside [G/2-1, Vw-G/2+1] across mobile, desktop 1-col & 2-col spread', async ({
+  test('enforces Cw <= 34em, n*(Cw+G)==Vw, text rects inside [G/2-1, Vw-G/2+1], and resolves XML-namespaced SVG <image xlink:href="mb-res:..."> with zero CSP errors', async ({
     page,
   }) => {
+    const cspErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && /Content Security Policy|mb-res:/i.test(msg.text())) {
+        cspErrors.push(msg.text());
+      }
+    });
+
     const configs = [
       { width: 393, height: 852, expectedCols: 1 },
       { width: 1050, height: 820, expectedCols: 1 },
@@ -63,7 +70,11 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
           node = walker.nextNode();
         }
 
-        return { Vw, fontSize, Cw, G, padLeft, outOfBounds };
+        const svgImage = fDoc.querySelector('svg image');
+        const svgXlinkHref =
+          svgImage?.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? '';
+
+        return { Vw, fontSize, Cw, G, padLeft, outOfBounds, svgXlinkHref };
       });
 
       const n = cfg.expectedCols;
@@ -75,7 +86,9 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
         expect(metrics.G).toBeGreaterThanOrEqual(64);
       }
       expect(metrics.outOfBounds).toEqual([]);
+      expect(metrics.svgXlinkHref.startsWith('blob:')).toBe(true);
     }
+    expect(cspErrors).toEqual([]);
   });
 
   test('causes ZERO reflow and ZERO line-break shift when toggling Chrome or ReadAloudBar', async ({

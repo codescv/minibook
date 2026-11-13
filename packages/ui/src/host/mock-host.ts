@@ -144,10 +144,11 @@ export function buildDefaultMockFixtures(): MockBookFixture[] {
     'en',
   );
 
-  // Add an internal cross-reference link and an embedded SVG figure at the end of Chapter 1 without changing counted text
+  // Add an internal cross-reference link, an <img>, AND an XML-namespaced <svg><image xlink:href="mb-res:..."/></svg> cover plate (`[P1-U6]`)
   const dickensCh1Xhtml =
     dickensCh1.xhtml +
     `\n<figure data-mb-skip="" aria-hidden="true"><img src="mb-res:images/plate1.svg" alt="Engraved frontispiece" width="200" height="130"/></figure>` +
+    `\n<div data-mb-skip="" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 240 160" width="120" height="80"><image width="240" height="160" xlink:href="mb-res:images/plate1.svg"/></svg></div>` +
     `\n<p data-mb-skip=""><a href="#" data-mb-loc="1:0">[Jump to Chapter II]</a> <a href="#" data-mb-ext="https://standardebooks.org">[External Edition]</a></p>`;
 
   const dickensCh2 = makeTextFromParagraphs(
