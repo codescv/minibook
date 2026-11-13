@@ -191,13 +191,13 @@ export function Chrome({
               }}
             >
               <input
-                type="number"
-                min={0}
-                max={100}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 className="mb-input"
                 aria-label={t('goToPercent')}
                 value={pctInput}
-                onChange={(e) => setPctInput(e.target.value)}
+                onChange={(e) => setPctInput(e.target.value.replace(/[^0-9.]/g, ''))}
                 autoFocus
               />
               <button type="submit" className="mb-eink-step-btn">

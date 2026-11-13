@@ -13,6 +13,30 @@ export interface StepperProps {
   readonly wide?: boolean;
 }
 
+function DisabledDashFrame(): ReactElement {
+  return (
+    <svg
+      className="mb-eink-disabled-dash"
+      width="100%"
+      height="100%"
+      shapeRendering="crispEdges"
+      aria-hidden="true"
+    >
+      <rect
+        x="0"
+        y="0"
+        width="100%"
+        height="100%"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeDasharray="4 4"
+        shapeRendering="crispEdges"
+      />
+    </svg>
+  );
+}
+
 export function Stepper({
   valueLabel,
   onDecrement,
@@ -34,6 +58,7 @@ export function Stepper({
         disabled={!canDecrement}
         onClick={onDecrement}
       >
+        {!canDecrement && <DisabledDashFrame />}
         {decText}
       </button>
       <span className="mb-stepper-value">{valueLabel}</span>
@@ -44,6 +69,7 @@ export function Stepper({
         disabled={!canIncrement}
         onClick={onIncrement}
       >
+        {!canIncrement && <DisabledDashFrame />}
         {incText}
       </button>
     </div>

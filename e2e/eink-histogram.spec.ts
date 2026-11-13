@@ -134,7 +134,7 @@ async function assertStrictTwoColorHistogram(
   }
   expect(greyAreaBlocks, `Uniform grey 4x4 area fills on ${contextName}`).toBe(0);
 
-  // Pass B: Mask glyph AA & SVG diagonal stroke AA -> assert 100.000% strict #000000 / #FFFFFF histogram!
+    // Pass B: Mask glyph AA & SVG diagonal stroke AA -> assert 100.000% strict #000000 / #FFFFFF histogram!
   await page.evaluate(() => {
     const maskCss = `
       img, svg { visibility: hidden !important; }
@@ -142,6 +142,8 @@ async function assertStrictTwoColorHistogram(
         color: transparent !important;
         -webkit-text-fill-color: transparent !important;
         -webkit-text-stroke: 0px transparent !important;
+        caret-color: transparent !important;
+        text-decoration-color: transparent !important;
       }
     `;
     document.getElementById('mb-e2e-mask-img-only')!.textContent = maskCss;
@@ -216,11 +218,26 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
     await assertEinkDomPurity(page, 'E-Ink Library PagedList');
     await assertStrictTwoColorHistogram(page, 'E-Ink Library PagedList');
 
-    // Navigate to Settings -> verify E-Ink PagedList + On/Off 2px-bordered toggles
+    // [P1-4] Focused non-empty Library search input passes strict 2-colour histogram (zero native cancel icon)
+    const libSearch = page.getByRole('searchbox');
+    await libSearch.fill('Cities');
+    await assertEinkDomPurity(page, 'E-Ink Library Search Focused');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Library Search Focused');
+    await libSearch.fill('');
+
+    // Navigate to Settings -> verify E-Ink PagedList + On/Off 2px-bordered toggles + [P1-6] settings-voice route sheet
     await page.getByRole('button', { name: 'Settings' }).click();
     await expect(page.getByTestId('settings-screen')).toBeVisible();
     await assertEinkDomPurity(page, 'E-Ink Settings');
     await assertStrictTwoColorHistogram(page, 'E-Ink Settings');
+
+    await page.locator('[data-setting-row="voice"]').click();
+    await expect(page.getByRole('dialog', { name: 'Voice' })).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Settings Voice Sheet');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Settings Voice Sheet');
+    // Escape closes settings-voice sheet back to Settings (never jumping Settings -> Library)
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
 
     // Return to Library and open Lu Xun CJK book (with ruby & footnote skip nodes)
     await page.getByRole('button', { name: 'Back to Library' }).click();
@@ -252,7 +269,35 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
     await assertEinkDomPurity(page, 'E-Ink 6-Control Chrome');
     await assertStrictTwoColorHistogram(page, 'E-Ink 6-Control Chrome');
 
+    // [P1-4] Focused Go to % input passes strict 2-colour histogram (zero native spin buttons)
+    await page.getByRole('button', { name: 'Go to %' }).click();
+    await assertEinkDomPurity(page, 'E-Ink Go to % Focused');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Go to % Focused');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+
+    // [P0-1] & [P1-4] Contents sheet packs multi-row PagedList & focused Search input passes strict histogram
+    if (!(await page.locator('.mb-chrome-top').count())) {
+      await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    }
+    await page.getByRole('button', { name: 'Contents', exact: true }).first().click();
+    await expect(page.getByRole('dialog', { name: 'Contents' })).toBeVisible();
+    expect(await page.locator('.mb-sheet .mb-paged-footer').count()).toBe(0);
+    await page.getByRole('dialog').getByText('Search', { exact: true }).click();
+    await page.getByRole('dialog').locator('input').fill('我');
+    await expect
+      .poll(async () => page.locator('.mb-sheet .mb-paged-eink-viewport button').count())
+      .toBeGreaterThanOrEqual(2);
+    await assertEinkDomPurity(page, 'E-Ink Book Search Focused');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Book Search Focused');
+    await page.keyboard.press('Escape'); // blur input
+    await page.keyboard.press('Escape'); // close Contents sheet (triggers tall-sheet E-Ink refresh!)
+    await expect(page.getByRole('dialog', { name: 'Contents' })).toHaveCount(0);
+
     // Open Appearance sheet (`Aa`) -> verify Text boldness replaces theme swatches
+    if (!(await page.locator('.mb-chrome-top').count())) {
+      await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    }
     await page.getByRole('button', { name: 'Appearance' }).click();
     await expect(page.getByRole('dialog', { name: 'Appearance' })).toBeVisible();
     await expect(page.getByText('Text boldness')).toBeVisible();
@@ -262,6 +307,9 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
 
     // Close Appearance sheet, start Read Aloud -> verify 2px solid #000000 sentence underline & zero word highlight
     await page.keyboard.press('Escape');
+    if (!(await page.locator('.mb-chrome-top').count())) {
+      await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    }
     await page.getByRole('button', { name: 'Read aloud' }).click();
 
     await expect
@@ -277,5 +325,125 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
 
     await assertEinkDomPurity(page, 'E-Ink Read Aloud Underline');
     await assertStrictTwoColorHistogram(page, 'E-Ink Read Aloud Underline');
+
+    // [P0-2] Center tap while Read Aloud bar is hidden summons ReadAloudBar
+    await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await expect(page.locator('.mb-tts-bar')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Read Aloud Bar');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Read Aloud Bar');
+  });
+
+  test('packs every PagedList item inside viewport with zero clipping across 4 E-Ink viewports & turns pages during Read Aloud', async ({
+    browser,
+  }) => {
+    const assertZeroClipping = async (page: Page, label: string): Promise<void> => {
+      const clipped = await page.evaluate(() => {
+        const issues: string[] = [];
+        for (const container of Array.from(
+          document.querySelectorAll('.mb-paged-eink-viewport, .mb-sheet'),
+        )) {
+          if (!container.getClientRects().length) continue;
+          const cr = container.getBoundingClientRect();
+          if (
+            container.scrollHeight > container.clientHeight + 2 ||
+            container.scrollWidth > container.clientWidth + 2
+          ) {
+            issues.push(
+              `${container.className}: scroll ${container.scrollWidth}x${container.scrollHeight} > client ${container.clientWidth}x${container.clientHeight}`,
+            );
+          }
+          for (const item of Array.from(
+            container.querySelectorAll(
+              'button, input, [role="button"], .mb-list-row, .mb-sheet-row, [data-setting-row]',
+            ),
+          )) {
+            const ir = item.getBoundingClientRect();
+            if (ir.width <= 0) continue;
+            if (ir.bottom > cr.bottom + 1 || ir.top < cr.top - 1 || ir.right > cr.right + 1) {
+              issues.push(
+                `${container.className} -> ${(item.getAttribute('aria-label') || item.textContent || '').trim().slice(0, 24)} [${Math.round(ir.top)}..${Math.round(ir.bottom)} vs ${Math.round(cr.top)}..${Math.round(cr.bottom)}]`,
+              );
+            }
+          }
+        }
+        return issues;
+      });
+      expect(clipped, `Zero-clipping violation on ${label}`).toEqual([]);
+    };
+
+    for (const vp of [
+      { width: 758, height: 1024 },
+      { width: 600, height: 800 },
+      { width: 1072, height: 1448 },
+      { width: 1024, height: 600 },
+    ]) {
+      const context = await browser.newContext({ viewport: vp });
+      const page = await context.newPage();
+      await page.goto('/?eink=on&platform=android&extraBooks=10');
+      await expect(page.getByTestId('paged-list-eink')).toBeVisible();
+      await assertZeroClipping(page, `${vp.width}x${vp.height} Library`);
+
+      await page.getByRole('button', { name: 'Settings' }).click();
+      await expect(page.getByTestId('settings-screen')).toBeVisible();
+      await assertZeroClipping(page, `${vp.width}x${vp.height} Settings p1`);
+      const nextBtn = page.getByRole('button', { name: 'Next ›' });
+      if ((await nextBtn.count()) > 0 && (await nextBtn.isEnabled())) {
+        await nextBtn.click();
+        await assertZeroClipping(page, `${vp.width}x${vp.height} Settings p2`);
+      }
+
+      await page.getByRole('button', { name: 'Back to Library' }).click();
+      await page.getByRole('button', { name: /Tale of Two Cities/ }).first().click();
+      await page.waitForSelector('iframe.mb-reader-frame');
+      await expect
+        .poll(async () =>
+          page.evaluate(() => {
+            const f = document.querySelector<HTMLIFrameElement>('iframe.mb-reader-frame');
+            return (f?.contentDocument?.body?.textContent?.length ?? 0) > 100;
+          }),
+        )
+        .toBe(true);
+
+      await page.mouse.click(vp.width / 2, vp.height / 2);
+      await page.getByRole('button', { name: 'Contents', exact: true }).first().click();
+      await expect(page.getByRole('dialog', { name: 'Contents' })).toBeVisible();
+      // [P0-1] All 3 TOC entries of A Tale of Two Cities fit on 1 page without 1/3 footer!
+      expect(await page.locator('.mb-sheet .mb-paged-eink-viewport button').count()).toBe(3);
+      expect(await page.locator('.mb-sheet .mb-paged-footer').count()).toBe(0);
+      await assertZeroClipping(page, `${vp.width}x${vp.height} Contents`);
+
+      // On 758x1024 also verify [P0-2]: side-zone tap turns page even while Read Aloud is active
+      if (vp.width === 758) {
+        await page.keyboard.press('Escape');
+        if (!(await page.locator('.mb-chrome-top').count())) {
+          await page.mouse.click(vp.width / 2, vp.height / 2);
+        }
+        await page.getByRole('button', { name: 'Read aloud' }).click();
+        await expect
+          .poll(async () =>
+            page.evaluate(() => window.__minibookTestHarness.speech.currentUtterance()?.id ?? null),
+          )
+          .not.toBeNull();
+        const beforeScroll = await page.evaluate(() => {
+          const f = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[style*="visibility: visible"]',
+          );
+          return f?.contentDocument?.documentElement.scrollLeft ?? 0;
+        });
+        await page.mouse.click(Math.round(vp.width * 0.9), Math.round(vp.height * 0.5));
+        await expect
+          .poll(async () =>
+            page.evaluate(() => {
+              const f = document.querySelector<HTMLIFrameElement>(
+                'iframe.mb-reader-frame[style*="visibility: visible"]',
+              );
+              return f?.contentDocument?.documentElement.scrollLeft ?? 0;
+            }),
+          )
+          .toBeGreaterThan(beforeScroll);
+      }
+
+      await context.close();
+    }
   });
 });

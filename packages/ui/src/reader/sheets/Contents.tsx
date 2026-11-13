@@ -69,7 +69,8 @@ function renderBoldMatch(snippet: string, query: string): ReactElement {
 
 /**
  * 3-Segment `Contents · Bookmarks · Search` Sheet (`PRODUCT_DESIGN.md` §4.5 & `UI_SPEC.md` §4.5).
- * Every list is backed by `PagedList` so E-Ink mode stays strictly zero-scroll.
+ * Every list is backed by `PagedList` inside a definite-height `listSheet` so E-Ink mode stays
+ * strictly zero-scroll and packs real measured rows per screen.
  */
 export function ContentsSheet({
   open,
@@ -81,12 +82,20 @@ export function ContentsSheet({
   onClose,
 }: ContentsSheetProps): ReactElement | null {
   const t = useT();
-  const { isEink } = useHostContext();
+  const { isEink, settings, refreshController } = useHostContext();
   const tab = useRouteStore((s) => s.contentsTab);
   const setTab = useRouteStore((s) => s.setContentsTab);
 
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
+
+  const handlePageTurn = (swap: () => void): void => {
+    void refreshController.runTurn({
+      isEink,
+      cadence: settings.fullRefreshEvery,
+      swap,
+    });
+  };
 
   const tocRows = useMemo(() => {
     if (!session) return [];
@@ -133,7 +142,7 @@ export function ContentsSheet({
   }, [open, tab, session, query]);
 
   return (
-    <Sheet open={open} label={t('contents')} onClose={onClose}>
+    <Sheet open={open} label={t('contents')} listSheet onClose={onClose}>
       <Segmented<ContentsTab>
         label={t('contents')}
         value={tab}
@@ -151,9 +160,11 @@ export function ContentsSheet({
           isEink={isEink}
           layer="sheet"
           estimatedItemHeight={46}
-          fallbackPageSize={6}
+          fallbackPageSize={8}
+          resetKey="contents"
           prevLabel={t('prevPage')}
           nextLabel={t('nextPage')}
+          onPageTurn={handlePageTurn}
           renderItems={(visible) => (
             <div role="list" aria-label={t('contents')}>
               {visible.map((row) => (
@@ -165,7 +176,6 @@ export function ContentsSheet({
                   style={{ paddingLeft: `${row.depth * 16}px` }}
                   onClick={() => {
                     onSelectLocator(row.locator);
-                    onClose(false);
                   }}
                 >
                   <span>
@@ -191,9 +201,11 @@ export function ContentsSheet({
             isEink={isEink}
             layer="sheet"
             estimatedItemHeight={56}
-            fallbackPageSize={5}
+            fallbackPageSize={6}
+            resetKey="bookmarks"
             prevLabel={t('prevPage')}
             nextLabel={t('nextPage')}
+            onPageTurn={handlePageTurn}
             renderItems={(visible) => (
               <div role="list" aria-label={t('bookmarks')}>
                 {visible.map((bm) => (
@@ -204,7 +216,6 @@ export function ContentsSheet({
                       style={{ borderBottom: 'none' }}
                       onClick={() => {
                         onSelectLocator({ section: bm.section, offset: bm.offset });
-                        onClose(false);
                       }}
                     >
                       <div>
@@ -231,7 +242,8 @@ export function ContentsSheet({
       {tab === 'search' && (
         <>
           <input
-            type="search"
+            type="text"
+            role="searchbox"
             className="mb-input"
             placeholder={t('searchInBook')}
             aria-label={t('searchInBook')}
@@ -250,9 +262,11 @@ export function ContentsSheet({
               isEink={isEink}
               layer="sheet"
               estimatedItemHeight={56}
-              fallbackPageSize={5}
+              fallbackPageSize={6}
+              resetKey={query.trim()}
               prevLabel={t('prevPage')}
               nextLabel={t('nextPage')}
+              onPageTurn={handlePageTurn}
               renderItems={(visible) => (
                 <div role="list" aria-label={t('search')}>
                   {visible.map((hit, i) => {
@@ -266,7 +280,6 @@ export function ContentsSheet({
                         className="mb-list-row"
                         onClick={() => {
                           onSelectLocator(hit.locator, hit.length);
-                          onClose(false);
                         }}
                       >
                         <div>

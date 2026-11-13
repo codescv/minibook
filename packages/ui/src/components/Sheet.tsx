@@ -5,6 +5,7 @@ export interface SheetProps {
   readonly label: string;
   readonly onClose: (coveredHalfScreen: boolean) => void;
   readonly popoverOnDesktop?: boolean;
+  readonly listSheet?: boolean;
   readonly children: ReactNode;
 }
 
@@ -13,6 +14,7 @@ export function Sheet({
   label,
   onClose,
   popoverOnDesktop = true,
+  listSheet = false,
   children,
 }: SheetProps): ReactElement | null {
   const sheetRef = useRef<HTMLElement | null>(null);
@@ -41,6 +43,7 @@ export function Sheet({
         aria-modal="true"
         aria-label={label}
         data-popover={popoverOnDesktop ? 'true' : 'false'}
+        data-list-sheet={listSheet ? 'true' : undefined}
       >
         <div className="mb-sheet-grabber" aria-hidden="true" />
         {children}

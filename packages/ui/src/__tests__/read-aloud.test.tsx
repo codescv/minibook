@@ -232,6 +232,70 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
       'flash:white',
       'flash:off',
     ]);
+
+    // Cadence Off (`0`): never triggers flash even on manual refresh (`ARCHITECTURE.md` §9.4)
+    swTrace.length = 0;
+    await swCtl.runTurn({
+      isEink: true,
+      cadence: 0,
+      userPressedRefresh: true,
+      swap: () => {
+        swTrace.push('swap-off');
+      },
+    });
+    expect(swTrace).toEqual(['swap-off']);
+
+    // Concurrent calls during flash serialize cleanly without overlapping overlays
+    swTrace.length = 0;
+    let releaseHold!: () => void;
+    const holdPromise = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    const serialCtl = new RefreshController({
+      host: swHost,
+      setFlashPhase: (p) => swTrace.push(`flash:${p ?? 'off'}`),
+      blackHoldMs: 1,
+      whiteHoldMs: 1,
+      waitPaint: async () => {
+        swTrace.push('paint');
+      },
+      sleep: async (ms) => {
+        if (ms === 1 && !swTrace.includes('flash:white')) {
+          await holdPromise;
+        }
+      },
+    });
+
+    const p1 = serialCtl.runTurn({
+      isEink: true,
+      cadence: 5,
+      closedSheetCoveredHalfScreen: true,
+      swap: () => {
+        swTrace.push('swap:A');
+      },
+    });
+    const p2 = serialCtl.runTurn({
+      isEink: true,
+      cadence: 5,
+      swap: () => {
+        swTrace.push('swap:B');
+      },
+    });
+
+    // Wait for A to reach black hold; B must NOT have swapped yet!
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(swTrace).toEqual(['flash:black', 'paint', 'swap:A']);
+    releaseHold();
+    await Promise.all([p1, p2]);
+    expect(swTrace).toEqual([
+      'flash:black',
+      'paint',
+      'swap:A',
+      'flash:white',
+      'flash:off',
+      'swap:B',
+    ]);
   });
 
   it('[P1-U3] advances across >40k virtual render unit boundaries in AutoPageTurn', () => {

@@ -43,7 +43,7 @@ export function VoiceSheet({
   onCloseSheet,
 }: VoiceSheetProps): ReactElement | null {
   const t = useT();
-  const { host, speechPlayer, settings, isEink } = useHostContext();
+  const { host, speechPlayer, settings, isEink, refreshController } = useHostContext();
   const rate = useReadAloudStore((s) => s.rate);
   const selectedVoice = useReadAloudStore((s) => s.voice);
   const bookLang = useReadAloudStore((s) => s.bookLang);
@@ -147,7 +147,7 @@ export function VoiceSheet({
     selectedVoice.kind !== 'system';
 
   return (
-    <Sheet open={open} label={t('voiceAndSpeed')} onClose={onCloseSheet}>
+    <Sheet open={open} label={t('voiceAndSpeed')} listSheet onClose={onCloseSheet}>
       <div className="mb-sheet-row">
         <span className="mb-sheet-label">{t('speed')}</span>
         <Stepper
@@ -168,9 +168,17 @@ export function VoiceSheet({
         isEink={isEink}
         layer="sheet"
         estimatedItemHeight={48}
-        fallbackPageSize={5}
+        fallbackPageSize={6}
+        resetKey={langPrefix}
         prevLabel={t('prevPage')}
         nextLabel={t('nextPage')}
+        onPageTurn={(swap) => {
+          void refreshController.runTurn({
+            isEink,
+            cadence: settings.fullRefreshEvery,
+            swap,
+          });
+        }}
         renderItems={(visible) => (
           <div role="listbox" aria-label={t('voice')}>
             {visible.map((item) => {
@@ -213,8 +221,9 @@ export function VoiceSheet({
         type="button"
         className="mb-more-voices-btn"
         onClick={() => {
-          onCloseSheet(false);
-          useRouteStore.getState().openSettings();
+          useRouteStore.getState().closeSheetWithRefresh(undefined, () => {
+            useRouteStore.getState().openSettings();
+          });
         }}
       >
         {t('moreVoices')}
@@ -268,7 +277,7 @@ export function SleepTimerSheet({
               className="mb-list-row"
               onClick={() => {
                 controller.setSleepTimer(opt.config);
-                onCloseSheet(false);
+                useRouteStore.getState().closeSheetWithRefresh();
               }}
             >
               <span>{label}</span>

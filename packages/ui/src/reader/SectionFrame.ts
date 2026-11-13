@@ -452,22 +452,27 @@ export class SectionFrameManager {
     };
 
     const executeZoneAction = (clientX: number, clientY: number): void => {
-      const loc = paginator.locatorAtPoint(clientX, clientY);
-      if (loc && this.callbacks.onReadAloudTapLocator(loc)) {
-        return;
-      }
       const Vw = Math.max(1, paginator.getGeometry().Vw);
       const ratio = clientX / Vw;
       const isRtl = sectionDoc.dir === 'rtl';
+      // Side zones (<28% / >72%) ALWAYS turn pages, even while Read Aloud is active (`[P0-2]`)
       if (ratio < 0.28) {
         if (isRtl) this.callbacks.onNextPage();
         else this.callbacks.onPrevPage();
-      } else if (ratio > 0.72) {
+        return;
+      }
+      if (ratio > 0.72) {
         if (isRtl) this.callbacks.onPrevPage();
         else this.callbacks.onNextPage();
-      } else {
-        this.callbacks.onToggleChrome();
+        return;
       }
+
+      // Center zone: sentence-seek ONLY if point hits actual glyph rects and ReadAloudBar is open
+      const hitLoc = paginator.locatorAtPoint(clientX, clientY, { strictHitRect: true });
+      if (hitLoc && this.callbacks.onReadAloudTapLocator(hitLoc)) {
+        return;
+      }
+      this.callbacks.onToggleChrome();
     };
 
     const onPointerUp = (e: PointerEvent): void => {

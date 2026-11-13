@@ -8,7 +8,11 @@ import {
 } from 'react';
 import type { BarePageCaptionMode, Bookmark, BookSession, Locator, SectionDoc } from '@minibook/core';
 import { setReaderShortcutActions } from '../app/keymap';
-import { registerPageableHandler, useRouteStore } from '../app/routes';
+import {
+  measureOpenSheetCoveredHalf,
+  registerPageableHandler,
+  useRouteStore,
+} from '../app/routes';
 import {
   fractionForLocator,
   locatorForFraction,
@@ -254,11 +258,11 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
       if (!sess || !active) return;
 
       setSearchHighlight(null);
-      if (manual && chromeOpen) {
-        useRouteStore.getState().setChromeOpen(false);
-      }
 
       const performSwap = async (): Promise<void> => {
+        if (manual && useRouteStore.getState().chromeOpen) {
+          useRouteStore.getState().setChromeOpen(false);
+        }
         const curPage = active.paginator.getCurrentPage();
         const total = active.paginator.getPageCount();
 
@@ -370,7 +374,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     onToggleChrome: () => {
       const route = useRouteStore.getState();
       if (route.activeSheet !== null) {
-        route.closeSheet();
+        route.closeSheetWithRefresh();
         return;
       }
       if (raActive && raBookId === bookId) {
@@ -378,7 +382,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           route.setReadAloudBarOpen(false);
           route.setChromeOpen(true);
         } else if (route.chromeOpen) {
-          route.setChromeOpen(false);
+          route.closeChromeWithRefresh();
         } else {
           route.setReadAloudBarOpen(true);
         }
@@ -397,16 +401,28 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         return;
       }
       setBackJump({ locator: readingAnchorRef.current, label: `p. ${pageIndex + 1}` });
-      void loadAndShowUnit(sess, resolved.section, {
-        targetOffset: resolved.offset,
-        notifySpeechFollow: true,
+      void refreshController.runTurn({
+        isEink,
+        cadence: settings.fullRefreshEvery,
+        swap: async () => {
+          await loadAndShowUnit(sess, resolved.section, {
+            targetOffset: resolved.offset,
+            notifySpeechFollow: true,
+          });
+        },
       });
     },
     onExternalLink: (url: string) => {
       void host.files.openExternal(url);
     },
     onReadAloudTap: (loc: Locator) => {
-      if (raActive && raBookId === bookId) {
+      const route = useRouteStore.getState();
+      if (
+        raActive &&
+        raBookId === bookId &&
+        route.readAloudBarOpen &&
+        route.activeSheet === null
+      ) {
         readingAnchorRef.current = loc;
         return readAloud.seekToLocator(loc);
       }
@@ -658,6 +674,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         { start: searchHighlight.start, end: searchHighlight.end },
         isEink,
       );
+    } else {
+      active.highlighter.paintSearchHit(null, isEink);
     }
   }, [
     raActive,
@@ -764,20 +782,9 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     });
   }, [handleToggleBookmark, handleStartReadAloud, raActive, raBookId, bookId, readAloud]);
 
-  const handleSheetClose = useCallback(
-    (coveredHalf: boolean) => {
-      useRouteStore.getState().closeSheet();
-      if (isEink) {
-        void refreshController.runTurn({
-          isEink,
-          cadence: settings.fullRefreshEvery,
-          closedSheetCoveredHalfScreen: coveredHalf,
-          swap: () => {},
-        });
-      }
-    },
-    [isEink, refreshController, settings.fullRefreshEvery],
-  );
+  const handleSheetClose = useCallback((coveredHalf: boolean) => {
+    useRouteStore.getState().closeSheetWithRefresh(coveredHalf);
+  }, []);
 
   const pagesLeft = Math.max(0, pageCount - pageIndex - 1);
   const cycleCaptionMode = (): void => {
@@ -899,9 +906,15 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           if (!session) return;
           setBackJump({ locator: readingAnchorRef.current, label: `${Math.round(currentFraction * 100)}%` });
           const dest = locatorForFraction(session.spine, targetFrac);
-          void loadAndShowUnit(session, dest.section, {
-            targetOffset: dest.offset,
-            notifySpeechFollow: true,
+          void refreshController.runTurn({
+            isEink,
+            cadence: settings.fullRefreshEvery,
+            swap: async () => {
+              await loadAndShowUnit(session, dest.section, {
+                targetOffset: dest.offset,
+                notifySpeechFollow: true,
+              });
+            },
           });
         }}
         onPreviewChapterForFraction={(frac) => {
@@ -918,9 +931,15 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           const curPos = linear.findIndex((s) => s.index === sectionIndex);
           const target = linear[Math.max(0, Math.min(linear.length - 1, curPos + delta))];
           if (target) {
-            void loadAndShowUnit(session, target.index, {
-              targetOffset: 0,
-              notifySpeechFollow: true,
+            void refreshController.runTurn({
+              isEink,
+              cadence: settings.fullRefreshEvery,
+              swap: async () => {
+                await loadAndShowUnit(session, target.index, {
+                  targetOffset: 0,
+                  notifySpeechFollow: true,
+                });
+              },
             });
           }
         }}
@@ -928,9 +947,15 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           if (!session || !backJump) return;
           const target = backJump.locator;
           setBackJump(null);
-          void loadAndShowUnit(session, target.section, {
-            targetOffset: target.offset,
-            notifySpeechFollow: true,
+          void refreshController.runTurn({
+            isEink,
+            cadence: settings.fullRefreshEvery,
+            swap: async () => {
+              await loadAndShowUnit(session, target.section, {
+                targetOffset: target.offset,
+                notifySpeechFollow: true,
+              });
+            },
           });
         }}
       />
@@ -951,6 +976,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         bookmarks={bookmarks}
         onSelectLocator={(loc, matchLen) => {
           if (!session) return;
+          const coveredHalf = measureOpenSheetCoveredHalf();
           setBackJump({ locator: readingAnchorRef.current, label: `p. ${pageIndex + 1}` });
           if (matchLen && matchLen > 0) {
             setSearchHighlight({
@@ -961,9 +987,18 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           } else {
             setSearchHighlight(null);
           }
-          void loadAndShowUnit(session, loc.section, {
-            targetOffset: loc.offset,
-            notifySpeechFollow: true,
+          void refreshController.runTurn({
+            isEink,
+            cadence: settings.fullRefreshEvery,
+            closedSheetCoveredHalfScreen: coveredHalf,
+            swap: async () => {
+              useRouteStore.getState().closeSheet();
+              useRouteStore.getState().setChromeOpen(false);
+              await loadAndShowUnit(session, loc.section, {
+                targetOffset: loc.offset,
+                notifySpeechFollow: true,
+              });
+            },
           });
         }}
         onRemoveBookmark={(id) => {

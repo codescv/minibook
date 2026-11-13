@@ -102,6 +102,8 @@ type HighlightCtor = new (...ranges: AbstractRange[]) => unknown;
  *   falling back to non-overlapping merged line-rect overlays (`0px` seam).
  * - E-Ink mode: sentence-only `2px solid #000000` crisp integer underline bars (zero background tint,
  *   `mb-word` never registered).
+ * - Maintains independent `speechLayer` and `searchLayer` containers so `paintSpeech` never wipes
+ *   search underlines and `paintSearchHit` always clears stale search underlines first.
  */
 export class Highlighter {
   private readonly frameDoc: Document;
@@ -109,6 +111,8 @@ export class Highlighter {
   private readonly sectionDoc: SectionDoc;
   private readonly forceOverlayFallback: boolean;
   private overlayRoot: HTMLDivElement | null = null;
+  private speechLayer: HTMLDivElement | null = null;
+  private searchLayer: HTMLDivElement | null = null;
 
   constructor(options: {
     readonly frameDoc: Document;
@@ -133,19 +137,37 @@ export class Highlighter {
     return null;
   }
 
-  private ensureOverlayRoot(): HTMLDivElement {
-    if (this.overlayRoot && this.overlayRoot.isConnected) {
-      return this.overlayRoot;
+  private ensureLayers(): { speech: HTMLDivElement; search: HTMLDivElement } {
+    if (
+      this.overlayRoot?.isConnected &&
+      this.speechLayer?.isConnected &&
+      this.searchLayer?.isConnected
+    ) {
+      return { speech: this.speechLayer, search: this.searchLayer };
     }
-    const div = this.frameDoc.createElement('div');
-    div.setAttribute('data-mb-skip', '');
-    div.setAttribute('aria-hidden', 'true');
-    div.setAttribute('data-testid', 'mb-highlight-overlay');
-    div.style.cssText =
+    const root = this.frameDoc.createElement('div');
+    root.setAttribute('data-mb-skip', '');
+    root.setAttribute('aria-hidden', 'true');
+    root.setAttribute('data-testid', 'mb-highlight-overlay');
+    root.style.cssText =
       'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:5;';
-    this.frameDoc.documentElement.appendChild(div);
-    this.overlayRoot = div;
-    return div;
+
+    const speech = this.frameDoc.createElement('div');
+    speech.setAttribute('data-layer', 'speech');
+    speech.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;';
+
+    const search = this.frameDoc.createElement('div');
+    search.setAttribute('data-layer', 'search');
+    search.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;';
+
+    root.appendChild(speech);
+    root.appendChild(search);
+    this.frameDoc.documentElement.appendChild(root);
+
+    this.overlayRoot = root;
+    this.speechLayer = speech;
+    this.searchLayer = search;
+    return { speech, search };
   }
 
   private sectionRangeToDomRange(sectionStart: number, sectionEnd: number): Range | null {
@@ -164,8 +186,8 @@ export class Highlighter {
     readonly isEink: boolean;
   }): void {
     const api = this.getHighlightApi();
-    const overlay = this.ensureOverlayRoot();
-    overlay.replaceChildren();
+    const { speech } = this.ensureLayers();
+    speech.replaceChildren();
 
     if (api) {
       api.registry.delete('mb-sentence');
@@ -186,7 +208,7 @@ export class Highlighter {
         const line = this.frameDoc.createElement('div');
         line.className = 'mb-hl-overlay-eink-line';
         line.style.cssText = `position:absolute;left:${r.left}px;top:${r.bottom + 1}px;width:${r.width}px;height:2px;background-color:#000000;pointer-events:none;`;
-        overlay.appendChild(line);
+        speech.appendChild(line);
       }
       return;
     }
@@ -209,7 +231,7 @@ export class Highlighter {
       const box = this.frameDoc.createElement('div');
       box.className = 'mb-hl-overlay-box';
       box.style.cssText = `position:absolute;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;background-color:${colors.hlSentence};pointer-events:none;`;
-      overlay.appendChild(box);
+      speech.appendChild(box);
     }
 
     if (options.word) {
@@ -221,7 +243,7 @@ export class Highlighter {
           const ul = this.frameDoc.createElement('div');
           ul.className = 'mb-hl-overlay-box';
           ul.style.cssText = `position:absolute;left:${r.left}px;top:${r.bottom}px;width:${r.width}px;height:2px;background-color:${strokeColor};pointer-events:none;`;
-          overlay.appendChild(ul);
+          speech.appendChild(ul);
         }
       }
     }
@@ -232,6 +254,8 @@ export class Highlighter {
     isEink: boolean,
   ): void {
     const api = this.getHighlightApi();
+    const { search } = this.ensureLayers();
+    search.replaceChildren();
     if (api) {
       api.registry.delete('mb-search');
     }
@@ -240,13 +264,12 @@ export class Highlighter {
     if (!range) return;
 
     if (isEink) {
-      const overlay = this.ensureOverlayRoot();
       const rects = mergeLineRects(range.getClientRects(), this.frameDoc.documentElement.scrollLeft);
       for (const r of rects) {
         const line = this.frameDoc.createElement('div');
         line.className = 'mb-hl-overlay-eink-line';
         line.style.cssText = `position:absolute;left:${r.left}px;top:${r.bottom + 1}px;width:${r.width}px;height:2px;background-color:#000000;pointer-events:none;`;
-        overlay.appendChild(line);
+        search.appendChild(line);
       }
       return;
     }
@@ -263,6 +286,7 @@ export class Highlighter {
       api.registry.delete('mb-word');
       api.registry.delete('mb-search');
     }
-    this.overlayRoot?.replaceChildren();
+    this.speechLayer?.replaceChildren();
+    this.searchLayer?.replaceChildren();
   }
 }

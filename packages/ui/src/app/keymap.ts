@@ -207,6 +207,13 @@ export function installKeymapAndPolicySync(
     }
   });
 
+  const mqSlow =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(update: slow)') : null;
+  const mqMono =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(monochrome)') : null;
+  mqSlow?.addEventListener?.('change', syncPolicy);
+  mqMono?.addEventListener?.('change', syncPolicy);
+
   window.addEventListener('keydown', handleGlobalKeyDown);
   document.addEventListener('focusin', onFocusIn);
   document.addEventListener('focusout', onFocusOut);
@@ -218,6 +225,8 @@ export function installKeymapAndPolicySync(
     unsubRoute();
     unsubPageable();
     unsubHost();
+    mqSlow?.removeEventListener?.('change', syncPolicy);
+    mqMono?.removeEventListener?.('change', syncPolicy);
     window.removeEventListener('keydown', handleGlobalKeyDown);
     document.removeEventListener('focusin', onFocusIn);
     document.removeEventListener('focusout', onFocusOut);
