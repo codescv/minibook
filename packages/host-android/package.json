@@ -1,0 +1,41 @@
+{
+  "name": "@minibook/host-android",
+  "version": "0.1.0",
+  "description": "MiniBook Android standalone host (Capacitor 8, appId dev.minibook.app, Books): bounded native fs.read, Media3 ReadAloudService, and E-Ink detector/refresh/hardware-key bridge.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./plugin-types": "./src/plugin-types.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "vite dev web",
+    "build": "tsc --noEmit",
+    "build:web": "vite build web",
+    "cap:sync": "pnpm run build:web && cap sync android",
+    "build:apk": "node ../../scripts/bump-version.mjs && pnpm run cap:sync && cd android && ./gradlew assembleRelease",
+    "build:apk:ci": "pnpm run cap:sync && cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.5.0",
+    "@minibook/core": "workspace:*",
+    "@minibook/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@types/node": "~22.20.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.0.6",
+    "vitest": "^4.1.0"
+  }
+}

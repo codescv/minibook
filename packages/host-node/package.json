@@ -1,0 +1,51 @@
+{
+  "name": "@minibook/host-node",
+  "version": "0.1.0",
+  "description": "MiniBook PC Web App runtime: pure Node.js loopback server (Hono, node:sqlite, HTTP 206 Range book & derived stream serving, Edge/OpenAI speech proxy) + browser REST PlatformHost.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "minibook": "./bin/minibook.mjs"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/server/main.ts --dev",
+    "dev:web": "vite dev web",
+    "build": "tsc --noEmit",
+    "start": "node bin/minibook.mjs",
+    "start:app": "node bin/minibook.mjs --new-browser"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.4",
+    "@minibook/core": "workspace:*",
+    "hono": "^4.8.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@minibook/ui": "workspace:*",
+    "@types/node": "~22.20.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.18.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "^0.25.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.0.6",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
