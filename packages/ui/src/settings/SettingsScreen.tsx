@@ -29,6 +29,7 @@ import {
   getSpeechModelsApi,
   resolveEffectiveModelSourceHost,
   useSpeechModelStatus,
+  useSpeechModelStore,
 } from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
 
@@ -1003,7 +1004,9 @@ export function SettingsScreen(): ReactElement {
                     modelDownloadSource,
                     modelMirrorBaseUrl: null,
                   });
-                  if (modelStatus?.state === 'downloading') {
+                  const latestState =
+                    useSpeechModelStore.getState().status?.state ?? modelStatus?.state;
+                  if (latestState === 'downloading' || latestState === 'verifying') {
                     void modelsApi.download(
                       KOKORO_MODEL_ID,
                       {
@@ -1034,7 +1037,9 @@ export function SettingsScreen(): ReactElement {
                   modelMirrorBaseUrl: nextMirror,
                   modelDownloadSource: nextSource,
                 });
-                if (modelStatus?.state === 'downloading') {
+                const latestState =
+                  useSpeechModelStore.getState().status?.state ?? modelStatus?.state;
+                if (latestState === 'downloading' || latestState === 'verifying') {
                   void modelsApi.download(
                     KOKORO_MODEL_ID,
                     {

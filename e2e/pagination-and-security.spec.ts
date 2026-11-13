@@ -513,6 +513,21 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
       .evaluate((el) => window.getComputedStyle(el).transitionDuration);
     expect(parseFloat(settingsLayerTransition)).toBeGreaterThan(0);
 
+    // Library layer underneath must have covered-settings transition and non-identity transform
+    await expect
+      .poll(async () =>
+        page
+          .locator('.mb-screen-layer.mb-screen-library')
+          .evaluate((el) => ({
+            dt: el.getAttribute('data-transition'),
+            tr: window.getComputedStyle(el).transform,
+          })),
+      )
+      .toEqual({
+        dt: 'covered-settings',
+        tr: expect.not.stringMatching(/^none$/),
+      });
+
     await page.locator('[data-setting-row="on-device-neural-voice"]').click();
     await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toBeVisible();
 
@@ -534,8 +549,19 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
     await page.getByRole('tab', { name: 'Hugging Face' }).click();
     await expect(page.getByTestId('kokoro-status-text')).toContainText('via huggingface.co');
 
-    // Close sheet and return to Library
-    await page.keyboard.press('Escape');
+    // Pull down sheet from top grabber zone (sheetBox.y + 10) -> tracks dy mid-gesture and closes on release >= 56px
+    const sheetBox = await page.locator('.mb-sheet').boundingBox();
+    expect(sheetBox).not.toBeNull();
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 50, { steps: 4 });
+    const midPullTransform = await page
+      .locator('.mb-sheet')
+      .evaluate((el) => (el as HTMLElement).style.transform);
+    expect(midPullTransform).toContain('translate3d(');
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 90, { steps: 4 });
+    await page.mouse.up();
+    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Back' }).click();
 
     // 2. Open multi-page book (`b_long40k`) and test 1:1 intra-chapter drag + cancelled drag spring-back
@@ -586,10 +612,10 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
       )
       .toBe(midIntraDrag.Vw);
 
-    // Cancelled short drag (-14px) shifts mid-gesture and springs back to Page 1 on release
+    // Cancelled short drag (-30px) shifts mid-gesture and springs back to Page 1 on release without turning to Page 2
     await page.mouse.move(250, 420);
     await page.mouse.down();
-    await page.mouse.move(236, 420);
+    await page.mouse.move(220, 420, { steps: 4 });
     const midShortDrag = await page.evaluate(() => {
       const f = document.querySelector<HTMLIFrameElement>(
         'iframe.mb-reader-frame[data-frame-role="active"]',
@@ -598,6 +624,7 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
     });
     expect(midShortDrag).toBeGreaterThan(midIntraDrag.Vw);
     await page.mouse.up();
+    await page.waitForTimeout(300);
     await expect
       .poll(async () =>
         page.evaluate(() => {
@@ -609,7 +636,7 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
       )
       .toBe(midIntraDrag.Vw);
 
-    // 3. Cross-chapter edge drag on `b_dickens`: pre-warmed next neighbor slides into view mid-gesture!
+    // 3. Cross-chapter edge drag on `b_dickens`: pre-warmed next neighbor slides into view mid-gesture and stays populated!
     await page.goto('/?book=b_dickens&theme=paper');
     await page.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
     await expect
@@ -623,21 +650,7 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
       )
       .toBe(true);
 
-    // Turn to the last page of Section 0 if needed
-    await page.evaluate(() => {
-      const activeFrame = document.querySelector<HTMLIFrameElement>(
-        'iframe.mb-reader-frame[data-frame-role="active"]',
-      )!;
-      const Vw = parseFloat(activeFrame.style.width);
-      const html = activeFrame.contentDocument!.documentElement;
-      // Ensure we are on the last page of Section 0
-      while (html.scrollLeft + Vw < html.scrollWidth - 2) {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
-        break;
-      }
-    });
-
-    // Advance via ArrowRight until we are on the last page of the first section, or drag at the boundary
+    // Advance via ArrowRight until we are on the last page of Section 0
     const pagesInSec0 = await page.evaluate(() => {
       const activeFrame = document.querySelector<HTMLIFrameElement>(
         'iframe.mb-reader-frame[data-frame-role="active"]',
@@ -647,7 +660,7 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
     });
     for (let i = 1; i < pagesInSec0; i++) {
       await page.keyboard.press('ArrowRight');
-      await page.waitForTimeout(220);
+      await page.waitForTimeout(280);
     }
 
     // Now at the last page of Section 0: drag left by 140px and hold BEFORE mouse.up
@@ -680,9 +693,52 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
           const activeFrame = document.querySelector<HTMLIFrameElement>(
             'iframe.mb-reader-frame[data-frame-role="active"]',
           )!;
-          return activeFrame.style.transform;
+          return {
+            transform: activeFrame.style.transform,
+            textLen: activeFrame.contentDocument?.body?.textContent?.trim().length ?? 0,
+            scrollWidth: activeFrame.contentDocument?.documentElement?.scrollWidth ?? 0,
+            Vw: parseFloat(activeFrame.style.width),
+          };
         }),
       )
-      .toBe('');
+      .toEqual({
+        transform: '',
+        textLen: expect.any(Number),
+        scrollWidth: expect.any(Number),
+        Vw: expect.any(Number),
+      });
+
+    const promotedCheck = await page.evaluate(() => {
+      const activeFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      return {
+        text: activeFrame.contentDocument?.body?.textContent?.trim() ?? '',
+        scrollWidth: activeFrame.contentDocument?.documentElement?.scrollWidth ?? 0,
+        Vw: parseFloat(activeFrame.style.width),
+      };
+    });
+    expect(promotedCheck.text.length).toBeGreaterThan(50);
+    expect(promotedCheck.scrollWidth).toBeGreaterThanOrEqual(promotedCheck.Vw);
+
+    // Cross-chapter keyboard turn back (ArrowLeft from Page 0 of Chapter 2 -> Chapter 1) slides smoothly!
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForTimeout(45);
+    const midKeySlide = await page.evaluate(() => {
+      const activeFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      return activeFrame.style.transform;
+    });
+    expect(midKeySlide).toContain('translate3d(');
+    await page.waitForTimeout(300);
+
+    // ReadAloudBar Stop (✕) animates out via data-state="closing" instead of unmounting on frame 0
+    await page.keyboard.press('r');
+    await expect(page.locator('.mb-tts-bar[data-state="open"]')).toBeVisible();
+    await page.locator('.mb-tts-bar').getByRole('button', { name: 'Stop Read Aloud' }).click();
+    const closingBarCount = await page.locator('.mb-tts-bar[data-state="closing"]').count();
+    expect(closingBarCount).toBe(1);
+    await expect(page.locator('.mb-tts-bar')).toHaveCount(0);
   });
 });

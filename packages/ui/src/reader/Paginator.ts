@@ -338,7 +338,7 @@ export class Paginator {
 
     const startScroll = html.scrollLeft;
     const delta = targetScroll - startScroll;
-    const durationMs = options?.durationMs ?? 180;
+    const durationMs = options?.durationMs ?? 250;
     const t0 = performance.now();
 
     const tick = (now: number): void => {

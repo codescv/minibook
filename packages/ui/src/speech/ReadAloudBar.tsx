@@ -15,6 +15,7 @@ import { useReadAloudStore, type ReadAloudController } from './ReadAloudControll
 export interface ReadAloudBarProps {
   readonly controller: ReadAloudController;
   readonly isEink: boolean;
+  readonly bookId?: string;
 }
 
 /**
@@ -22,16 +23,17 @@ export interface ReadAloudBarProps {
  * Exact 6 controls: `✕ · ⏮ · ⏸/▶ · ⏭ · 1.0× · ⏾`.
  * Auto-hides after 4s in normal mode; never auto-hides in E-Ink mode (R4).
  */
-export function ReadAloudBar({ controller, isEink }: ReadAloudBarProps): ReactElement | null {
+export function ReadAloudBar({ controller, isEink, bookId }: ReadAloudBarProps): ReactElement | null {
   const t = useT();
   const active = useReadAloudStore((s) => s.active);
+  const raBookId = useReadAloudStore((s) => s.bookId);
   const status = useReadAloudStore((s) => s.status);
   const rate = useReadAloudStore((s) => s.rate);
   const sleepTimer = useReadAloudStore((s) => s.sleepTimer);
   const barOpen = useRouteStore((s) => s.readAloudBarOpen);
   const activeSheet = useRouteStore((s) => s.activeSheet);
 
-  const shouldShow = active && barOpen;
+  const shouldShow = active && (!bookId || raBookId === bookId) && barOpen;
   const [mounted, setMounted] = useState<boolean>(shouldShow);
   const [entered, setEntered] = useState<boolean>(shouldShow);
 

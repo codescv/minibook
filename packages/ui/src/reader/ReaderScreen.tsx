@@ -1028,9 +1028,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         }}
       />
 
-      {raActive && raBookId === bookId && (
-        <ReadAloudBar controller={readAloud} isEink={isEink} />
-      )}
+      <ReadAloudBar controller={readAloud} isEink={isEink} bookId={bookId} />
 
       <AppearanceSheet
         open={activeSheet === 'appearance'}
