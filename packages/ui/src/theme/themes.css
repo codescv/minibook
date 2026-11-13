@@ -1,0 +1,318 @@
+/*
+ * @minibook/ui — Bundled Literata Variable Font & 4 Reading Themes (themes.css)
+ *
+ * Four canonical Apple Books reading themes:
+ *   - Original (`data-theme="original"` | default light): #FFFFFF / #1C1C1E (17.0:1)
+ *   - Paper    (`data-theme="paper"`):                    #EEEDE8 / #2A2926 (12.2:1)
+ *   - Calm     (`data-theme="calm"`):                     #F4ECD8 / #3B3024 (10.9:1)
+ *   - Quiet    (`data-theme="quiet"` | system dark):      #2C2C2E / #D8D8DC (9.8:1)
+ *
+ * Incorporates Stage-2 P2 #1 polish: `--mb-fg-caption` uses `--mb-fg-quiet`
+ * (4.6–5.3:1 WCAG AA contrast, zero alpha dilution).
+ */
+
+/* Bundled OFL Literata Variable Fonts (opsz 7..72, wght 400..700) */
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-normal-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-normal-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-normal-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-normal-greek.woff2") format("woff2");
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1,
+    U+03A3-03FF;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-italic-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-italic-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-italic-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/literata-italic-greek.woff2") format("woff2");
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1,
+    U+03A3-03FF;
+}
+
+/* ==========================================================================
+   Theme 1: Original (Default Crisp Paper — WCAG AAA 17.0:1)
+   ========================================================================== */
+
+:root,
+:root[data-theme="original"] {
+  color-scheme: light;
+
+  --mb-bg: #FFFFFF;
+  --mb-fg: #1C1C1E;
+  --mb-fg-quiet: #6E6E73;
+  --mb-fg-caption: var(--mb-fg-quiet);
+  --mb-line: #E5E5EA;
+  --mb-accent: #007AFF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF3B30;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #F5F5F7;
+  --mb-bg-sheet: #FFFFFF;
+  --mb-bg-control: #F2F2F7;
+  --mb-bg-control-active: #FFFFFF;
+  --mb-bg-cover-fallback: #F4EFE6;
+
+  --mb-scrim: rgba(0, 0, 0, 0.18);
+  --mb-shadow: 0 -4px 24px rgba(0, 0, 0, 0.08), 0 -1px 4px rgba(0, 0, 0, 0.04);
+  --mb-shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --mb-shadow-cover: 0 2px 8px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.08);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-swatch-ring: 0 0 0 2px rgba(0, 122, 255, 0.24);
+  --mb-cover-border: rgba(0, 0, 0, 0.08);
+  --mb-cover-spine-bg: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.16) 0%,
+    rgba(255, 255, 255, 0.20) 45%,
+    rgba(0, 0, 0, 0.05) 80%,
+    transparent 100%
+  );
+
+  --mb-hl-sentence: rgba(0, 122, 255, 0.11);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #007AFF;
+  --mb-hl-search: rgba(255, 204, 0, 0.36);
+}
+
+/* ==========================================================================
+   Theme 2: Paper (Neutral Warm Stone Stock — WCAG AAA 12.2:1)
+   ========================================================================== */
+
+:root[data-theme="paper"] {
+  color-scheme: light;
+
+  --mb-bg: #EEEDE8;
+  --mb-fg: #2A2926;
+  --mb-fg-quiet: #686660;
+  --mb-fg-caption: var(--mb-fg-quiet);
+  --mb-line: #DAD8D0;
+  --mb-accent: #007AFF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #D73A2C;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #E5E3DD;
+  --mb-bg-sheet: #EEEDE8;
+  --mb-bg-control: #E1DFD8;
+  --mb-bg-control-active: #FAF9F6;
+  --mb-bg-cover-fallback: #E3E1DA;
+
+  --mb-scrim: rgba(24, 23, 20, 0.20);
+  --mb-shadow: 0 -4px 24px rgba(42, 41, 38, 0.09), 0 -1px 4px rgba(42, 41, 38, 0.05);
+  --mb-shadow-popover: 0 12px 32px rgba(42, 41, 38, 0.15), 0 2px 8px rgba(42, 41, 38, 0.07);
+  --mb-shadow-cover: 0 2px 8px rgba(42, 41, 38, 0.12), 0 1px 2px rgba(42, 41, 38, 0.08);
+  --mb-shadow-segment: 0 1px 3px rgba(42, 41, 38, 0.12);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-swatch-ring: 0 0 0 2px rgba(0, 122, 255, 0.24);
+  --mb-cover-border: rgba(42, 41, 38, 0.10);
+
+  --mb-hl-sentence: rgba(0, 122, 255, 0.13);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #0066D6;
+  --mb-hl-search: rgba(255, 196, 0, 0.36);
+}
+
+/* ==========================================================================
+   Theme 3: Calm (Warm Sepia — WCAG AAA 10.9:1)
+   ========================================================================== */
+
+:root[data-theme="calm"] {
+  color-scheme: light;
+
+  --mb-bg: #F4ECD8;
+  --mb-fg: #3B3024;
+  --mb-fg-quiet: #786855;
+  --mb-fg-caption: var(--mb-fg-quiet);
+  --mb-line: #DFD3B8;
+  --mb-accent: #007AFF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #C93428;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #EBE1C8;
+  --mb-bg-sheet: #F4ECD8;
+  --mb-bg-control: #E6D9BE;
+  --mb-bg-control-active: #FBF7EE;
+  --mb-bg-cover-fallback: #E5D7B9;
+
+  --mb-scrim: rgba(35, 26, 16, 0.22);
+  --mb-shadow: 0 -4px 24px rgba(59, 48, 36, 0.11), 0 -1px 4px rgba(59, 48, 36, 0.06);
+  --mb-shadow-popover: 0 12px 32px rgba(59, 48, 36, 0.18), 0 2px 8px rgba(59, 48, 36, 0.08);
+  --mb-shadow-cover: 0 2px 8px rgba(59, 48, 36, 0.14), 0 1px 2px rgba(59, 48, 36, 0.09);
+  --mb-shadow-segment: 0 1px 3px rgba(59, 48, 36, 0.14);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-swatch-ring: 0 0 0 2px rgba(0, 122, 255, 0.24);
+  --mb-cover-border: rgba(59, 48, 36, 0.12);
+
+  --mb-hl-sentence: rgba(168, 104, 18, 0.16);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #8A540C;
+  --mb-hl-search: rgba(212, 146, 20, 0.34);
+}
+
+/* ==========================================================================
+   Theme 4: Quiet (Low-Glare Charcoal Dark — WCAG AAA 9.8:1)
+   ========================================================================== */
+
+:root[data-theme="quiet"] {
+  color-scheme: dark;
+
+  --mb-bg: #2C2C2E;
+  --mb-fg: #D8D8DC;
+  --mb-fg-quiet: #98989F;
+  --mb-fg-caption: var(--mb-fg-quiet);
+  --mb-line: #444448;
+  --mb-accent: #0A84FF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF453A;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #363639;
+  --mb-bg-sheet: #323235;
+  --mb-bg-control: #3C3C40;
+  --mb-bg-control-active: #505056;
+  --mb-bg-cover-fallback: #38383C;
+
+  --mb-scrim: rgba(0, 0, 0, 0.42);
+  --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+  --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+  --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+  --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+  --mb-hl-sentence: rgba(10, 132, 255, 0.22);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #409CFF;
+  --mb-hl-search: rgba(255, 214, 10, 0.32);
+}
+
+/* "Match system light/dark" maps system dark -> Quiet (#2C2C2E) when no explicit theme attribute is set */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]):not([data-eink="1"]):not([data-eink="true"]) {
+    color-scheme: dark;
+    --mb-bg: #2C2C2E;
+    --mb-fg: #D8D8DC;
+    --mb-fg-quiet: #98989F;
+    --mb-fg-caption: var(--mb-fg-quiet);
+    --mb-line: #444448;
+    --mb-accent: #0A84FF;
+    --mb-accent-fg: #FFFFFF;
+    --mb-danger: #FF453A;
+    --mb-switch-knob-bg: #FFFFFF;
+    --mb-bg-elevated: #363639;
+    --mb-bg-sheet: #323235;
+    --mb-bg-control: #3C3C40;
+    --mb-bg-control-active: #505056;
+    --mb-bg-cover-fallback: #38383C;
+    --mb-scrim: rgba(0, 0, 0, 0.42);
+    --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+    --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+    --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+    --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+    --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+    --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+    --mb-cover-border: rgba(255, 255, 255, 0.10);
+    --mb-hl-sentence: rgba(10, 132, 255, 0.22);
+    --mb-hl-sentence-underline: none;
+    --mb-hl-word-underline: 2px solid #409CFF;
+    --mb-hl-search: rgba(255, 214, 10, 0.32);
+  }
+}
+
+/* Appearance Swatch Chip Colours (only rendered in non-E-Ink Appearance sheet) */
+.mb-swatch[data-swatch="original"] {
+  background-color: #FFFFFF;
+  color: #1C1C1E;
+}
+.mb-swatch[data-swatch="paper"] {
+  background-color: #EEEDE8;
+  color: #2A2926;
+}
+.mb-swatch[data-swatch="calm"] {
+  background-color: #F4ECD8;
+  color: #3B3024;
+}
+.mb-swatch[data-swatch="quiet"] {
+  background-color: #2C2C2E;
+  color: #D8D8DC;
+}
+
+/* Reduced Motion Preference (PRODUCT_DESIGN.md §5, §10) */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --mb-dur: 0ms;
+    --mb-dur-page: 0ms;
+    --mb-dur-sheet: 0ms;
+    --mb-transition-fast: none;
+    --mb-transition-sheet: none;
+    --mb-transition-knob: none;
+  }
+}

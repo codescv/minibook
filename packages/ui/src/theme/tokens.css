@@ -1,0 +1,112 @@
+/*
+ * @minibook/ui — Design Tokens (tokens.css)
+ *
+ * Architecture Contract (ARCHITECTURE.md §9.2):
+ *   Components MUST NOT write raw shadow, scrim, border-radius, transition duration,
+ *   translucent colour, gradient, opacity, or filter values. Every such property MUST
+ *   reference a `var(--mb-*)` custom property defined in `tokens.css` / `themes.css` / `eink.css`.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Safe-area insets (injected as --m-safe-* by native hosts, falling back to env()) */
+  --m-safe-top: env(safe-area-inset-top, 0px);
+  --m-safe-right: env(safe-area-inset-right, 0px);
+  --m-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --m-safe-left: env(safe-area-inset-left, 0px);
+
+  /* Typography Stacks (PRODUCT_DESIGN.md §5 & UI_SPEC.md §3.1) */
+  --mb-font-serif: "Literata", "Georgia", "Bitstream Charter", "Charter",
+    "Songti SC", "STSong", "Noto Serif CJK SC", "Noto Serif SC",
+    "Source Han Serif SC", "Noto Serif CJK JP", serif;
+  --mb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
+    "Roboto", system-ui, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC",
+    "Source Han Sans SC", sans-serif;
+  --mb-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Inter", "Roboto", system-ui, "PingFang SC",
+    "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  --mb-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* UI Type Scale (strictly 3 sizes: 28px · 16px · 12px + 11px bare-page caption) */
+  --mb-ui-title-size: 28px;
+  --mb-ui-title-lh: 34px;
+  --mb-ui-title-weight: 700;
+  --mb-ui-title-tracking: -0.022em;
+
+  --mb-ui-body-size: 16px;
+  --mb-ui-body-lh: 22px;
+  --mb-ui-body-weight: 400;
+  --mb-ui-label-weight: 600;
+
+  --mb-ui-caption-size: 12px;
+  --mb-ui-caption-lh: 16px;
+  --mb-ui-caption-weight: 500;
+
+  --mb-page-caption-size: 11px;
+  --mb-page-caption-lh: 14px;
+  --mb-page-caption-weight: 400;
+
+  /* Book Reader Typography Defaults */
+  --mb-book-font: var(--mb-font-serif);
+  --mb-book-font-size: 18px;
+  --mb-book-line-height: 1.6;
+  --mb-book-measure-max: 34em;
+  --mb-book-indent: 1.5em;
+  --mb-book-weight: 400;
+  --mb-bold: 0;
+
+  /* Library & Constant Reader Page Geometry (ARCHITECTURE.md §6.3, §8.7) */
+  --mb-lib-margin-x: 24px;
+  --mb-lib-grid-gap: 20px;
+  --mb-lib-title-top: calc(var(--m-safe-top) + 16px);
+  --mb-lib-cover-min: 104px;
+  --mb-lib-max-width: 1200px;
+
+  --mb-reader-margin-x: 32px;
+  --mb-reader-pt: calc(48px + var(--m-safe-top));
+  --mb-reader-pb: calc(64px + var(--m-safe-bottom));
+  --mb-reader-spread-gutter: 64px;
+
+  /* Touch & Chrome Ergonomics */
+  --mb-touch-target: 44px;
+  --mb-chrome-height: 44px;
+  --mb-icon-stroke: 1.5px;
+
+  /* Shape & Corner Radii (overridden to 0px in E-Ink mode) */
+  --mb-radius-none: 0px;
+  --mb-radius-hl: 3px;
+  --mb-radius-xs: 4px;
+  --mb-radius-sm: 6px;
+  --mb-radius-seg: 8px;
+  --mb-radius: 10px;
+  --mb-radius-lg: 16px;
+  --mb-radius-sheet: 20px;
+  --mb-radius-pill: 9999px;
+
+  /* Border Widths (1px hairline in normal mode; 2px solid in E-Ink mode) */
+  --mb-hairline-width: 1px;
+  --mb-border-width: 1px;
+  --mb-sheet-border-width: 1px;
+
+  /* Motion & Opacity Tokens (overridden to 0s / none / 1 in E-Ink mode) */
+  --mb-dur: 150ms;
+  --mb-dur-page: 180ms;
+  --mb-dur-sheet: 220ms;
+  --mb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --mb-transition-fast: background-color var(--mb-dur) var(--mb-ease),
+    color var(--mb-dur) var(--mb-ease),
+    border-color var(--mb-dur) var(--mb-ease);
+  --mb-transition-sheet: transform var(--mb-dur-sheet) var(--mb-ease);
+  --mb-transition-knob: transform var(--mb-dur) var(--mb-ease);
+  --mb-opacity-full: 1;
+  --mb-opacity-disabled: 0.38;
+  --mb-filter-none: none;
+}
+
+@media (min-width: 840px) {
+  :root {
+    --mb-book-font-size: 19px;
+    --mb-reader-margin-x: 48px;
+  }
+}
