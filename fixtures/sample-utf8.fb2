@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>prose_classic</genre>
+      <author><first-name>Fyodor</first-name><last-name>Dostoevsky</last-name></author>
+      <book-title>White Nights</book-title>
+      <lang>en</lang>
+      <coverpage><image l:href="#cover.png"/></coverpage>
+      <annotation><p>A sentimental novel from the diary of a dreamer.</p></annotation>
+    </title-info>
+  </description>
+  <body>
+    <section id="part1">
+      <title><p>First Night</p></title>
+      <epigraph><p>Was he ordained to live a moment close to your heart?</p><text-author>Ivan Turgenev</text-author></epigraph>
+      <p>It was a wonderful night, such a night as is only possible when we are young, dear reader.<a l:href="#n1" type="note">[1]</a></p>
+      <empty-line/>
+      <poem><stanza><v>The sky was so starry,</v><v>so bright was the sky!</v></stanza></poem>
+    </section>
+    <section id="part2">
+      <title><p>Second Night</p></title>
+      <p>Well, so you have survived until tonight, she said, shaking both my hands warmly.</p>
+    </section>
+  </body>
+  <body name="notes">
+    <title><p>Footnotes</p></title>
+    <section id="n1">
+      <title><p>1</p></title>
+      <p>Saint Petersburg white nights occur in June around the summer solstice.</p>
+    </section>
+  </body>
+  <binary id="cover.png" content-type="image/png">iVBORw0KGgoAAAANSUhEUgAAAPAAAAFoCAIAAADmdeFfAAAElklEQVR4nO3UsY0UQBBFwQ4EiwgIg8CJgAAQJiYZANaZx3FqqXcfJZU9+sbrmZ8/vkPGnC+ARXO+ABbN+QJYNOcLYNGcL4BFc74AFs35Alg05wtg0ZwvgEVzvgAWzfkCWDTnC2DRnC+ARXO+gIfy6/O8w/nsFw80hUcgaFIETYqgSRE0KYImRdCkPH3Qnz5+gBfvC/p89ouF2/rzyvldsuXwh14JaWGKoEsELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs6RdCCThG0oFMELegUQQs65fVqBc2T+WuyguaZvKVXQfM03hiroHkOby9V0DyBf8pU0Dy6f21U0Dy0dwQqaB7XVp3vIGhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEl5vqC/ff3Cf0jQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpAiaFEGTkg0aXiFoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KQImhRBkyJoUgRNiqBJETQpgiZF0KTsBP3nFciY87uERXO+ABbN+QJYNOcLYNGcL4BFc74AFs35Alg05wtg0ZwvgEVzvgAWzfkCWDTnC2DRnC+ARXO+ABbN+QJYNOcLYNGcL4BFc74AFs35Alg05wtg0ZwvgEVzvgAW/Qa2/uBQACRGOwAAAABJRU5ErkJggg==</binary>
+</FictionBook>
