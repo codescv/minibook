@@ -16,7 +16,8 @@ import type {
 import { useRouteStore } from '../app/routes';
 import {
   createSynthScheduler,
-  fractionForLocator,
+  fractionForSessionLocator,
+  loadFullSectionText,
   openBookWithHost,
   segmentSectionSafe,
 } from '../host/core-bridge';
@@ -695,9 +696,7 @@ export class ReadAloudController {
     if (!this.session || this.loadedSections.has(sectionIndex)) return [];
     this.loadedSections.add(sectionIndex);
 
-    const sectionText = this.session.loadSectionText
-      ? await this.session.loadSectionText(sectionIndex)
-      : (await this.session.loadSection(sectionIndex)).text;
+    const sectionText = await loadFullSectionText(this.session, sectionIndex);
 
     const segs = segmentSectionSafe(sectionIndex, sectionText, {
       bookLang: this.session.meta.language,
@@ -757,7 +756,7 @@ export class ReadAloudController {
 
   private persistUtterancePosition(bookId: BookId, u: Utterance): void {
     if (!this.session) return;
-    const fraction = fractionForLocator(this.session.spine, {
+    const fraction = fractionForSessionLocator(this.session, {
       section: u.section,
       offset: u.start,
     });

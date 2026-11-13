@@ -6,7 +6,13 @@ import { Segmented } from '../../components/Segmented';
 import { Sheet } from '../../components/Sheet';
 import { CloseIcon } from '../../components/icons';
 import { PagedList } from '../../eink/PagedList';
-import { fractionForLocator, searchBookSafe } from '../../host/core-bridge';
+import {
+  ensureSectionCharLength,
+  fractionForSessionLocator,
+  getKnownSectionCharLength,
+  getSessionCharLengthRevision,
+  searchBookSafe,
+} from '../../host/core-bridge';
 import { useHostContext } from '../../host/HostContext';
 import { useT } from '../../i18n';
 
@@ -29,15 +35,29 @@ interface FlatTocRow {
   readonly isCurrent: boolean;
 }
 
+function collectAnchoredTocSections(items: readonly TocItem[], out: Set<number>): void {
+  for (const item of items) {
+    if (item.locator.offset > 0) {
+      out.add(item.locator.section);
+    }
+    if (item.children.length > 0) {
+      collectAnchoredTocSections(item.children, out);
+    }
+  }
+}
+
 function flattenToc(
   items: readonly TocItem[],
-  spine: BookSession['spine'],
+  session: BookSession,
   currentSection: number,
   depth = 0,
   acc: FlatTocRow[] = [],
 ): FlatTocRow[] {
   items.forEach((item, idx) => {
-    const pct = Math.max(0, Math.min(100, Math.round(fractionForLocator(spine, item.locator) * 100)));
+    const pct = Math.max(
+      0,
+      Math.min(100, Math.round(fractionForSessionLocator(session, item.locator) * 100)),
+    );
     acc.push({
       key: `${depth}-${idx}-${item.locator.section}:${item.locator.offset}`,
       title: item.title,
@@ -47,7 +67,7 @@ function flattenToc(
       isCurrent: item.locator.section === currentSection,
     });
     if (item.children.length > 0) {
-      flattenToc(item.children, spine, currentSection, depth + 1, acc);
+      flattenToc(item.children, session, currentSection, depth + 1, acc);
     }
   });
   return acc;
@@ -69,8 +89,8 @@ function renderBoldMatch(snippet: string, query: string): ReactElement {
 
 /**
  * 3-Segment `Contents · Bookmarks · Search` Sheet (`PRODUCT_DESIGN.md` §4.5 & `UI_SPEC.md` §4.5).
- * Every list is backed by `PagedList` inside a definite-height `listSheet` so E-Ink mode stays
- * strictly zero-scroll and packs real measured rows per screen.
+ * Every list is backed by `PagedList` so E-Ink mode stays strictly zero-scroll and packs real
+ * measured rows per screen while using exact counted-char section lengths for `%` labels (`[P1-F1]`).
  */
 export function ContentsSheet({
   open,
@@ -88,6 +108,7 @@ export function ContentsSheet({
 
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
+  const [charLenVersion, setCharLenVersion] = useState<number>(0);
 
   const handlePageTurn = (swap: () => void): void => {
     void refreshController.runTurn({
@@ -97,10 +118,35 @@ export function ContentsSheet({
     });
   };
 
+  // Ensure exact counted-character lengths are known for any section with mid-section TOC anchors (`offset > 0`)
+  useEffect(() => {
+    if (!open || !session || session.toc.length === 0) return;
+    const needed = new Set<number>();
+    collectAnchoredTocSections(session.toc, needed);
+    const missing = [...needed].filter((sec) => getKnownSectionCharLength(session, sec) === undefined);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(missing.map((sec) => ensureSectionCharLength(session, sec)))
+      .then(() => {
+        if (!cancelled) {
+          setCharLenVersion((v) => v + 1);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, session]);
+
+  const sessionLenRev = getSessionCharLengthRevision(session);
+
   const tocRows = useMemo(() => {
+    void charLenVersion;
+    void sessionLenRev;
     if (!session) return [];
     if (session.toc.length > 0) {
-      return flattenToc(session.toc, session.spine, currentSection);
+      return flattenToc(session.toc, session, currentSection);
     }
     return session.spine
       .filter((s) => s.linear)
@@ -109,10 +155,10 @@ export function ContentsSheet({
         title: s.title || `Part ${idx + 1}`,
         locator: { section: s.index, offset: 0 },
         depth: 0,
-        percent: Math.round(fractionForLocator(session.spine, { section: s.index, offset: 0 }) * 100),
+        percent: Math.round(fractionForSessionLocator(session, { section: s.index, offset: 0 }) * 100),
         isCurrent: s.index === currentSection,
       }));
-  }, [session, currentSection]);
+  }, [open, session, currentSection, charLenVersion, sessionLenRev]);
 
   useEffect(() => {
     if (!open || tab !== 'search' || !session) return;
@@ -128,6 +174,8 @@ export function ContentsSheet({
     void (async () => {
       const collected: SearchHit[] = [];
       for await (const hit of searchBookSafe(session, trimmed, { signal: ctl.signal })) {
+        if (ctl.signal.aborted) return;
+        await ensureSectionCharLength(session, hit.locator.section);
         if (ctl.signal.aborted) return;
         collected.push(hit);
         if (collected.length <= 100) {
@@ -271,7 +319,7 @@ export function ContentsSheet({
                 <div role="list" aria-label={t('search')}>
                   {visible.map((hit, i) => {
                     const pct = session
-                      ? Math.round(fractionForLocator(session.spine, hit.locator) * 100)
+                      ? Math.round(fractionForSessionLocator(session, hit.locator) * 100)
                       : 0;
                     return (
                       <button

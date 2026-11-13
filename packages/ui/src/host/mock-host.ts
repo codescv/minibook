@@ -53,6 +53,8 @@ export interface MockSectionFixture {
   readonly dir?: 'ltr' | 'rtl';
   readonly text: SectionText;
   readonly resources?: readonly string[];
+  /** Optional byte-weight override (`sizeHint !== text.text.length`) for `[P1-F1]` testing. */
+  readonly sizeHint?: number;
 }
 
 export interface MockBookFixture {
@@ -445,6 +447,85 @@ export function buildDefaultMockFixtures(): MockBookFixture[] {
   ];
 }
 
+/**
+ * Single-file multi-unit EPUB fixture (`75,000` counted chars across 2 virtual render units,
+ * 5 anchored chapters at exact `0 / 15,000 / 30,000 / 45,000 / 60,000` char offsets = `0/20/40/60/80%`,
+ * and `sizeHint = 42,000` bytes != `75,000` chars) for `[P1-F1]` verification.
+ */
+export function buildSingleFileFiveChapterFixture(): MockBookFixture {
+  const CHAPTER_LEN = 15_000;
+  const blocks: Array<{ start: number; end: number; kind: 'h' | 'p'; lang: string | null }> = [];
+  const xhtmlParts: string[] = [];
+  let acc = '';
+  const toc: TocItem[] = [];
+
+  for (let ch = 1; ch <= 5; ch++) {
+    const chStart = acc.length;
+    toc.push({
+      title: `Chapter ${ch}: Part ${ch}`,
+      locator: { section: 0, offset: chStart },
+      children: [],
+    });
+
+    const heading = `Chapter ${ch}: Part ${ch}`;
+    blocks.push({ start: acc.length, end: acc.length + heading.length, kind: 'h', lang: 'en' });
+    acc += heading;
+    xhtmlParts.push(`<h2 id="ch-${ch}">${escapeXml(heading)}</h2>`);
+
+    const targetEnd = ch * CHAPTER_LEN;
+    let pIdx = 1;
+    while (acc.length < targetEnd) {
+      const remaining = targetEnd - acc.length;
+      const base = `Ch${ch}P${pIdx} anchorprose: steady typographic cadence across unified spine text. `;
+      let para = '';
+      while (para.length + base.length <= Math.min(remaining, 300)) {
+        para += base;
+      }
+      if (para.length < Math.min(remaining, 300)) {
+        const fillLen = Math.min(remaining, 300) - para.length;
+        para += 'x'.repeat(Math.max(0, fillLen - 1)) + (fillLen > 0 ? '.' : '');
+      }
+      const s = acc.length;
+      acc += para;
+      blocks.push({ start: s, end: acc.length, kind: 'p', lang: 'en' });
+      xhtmlParts.push(`<p>${escapeXml(para)}</p>`);
+      pIdx += 1;
+    }
+  }
+
+  return {
+    id: 'b_single5',
+    meta: {
+      title: 'Five Anchored Chapters',
+      authors: ['Single Spine Press'],
+      language: 'en',
+      identifier: 'urn:uuid:single-5ch',
+      format: 'epub',
+      direction: 'ltr',
+      fixedLayout: false,
+    },
+    fileName: 'single-5ch.epub',
+    size: 42_000,
+    hasCover: false,
+    addedAt: 1_762_000_000_000,
+    openedAt: 1_762_100_000_000,
+    finished: false,
+    fraction: 0,
+    toc,
+    sections: [
+      {
+        title: 'Complete Text',
+        xhtml: xhtmlParts.join('\n'),
+        lang: 'en',
+        dir: 'ltr',
+        text: { text: acc, blocks },
+        // Byte weight intentionally mismatches 75,000 counted characters!
+        sizeHint: 42_000,
+      },
+    ],
+  };
+}
+
 class MockBookSessionImpl implements SearchFallbackSession {
   readonly meta: BookMeta;
   readonly toc: readonly TocItem[];
@@ -459,7 +540,7 @@ class MockBookSessionImpl implements SearchFallbackSession {
       index: idx,
       title: sec.title,
       linear: true,
-      sizeHint: Math.max(1, sec.text.text.length),
+      sizeHint: Math.max(1, sec.sizeHint ?? sec.text.text.length),
     }));
   }
 

@@ -14,10 +14,14 @@ import {
   useRouteStore,
 } from '../app/routes';
 import {
-  fractionForLocator,
-  locatorForFraction,
+  fractionForSessionLocator,
+  fullSectionLengthFromDoc,
+  loadFullSectionText,
   openBookWithHost,
   reanchorLocator,
+  recordSectionDocLength,
+  resolveLocatorForFraction,
+  sectionShareForFraction,
 } from '../host/core-bridge';
 import { useHostContext } from '../host/HostContext';
 import { useT } from '../i18n';
@@ -121,7 +125,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
   const schedulePositionSave = useCallback(
     (sess: BookSession, unit: FilledFrameUnit, anchorLoc: Locator) => {
-      const frac = fractionForLocator(sess.spine, anchorLoc, unit.sectionDoc.unit.end);
+      const fullLen = recordSectionDocLength(sess, unit.sectionDoc);
+      const frac = fractionForSessionLocator(sess, anchorLoc, fullLen);
       const localOff = Math.max(0, anchorLoc.offset - unit.sectionDoc.unit.start);
       const snippet = unit.sectionDoc.text.text.slice(localOff, localOff + 32);
 
@@ -190,6 +195,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         safeTop,
         safeBottom,
       });
+      recordSectionDocLength(sess, filled.sectionDoc);
 
       const totalPages = filled.paginator.getPageCount();
       let destPage = 0;
@@ -477,8 +483,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         }
 
         if (savedPos) {
-          const secDoc = await sess.loadSection(savedPos.section, 0);
-          const anchored = reanchorLocator(secDoc.text, savedPos);
+          const fullText = await loadFullSectionText(sess, savedPos.section);
+          const anchored = reanchorLocator(fullText, savedPos);
           await loadAndShowUnit(sess, savedPos.section, { targetOffset: anchored });
         } else {
           const firstLinear = sess.spine.find((s) => s.linear)?.index ?? 0;
@@ -697,7 +703,11 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     : readingAnchorRef.current;
 
   const currentFraction = session
-    ? fractionForLocator(session.spine, currentFirstLoc, activeUnit?.sectionDoc.unit.end)
+    ? fractionForSessionLocator(
+        session,
+        currentFirstLoc,
+        activeUnit ? fullSectionLengthFromDoc(activeUnit.sectionDoc) : undefined,
+      )
     : 0;
 
   const currentChapterTitle =
@@ -905,11 +915,11 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         onScrubFraction={(targetFrac) => {
           if (!session) return;
           setBackJump({ locator: readingAnchorRef.current, label: `${Math.round(currentFraction * 100)}%` });
-          const dest = locatorForFraction(session.spine, targetFrac);
           void refreshController.runTurn({
             isEink,
             cadence: settings.fullRefreshEvery,
             swap: async () => {
+              const dest = await resolveLocatorForFraction(session, targetFrac);
               await loadAndShowUnit(session, dest.section, {
                 targetOffset: dest.offset,
                 notifySpeechFollow: true,
@@ -919,9 +929,9 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         }}
         onPreviewChapterForFraction={(frac) => {
           if (!session) return '';
-          const dest = locatorForFraction(session.spine, frac);
+          const { section } = sectionShareForFraction(session.spine, frac);
           return (
-            session.spine.find((s) => s.index === dest.section)?.title ??
+            session.spine.find((s) => s.index === section)?.title ??
             session.meta.title
           );
         }}

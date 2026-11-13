@@ -41,12 +41,35 @@ function buildFixedChunks(total: number, step: number): PageSlice[] {
   return out;
 }
 
+function computeBudgetHeight(rootEl: HTMLElement, layer: 'screen' | 'sheet'): number {
+  if (layer === 'sheet') {
+    const sheetEl = rootEl.closest<HTMLElement>('.mb-sheet');
+    if (sheetEl && typeof window !== 'undefined') {
+      const parentH =
+        (sheetEl.offsetParent as HTMLElement | null)?.clientHeight || window.innerHeight || 0;
+      if (parentH <= 0) return 0;
+      const cs = window.getComputedStyle(sheetEl);
+      let maxSheetH = parentH * 0.78;
+      if (cs.maxHeight.endsWith('px')) {
+        maxSheetH = parseFloat(cs.maxHeight) || maxSheetH;
+      } else if (cs.maxHeight.endsWith('%')) {
+        maxSheetH = ((parseFloat(cs.maxHeight) || 78) / 100) * parentH;
+      }
+      const sheetRect = sheetEl.getBoundingClientRect();
+      const rootRect = rootEl.getBoundingClientRect();
+      const nonListH = Math.max(0, sheetRect.height - rootRect.height);
+      return Math.max(80, Math.floor(maxSheetH - nonListH));
+    }
+  }
+  return rootEl.clientHeight;
+}
+
 /**
  * `PagedList` (`ARCHITECTURE.md` §9.3 & `PRODUCT_DESIGN.md` §8.2 R3):
  * - Normal mode: ordinary vertical scroll container (`overflow-y: auto`).
  * - E-Ink mode: zero-scroll discrete paginator (`overflow: hidden; overscroll-behavior: none; touch-action: none`),
- *   measuring real rendered item heights + gaps inside a stable outer flex container (`rootRef`) so zero
- *   items are ever clipped and ResizeObserver never enters a height feedback loop.
+ *   measuring real rendered item heights + gaps before paint so zero items are ever clipped, while allowing
+ *   short 1-page sheets (e.g. a 3-entry TOC) to size naturally to their content height.
  */
 export function PagedList<T>({
   items,
@@ -65,6 +88,15 @@ export function PagedList<T>({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
 
+  // Track reference changes on `items` so same-length edits (e.g. bookmark/result updates) re-measure (`#43 P2-c`)
+  const lastItemsRef = useRef<readonly T[]>(items);
+  const itemsRevisionRef = useRef<number>(0);
+  if (lastItemsRef.current !== items) {
+    lastItemsRef.current = items;
+    itemsRevisionRef.current += 1;
+  }
+  const itemsRevision = itemsRevisionRef.current;
+
   const [containerBox, setContainerBox] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [packed, setPacked] = useState<{ sig: string; pages: readonly PageSlice[] } | null>(null);
   const [page, setPage] = useState<number>(0);
@@ -79,7 +111,6 @@ export function PagedList<T>({
       setPage(0);
       return;
     }
-    // Reset to page 0 when an empty list populates or search results stream a fresh batch
     if (prevLengthRef.current === 0 && items.length > 0) {
       setPage(0);
     }
@@ -93,17 +124,23 @@ export function PagedList<T>({
 
     const updateBox = (): void => {
       const w = rootEl.clientWidth;
-      const h = rootEl.clientHeight;
+      const h = computeBudgetHeight(rootEl, layer);
       setContainerBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
     };
     updateBox();
 
-    const ro = new ResizeObserver(updateBox);
-    ro.observe(rootEl);
-    return () => ro.disconnect();
-  }, [isEink]);
+    const sheetEl = layer === 'sheet' ? rootEl.closest<HTMLElement>('.mb-sheet') : null;
+    const observeTarget =
+      layer === 'sheet'
+        ? ((sheetEl?.offsetParent as Element | null) ?? rootEl)
+        : rootEl;
 
-  const measureSig = `${containerBox.w}x${containerBox.h}:cols=${columns}:len=${items.length}:rk=${String(resetKey ?? '')}`;
+    const ro = new ResizeObserver(updateBox);
+    ro.observe(observeTarget);
+    return () => ro.disconnect();
+  }, [isEink, layer]);
+
+  const measureSig = `${containerBox.w}x${containerBox.h}:cols=${columns}:len=${items.length}:rev=${itemsRevision}:rk=${String(resetKey ?? '')}`;
   const needsRealMeasure =
     isEink && containerBox.h > 0 && items.length > 0 && packed?.sig !== measureSig;
 
@@ -113,7 +150,7 @@ export function PagedList<T>({
     const viewportEl = viewportRef.current;
     if (!rootEl || !viewportEl) return;
 
-    const totalH = rootEl.clientHeight;
+    const totalH = computeBudgetHeight(rootEl, layer);
     if (totalH <= 0) return;
 
     const computedPages: PageSlice[] = [];
@@ -185,7 +222,7 @@ export function PagedList<T>({
     }
 
     setPacked({ sig: measureSig, pages: computedPages });
-  }, [needsRealMeasure, measureSig, columns, items.length, fallbackPageSize]);
+  }, [needsRealMeasure, measureSig, columns, items.length, fallbackPageSize, layer]);
 
   const pages = useMemo<readonly PageSlice[]>(() => {
     if (!isEink) return [[0, items.length]];
@@ -248,9 +285,6 @@ export function PagedList<T>({
     return <div className="mb-paged-scroll">{renderItems(items)}</div>;
   }
 
-  // During the synchronous pre-paint measurement pass (`needsRealMeasure`), render `items`
-  // (`<= 24` tiles for grids or full list for vertical items) so `useLayoutEffect` measures
-  // exact `getBoundingClientRect()` heights before the browser ever paints a frame.
   const activeSliceRange = pages[clampedPage] ?? [0, items.length];
   const visibleSlice = needsRealMeasure
     ? columns > 1

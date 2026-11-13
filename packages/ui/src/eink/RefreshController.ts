@@ -85,20 +85,27 @@ export class RefreshController {
       const nextCount = shouldCount ? this.turnsSinceFull + 1 : this.turnsSinceFull;
       const needNow =
         options.countTurn !== false &&
-        options.cadence !== 0 &&
-        (nextCount >= options.cadence ||
-          Boolean(options.closedSheetCoveredHalfScreen) ||
-          Boolean(options.userPressedRefresh));
+        (Boolean(options.userPressedRefresh) ||
+          (options.cadence !== 0 &&
+            (nextCount >= options.cadence || Boolean(options.closedSheetCoveredHalfScreen))));
 
       if (!needNow) {
         this.turnsSinceFull = nextCount;
         const syncOrAsync = options.swap();
         if (syncOrAsync && typeof (syncOrAsync as PromiseLike<void>).then === 'function') {
           this.inFlight = true;
+          let safeTracked!: Promise<void>;
           const tracked = Promise.resolve(syncOrAsync).finally(() => {
-            this.inFlight = false;
+            if (this.pending === safeTracked) {
+              this.inFlight = false;
+            }
           });
-          this.pending = tracked.catch(() => {});
+          safeTracked = tracked.catch(() => {
+            if (this.pending === safeTracked) {
+              this.inFlight = false;
+            }
+          });
+          this.pending = safeTracked;
           return tracked;
         }
         return Promise.resolve();
@@ -118,7 +125,9 @@ export class RefreshController {
         }
       });
     safeRun = run.catch(() => {
-      this.inFlight = false;
+      if (this.pending === safeRun) {
+        this.inFlight = false;
+      }
     });
     this.pending = safeRun;
     return run;
@@ -146,12 +155,11 @@ export class RefreshController {
       this.turnsSinceFull += 1;
     }
 
-    // ARCHITECTURE.md §9.4: `need = settings.fullRefreshEvery != off && (...)`
+    // Manual ⟳ Refresh button works on demand even when periodic cadence is Off (`PRODUCT_DESIGN.md` §8.3 #3)
     const need =
-      options.cadence !== 0 &&
-      (this.turnsSinceFull >= options.cadence ||
-        Boolean(options.closedSheetCoveredHalfScreen) ||
-        Boolean(options.userPressedRefresh));
+      Boolean(options.userPressedRefresh) ||
+      (options.cadence !== 0 &&
+        (this.turnsSinceFull >= options.cadence || Boolean(options.closedSheetCoveredHalfScreen)));
 
     if (!need) {
       await options.swap();

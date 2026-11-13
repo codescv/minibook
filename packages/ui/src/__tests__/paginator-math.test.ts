@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   AutoPageTurn,
+  buildSingleFileFiveChapterFixture,
   computePaginationGeometry,
+  createMockPlatformHost,
   Highlighter,
   mergeLineRects,
   TextMap,
 } from '../index';
+import {
+  ensureSectionCharLength,
+  fractionForSessionLocator,
+  resolveLocatorForFraction,
+} from '../host/core-bridge';
 import { DEFAULT_APP_SETTINGS, FONT_SCALE_STEPS } from '@minibook/core';
 
 describe('Integer Multicol Pagination Math (ARCHITECTURE.md §6.3)', () => {
@@ -250,5 +257,34 @@ describe('AutoPageTurn Straddling Sentence Logic (§8.7)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('[P1-F1] Char-Based Section Fraction & Go-to-% Share Resolution', () => {
+  it('computes exact 0/20/40/60/80% TOC labels and exact char-share locators on single-file 5-chapter EPUB with byte sizeHint mismatch', async () => {
+    const fixture = buildSingleFileFiveChapterFixture();
+    const host = createMockPlatformHost({ books: [fixture] });
+    const session = await host.openMockSession('b_single5');
+
+    // sizeHint is 42,000 bytes whereas counted text is 75,000 chars across 2 virtual render units
+    expect(session.spine[0]!.sizeHint).toBe(42_000);
+    const fullCharLen = await ensureSectionCharLength(session, 0);
+    expect(fullCharLen).toBe(75_000);
+
+    const tocPercents = session.toc.map((item) =>
+      Math.round(fractionForSessionLocator(session, item.locator) * 100),
+    );
+    expect(tocPercents).toEqual([0, 20, 40, 60, 80]);
+
+    // Resolving fraction -> locator uses 75,000 char count (not 42,000 byte sizeHint!)
+    const at60 = await resolveLocatorForFraction(session, 0.6);
+    expect(at60).toEqual({ section: 0, offset: 45_000 });
+    expect(Math.round(fractionForSessionLocator(session, at60) * 100)).toBe(60);
+
+    const at99 = await resolveLocatorForFraction(session, 0.99);
+    expect(at99).toEqual({ section: 0, offset: 74_250 });
+    expect(Math.round(fractionForSessionLocator(session, at99) * 100)).toBe(99);
+
+    session.close();
   });
 });
