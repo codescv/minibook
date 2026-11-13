@@ -8,7 +8,9 @@
     "minibook": "./bin/minibook.mjs"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./shared": "./src/shared/index.ts"
   },
   "files": [
     "bin",
@@ -20,7 +22,9 @@
     "test": "vitest run",
     "dev": "tsx watch src/server/main.ts --dev",
     "dev:web": "vite dev web",
-    "build": "tsc --noEmit",
+    "build:web": "vite build web",
+    "build:server": "node build.mjs",
+    "build": "pnpm run build:web && pnpm run build:server",
     "start": "node bin/minibook.mjs",
     "start:app": "node bin/minibook.mjs --new-browser"
   },
