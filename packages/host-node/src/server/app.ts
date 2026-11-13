@@ -25,7 +25,7 @@ export const DESKTOP_CONTENT_SECURITY_POLICY = [
   "font-src 'self' blob: data:",
   "style-src 'self' 'unsafe-inline'",
   "media-src 'self' blob:",
-  "connect-src 'self'",
+  "connect-src 'self' blob: data:",
 ].join('; ');
 
 const STATIC_MIME: Readonly<Record<string, string>> = {

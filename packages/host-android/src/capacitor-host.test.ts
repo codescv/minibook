@@ -1,5 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { memoryByteSource, type InspectedBook, type SpeechEvent, type TxtBookIndex } from '@minibook/core';
+import {
+  WindowedByteSource,
+  memoryByteSource,
+  openBook,
+  type InspectedBook,
+  type SpeechEvent,
+  type TxtBookIndex,
+} from '@minibook/core';
 import { createCapacitorPlatformHost } from './capacitor-host.js';
 import {
   wrapNativeBridge,
@@ -644,5 +654,63 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
     expect(r2.cached).toBe(true);
     expect(r2.ref).toBe(r1.ref);
     expect(synthCalls).toBe(1);
+  });
+
+  it('auto-imports real EPUB and KF8 (.azw3) fixtures on incoming-file and serves sections via PluginByteSource', async () => {
+    const fixturesDir = resolve(fileURLToPath(new URL('../../../fixtures', import.meta.url)));
+    const epubBytes = new Uint8Array(readFileSync(resolve(fixturesDir, 'epub3-modern.epub')));
+    const kf8Bytes = new Uint8Array(readFileSync(resolve(fixturesDir, 'kf8-sample.azw3')));
+
+    const bridge = new InMemoryNativeBridge();
+    bridge.files.set('tmp/open_with_1.epub', epubBytes);
+    bridge.files.set('tmp/open_with_2.azw3', kf8Bytes);
+
+    const plugin = wrapNativeBridge(bridge);
+    const host = createCapacitorPlatformHost({
+      plugin,
+      platform: 'android',
+      fetchImpl: null,
+    });
+
+    const changedBookIds: string[] = [];
+    const unsub = host.subscribe((ev) => {
+      if (ev.type === 'library-changed' && ev.bookId) {
+        changedBookIds.push(ev.bookId);
+      }
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    bridge.emitEvent('incoming-file', {
+      files: [
+        { tempPath: 'tmp/open_with_1.epub', name: 'epub3-modern.epub', size: epubBytes.byteLength },
+        { tempPath: 'tmp/open_with_2.azw3', name: 'kf8-sample.azw3', size: kf8Bytes.byteLength },
+      ],
+    });
+
+    await expect.poll(() => changedBookIds.length, { timeout: 5000 }).toBe(2);
+    unsub();
+
+    const list = await host.library.list();
+    expect(list.length).toBe(2);
+
+    for (const book of list) {
+      const detail = await host.library.get(book.id);
+      expect(detail).not.toBeNull();
+      const session = await openBook(
+        new WindowedByteSource(host.files.byteSource(book.id, 'book')),
+        {
+          fileName: detail!.fileName,
+          getDerived: (name) => {
+            if (name !== 'text.bin') return null;
+            const d = host.files.byteSource(book.id, 'text');
+            return d.size > 0 ? new WindowedByteSource(d) : null;
+          },
+        },
+        detail!.index,
+      );
+      const sec0 = await session.loadSection(0, 0);
+      expect(sec0.xhtml.length).toBeGreaterThan(0);
+      session.close();
+    }
   });
 });

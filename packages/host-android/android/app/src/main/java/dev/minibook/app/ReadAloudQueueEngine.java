@@ -319,7 +319,6 @@ public final class ReadAloudQueueEngine {
     }
 
     public void enqueue(List<UtteranceItem> items, @Nullable String replaceFromId) {
-        int prevSize = queue.size();
         if (replaceFromId != null && !replaceFromId.isEmpty()) {
             int replaceIdx = findIndexById(replaceFromId);
             if (replaceIdx >= 0) {
@@ -343,11 +342,9 @@ public final class ReadAloudQueueEngine {
             }
         }
 
-        if (queue.size() > prevSize) {
-            int remaining = Math.max(0, queue.size() - Math.max(0, currentIndex));
-            if (remaining > QUEUE_LOW_THRESHOLD) {
-                queueLowEmitted = false;
-            }
+        int remaining = Math.max(0, queue.size() - Math.max(0, currentIndex));
+        if (remaining > QUEUE_LOW_THRESHOLD) {
+            queueLowEmitted = false;
         }
 
         if (currentIndex < 0 && !queue.isEmpty()) {

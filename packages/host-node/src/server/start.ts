@@ -74,6 +74,7 @@ export async function startServer(options?: StartServerOptions): Promise<Running
     context,
     server,
     async close(): Promise<void> {
+      (server as { closeAllConnections?: () => void }).closeAllConnections?.();
       await new Promise<void>((resolvePromise) => {
         server.close(() => resolvePromise());
       });

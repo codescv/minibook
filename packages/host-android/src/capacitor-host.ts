@@ -9,6 +9,7 @@ import {
   OpenAiSpeechProvider,
   computeBookId,
   computeSpeechCacheKey,
+  inspectBook,
   type AppSettings,
   type BookId,
   type Bookmark,
@@ -211,7 +212,47 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
     }
     if (fresh.length > 0) {
       emit({ type: 'incoming-file', files: fresh });
+      void autoImportIncomingFiles(fresh);
     }
+  }
+
+  async function autoImportIncomingFiles(files: readonly NativePickedFile[]): Promise<void> {
+    const stagedFiles: NativePickedFile[] = [];
+    for (const f of files) {
+      try {
+        const st = await plugin.fs.stat({ path: f.tempPath });
+        if (st.exists && !st.isDirectory && (st.size ?? f.size) > 0) {
+          stagedFiles.push({ ...f, size: st.size ?? f.size });
+        }
+      } catch {
+        // ignore missing synthetic test path
+      }
+    }
+    if (stagedFiles.length === 0) return;
+
+    const total = stagedFiles.length;
+    for (let i = 0; i < total; i++) {
+      const picked = stagedFiles[i]!;
+      emit({ type: 'import-progress', completed: i, total, currentName: picked.name });
+      let ticket: ImportTicket | null = null;
+      try {
+        const src = pickedFileToImportSource(picked);
+        ticket = await hostObj.library.beginImport(src);
+        const activeTicket = ticket;
+        const inspected = await inspectBook(src.bytes, {
+          fileName: src.name,
+          putDerived: (name, chunk) => activeTicket.putDerived(name, chunk),
+        });
+        await hostObj.library.commitImport(ticket, inspected);
+      } catch {
+        if (ticket) {
+          await ticket.abort().catch(() => undefined);
+        } else {
+          await plugin.fs.remove({ path: picked.tempPath }).catch(() => undefined);
+        }
+      }
+    }
+    emit({ type: 'import-progress', completed: total, total });
   }
 
   async function ensureSpeechCacheIndexLoaded(): Promise<void> {
@@ -363,7 +404,7 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
     }
   }
 
-  return {
+  const hostObj: PlatformHost = {
     get info(): HostInfo {
       return hostInfo;
     },
@@ -736,4 +777,6 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       };
     },
   };
+
+  return hostObj;
 }
