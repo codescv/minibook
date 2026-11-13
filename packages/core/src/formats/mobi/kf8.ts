@@ -3,6 +3,7 @@ import { type BuiltSectionUnits, buildSectionRenderUnits } from '../../book/text
 import { MiniBookError } from '../../errors.js';
 import { concatBytes } from '../../io/binary.js';
 import { parseXhtmlOrHtml } from '../../markup/html.js';
+import { findFirst, localName, type MNode, textContent } from '../../markup/mnode.js';
 import type {
   BookMeta,
   BookOpenHint,
@@ -554,24 +555,153 @@ export async function buildKf8IndexFromStream(params: {
     sizeHint: Math.max(64, Math.floor(sec.totalLen * 0.65)),
   }));
 
-  if (toc.length === 0) {
-    toc = spine.map((s, idx) => ({
-      title: `Section ${idx + 1}`,
-      locator: { section: s.index, offset: 0 },
-      children: [],
-    }));
-  } else {
-    const assignTitles = (items: readonly TocItem[]) => {
-      for (const item of items) {
-        const sp = spine[item.locator.section];
-        if (sp && !sp.title) {
-          spine[item.locator.section] = { ...sp, title: item.title };
+  // Helper to scan a KF8 section in memory (`flow0Bytes` is already loaded -> 0 extra I/O reads!)
+  // for exact anchor char offsets (`[P1-C2]`) and heading-derived TOC (`[P2]`).
+  const scannedKf8Sections = new Map<
+    number,
+    { anchors: Map<string, number>; heading: string | null; countedChars: number }
+  >();
+  const scanKf8SectionInMemory = async (secIdx: number) => {
+    const cached = scannedKf8Sections.get(secIdx);
+    if (cached) return cached;
+    const sec = mutableSections[secIdx];
+    if (!sec) return null;
+    try {
+      const slice = flow0Bytes.subarray(sec.skelStart, sec.skelStart + sec.totalLen);
+      const assembled = assembleKf8SectionBytes(slice, sec.skelStart, sec.skelLen, sec.frags, sec.targets);
+      const xhtml = new TextDecoder('utf-8', { fatal: false }).decode(assembled);
+      const tree = parseXhtmlOrHtml(xhtml, false);
+      const headTitleEl = findFirst(tree, (n) => localName(n.tag).toLowerCase() === 'title');
+      const rawHeadTitle = headTitleEl ? textContent(headTitleEl).replace(/\s+/g, ' ').trim() : '';
+      const usefulHeadTitle =
+        rawHeadTitle &&
+        rawHeadTitle.toLowerCase() !== header.title.trim().toLowerCase() &&
+        !/project gutenberg ebook/i.test(rawHeadTitle)
+          ? rawHeadTitle
+          : null;
+      const sanitized = await sanitizeDocument(tree, {
+        sectionPath: `${sec.name}.xhtml`,
+        defaultLang: header.exth.language ?? header.localeLang,
+        defaultDir: header.exth.direction ?? 'ltr',
+      });
+      const anchors = new Map<string, number>();
+      let firstH: string | null = null;
+      let firstShortBlock: string | null = null;
+      let cur = 0;
+      const walk = (nodes: readonly MNode[]) => {
+        for (const n of nodes) {
+          if (n.type === 'text') {
+            cur += n.value.length;
+            continue;
+          }
+          const idVal = n.attrs['id'];
+          if (idVal && !anchors.has(idVal)) anchors.set(idVal, cur);
+          if ('data-mb-skip' in n.attrs) continue;
+          if (!firstH && n.ns === 'xhtml' && /^h[1-6]$/.test(n.tag)) {
+            const ht = textContent(n).replace(/\s+/g, ' ').trim();
+            if (ht) firstH = ht;
+          } else if (!firstShortBlock && n.ns === 'xhtml' && (n.tag === 'p' || n.tag === 'div')) {
+            const bt = textContent(n).replace(/\s+/g, ' ').trim();
+            if (bt && bt.length <= 60 && !/[。！？.!?]$/.test(bt)) {
+              firstShortBlock = bt;
+            }
+          }
+          walk(n.children);
         }
-        if (item.children.length > 0) assignTitles(item.children);
+      };
+      walk(sanitized.bodyChildren);
+      const entry = {
+        anchors,
+        heading: firstH ?? usefulHeadTitle ?? firstShortBlock ?? null,
+        countedChars: cur,
+      };
+      scannedKf8Sections.set(secIdx, entry);
+      return entry;
+    } catch {
+      return null;
+    }
+  };
+
+  // Sparse TOC fallback (`[P2]`: e.g. Gutenberg zh KF8 with 1 license entry for 13 chapters)
+  const collectKf8TocSections = (items: readonly TocItem[], acc = new Set<number>()): Set<number> => {
+    for (const it of items) {
+      acc.add(it.locator.section);
+      if (it.children.length > 0) collectKf8TocSections(it.children, acc);
+    }
+    return acc;
+  };
+  const coveredKf8 = collectKf8TocSections(toc);
+  if (toc.length === 0 || (spine.length >= 2 && coveredKf8.size < spine.length * 0.5)) {
+    const bySec = new Map<number, TocItem[]>();
+    for (const item of toc) {
+      const list = bySec.get(item.locator.section) ?? [];
+      list.push(item);
+      bySec.set(item.locator.section, list);
+    }
+    const rebuilt: TocItem[] = [];
+    for (let idx = 0; idx < spine.length; idx++) {
+      const s = spine[idx]!;
+      const existing = bySec.get(s.index);
+      if (existing && existing.length > 0) {
+        rebuilt.push(...existing);
+        continue;
       }
-    };
-    assignTitles(toc);
+      const scanned = await scanKf8SectionInMemory(s.index);
+      if (scanned && scanned.countedChars === 0 && !scanned.heading && spine.length > 1) {
+        continue;
+      }
+      const heading = scanned?.heading || `Section ${idx + 1}`;
+      spine[s.index] = { ...s, title: heading };
+      rebuilt.push({
+        title: heading,
+        locator: { section: s.index, offset: 0 },
+        children: [],
+      });
+    }
+    if (rebuilt.length > 0) toc = rebuilt;
   }
+
+  // Resolve exact `#mb-pos-...` offsets for TOC items & `posMap` (`[P1-C2]`)
+  const sectionsWithTargets = new Set<number>();
+  for (const sec of mutableSections) {
+    if (sec.targets.length > 0) sectionsWithTargets.add(sec.index);
+  }
+  for (const secIdx of sectionsWithTargets) {
+    await scanKf8SectionInMemory(secIdx);
+  }
+
+  const posMapWithOffsets: Record<string, { section: number; id: string; approxOffset?: number }> = {};
+  for (const [k, v] of Object.entries(posMap)) {
+    const exactOff = scannedKf8Sections.get(v.section)?.anchors.get(v.id);
+    posMapWithOffsets[k] = exactOff !== undefined ? { ...v, approxOffset: exactOff } : v;
+  }
+
+  const applyKf8TocOffsets = (items: readonly TocItem[]): TocItem[] =>
+    items.map((it) => {
+      const children = it.children.length > 0 ? applyKf8TocOffsets(it.children) : [];
+      let locator = it.locator;
+      if (it.href) {
+        const hashIdx = it.href.indexOf('#');
+        if (hashIdx >= 0) {
+          const frag = it.href.slice(hashIdx + 1);
+          const off = scannedKf8Sections.get(it.locator.section)?.anchors.get(frag);
+          if (off !== undefined) locator = { section: it.locator.section, offset: off };
+        }
+      }
+      return { ...it, locator, children };
+    });
+  toc = applyKf8TocOffsets(toc);
+
+  const assignTitles = (items: readonly TocItem[]) => {
+    for (const item of items) {
+      const sp = spine[item.locator.section];
+      if (sp && !sp.title) {
+        spine[item.locator.section] = { ...sp, title: item.title };
+      }
+      if (item.children.length > 0) assignTitles(item.children);
+    }
+  };
+  assignTitles(toc);
 
   // Cover record resolution: EXTH 129 (`kindle:embed:XXXX`) -> EXTH 201 (`coverOffset`) -> null
   let coverRecordIndex: number | null = null;
@@ -611,7 +741,7 @@ export async function buildKf8IndexFromStream(params: {
     firstImageRecord: firstImageGlobal,
     flows,
     sections: mutableSections,
-    posMap,
+    posMap: posMapWithOffsets,
     coverRecordIndex,
     ...(guideItems.length > 0 ? { guide: guideItems } : {}),
   };
@@ -820,7 +950,7 @@ export async function createKf8Session(
         const off = decodeKindleBase32(posMatch[2]!);
         const target = index.posMap[`${fid}:${off}`];
         if (!target) return null;
-        const charOff = anchorOffsets.get(target.section)?.get(target.id) ?? 0;
+        const charOff = anchorOffsets.get(target.section)?.get(target.id) ?? target.approxOffset ?? 0;
         return { section: target.section, offset: charOff };
       }
 
@@ -830,8 +960,12 @@ export async function createKf8Session(
         if (sec < 0 || sec >= index.spine.length) return null;
         if (mbLoc[2] !== undefined) return { section: sec, offset: Number.parseInt(mbLoc[2], 10) };
         const frag = mbLoc[3];
-        const off = frag ? (anchorOffsets.get(sec)?.get(frag) ?? 0) : 0;
-        return { section: sec, offset: off };
+        let off = frag ? anchorOffsets.get(sec)?.get(frag) : 0;
+        if (off === undefined && frag) {
+          const mPos = /^mb-pos-(\d+)-(\d+)$/.exec(frag);
+          if (mPos) off = index.posMap[`${mPos[1]}:${mPos[2]}`]?.approxOffset;
+        }
+        return { section: sec, offset: off ?? 0 };
       }
 
       if (trimmed.startsWith('#')) {

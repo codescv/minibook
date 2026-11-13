@@ -1,6 +1,6 @@
 import { MiniBookError } from '../errors.js';
 import { decodeEntities } from './entities.js';
-import { el, localName, type MElement, type MNamespace, txt } from './mnode.js';
+import { el, localName, MAX_MARKUP_DEPTH, type MElement, type MNamespace, txt } from './mnode.js';
 
 export interface XmlParseOptions {
   /**
@@ -289,6 +289,9 @@ export function parseXml(source: string, options?: XmlParseOptions): MElement {
     }
 
     const parent = stack[stack.length - 1]!;
+    if (stack.length > MAX_MARKUP_DEPTH) {
+      throw new MiniBookError('corrupt-book', `XML element nesting exceeds maximum depth (${MAX_MARKUP_DEPTH})`);
+    }
     const ns = inferNamespace(rawTag, attrs, parent.ns);
     const normalizedTag = lowerXhtml && ns === 'xhtml' ? rawTag.toLowerCase() : rawTag;
     const node = el(normalizedTag, attrs, [], ns);

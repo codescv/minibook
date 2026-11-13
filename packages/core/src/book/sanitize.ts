@@ -1,3 +1,4 @@
+import { MiniBookError } from '../errors.js';
 import { sanitizeXmlChars } from '../markup/entities.js';
 import {
   el,
@@ -5,6 +6,7 @@ import {
   findFirst,
   getAttr,
   localName,
+  MAX_MARKUP_DEPTH,
   type MElement,
   type MNamespace,
   type MNode,
@@ -56,6 +58,8 @@ const DROP_WITH_CONTENT_XHTML = new Set([
 
 const DROP_WITH_CONTENT_SVG = new Set([
   'script',
+  'style',
+  'metadata',
   'foreignobject',
   'animate',
   'animatemotion',
@@ -329,6 +333,12 @@ function hasToken(attrValue: string | undefined, token: string): boolean {
 }
 
 function shouldMarkSkip(node: MElement, insideSup: boolean): boolean {
+  if (node.ns === 'svg') {
+    const svgTag = localName(node.tag).toLowerCase();
+    // SVG `<title>` and `<desc>` are non-rendered accessibility metadata, never visible reading prose
+    if (svgTag === 'title' || svgTag === 'desc') return true;
+    return getAttr(node, 'aria-hidden')?.toLowerCase() === 'true';
+  }
   if (node.ns !== 'xhtml') {
     return getAttr(node, 'aria-hidden')?.toLowerCase() === 'true';
   }
@@ -444,12 +454,11 @@ export async function sanitizeDocument(
   const dir: ReadingDirection =
     rawDir === 'rtl' ? 'rtl' : rawDir === 'ltr' ? 'ltr' : (options.defaultDir ?? 'ltr');
 
-  // 2. Collect linked `<link rel="stylesheet" href="...">` and inline `<style>` in document order
+  // 2. Collect linked `<link rel="stylesheet" href="...">` and inline `<style>` (both XHTML & SVG!) in document order
   const styleNodes = findAll(docRoot, (n) => {
-    if (n.ns !== 'xhtml') return false;
     const t = localName(n.tag).toLowerCase();
-    if (t === 'style') return true;
-    if (t === 'link') {
+    if (t === 'style' && (n.ns === 'xhtml' || n.ns === 'svg')) return true;
+    if (n.ns === 'xhtml' && t === 'link') {
       const rel = getAttr(n, 'rel') ?? '';
       return hasToken(rel, 'stylesheet');
     }
@@ -486,8 +495,16 @@ export async function sanitizeDocument(
     }
   }
 
-  // 3. Sanitize body subtree into clean `MNode[]`
-  const sanitizeChildren = (children: readonly MNode[], parentNs: MNamespace, insideSup: boolean): MNode[] => {
+  // 3. Sanitize body subtree into clean `MNode[]` (with depth guard against stack exhaustion)
+  const sanitizeChildren = (
+    children: readonly MNode[],
+    parentNs: MNamespace,
+    insideSup: boolean,
+    depth = 0,
+  ): MNode[] => {
+    if (depth > MAX_MARKUP_DEPTH) {
+      throw new MiniBookError('corrupt-book', `Markup nesting exceeds maximum depth (${MAX_MARKUP_DEPTH})`);
+    }
     const out: MNode[] = [];
     for (const child of children) {
       if (child.type === 'text') {
@@ -540,7 +557,7 @@ export async function sanitizeDocument(
       }
 
       if (unwrap) {
-        const unwrapped = sanitizeChildren(child.children, ns, insideSup);
+        const unwrapped = sanitizeChildren(child.children, ns, insideSup, depth + 1);
         for (const u of unwrapped) {
           if (u.type === 'text' && out.length > 0 && out[out.length - 1]!.type === 'text') {
             (out[out.length - 1] as { value: string }).value += u.value;
@@ -645,7 +662,12 @@ export async function sanitizeDocument(
         nextAttrs['data-mb-skip'] = '';
       }
 
-      const nextChildren = sanitizeChildren(child.children, ns, insideSup || (ns === 'xhtml' && outTag === 'sup'));
+      const nextChildren = sanitizeChildren(
+        child.children,
+        ns,
+        insideSup || (ns === 'xhtml' && outTag === 'sup'),
+        depth + 1,
+      );
       out.push(el(outTag, nextAttrs, nextChildren, ns));
     }
     return out;

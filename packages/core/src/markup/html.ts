@@ -1,5 +1,6 @@
 import { parse, parseFragment, type DefaultTreeAdapterTypes } from 'parse5';
-import { el, type MElement, type MNamespace, type MNode, txt } from './mnode.js';
+import { MiniBookError } from '../errors.js';
+import { el, MAX_MARKUP_DEPTH, type MElement, type MNamespace, type MNode, txt } from './mnode.js';
 import { parseXml } from './xml-tokenizer.js';
 
 function mapNamespace(nsUri: string | undefined): MNamespace {
@@ -65,7 +66,10 @@ const SVG_CAMEL_ATTRS: Readonly<Record<string, string>> = {
   refy: 'refY',
 };
 
-function convertParse5Node(node: DefaultTreeAdapterTypes.ChildNode): MNode | null {
+function convertParse5Node(node: DefaultTreeAdapterTypes.ChildNode, depth = 0): MNode | null {
+  if (depth > MAX_MARKUP_DEPTH) {
+    throw new MiniBookError('corrupt-book', `HTML element nesting exceeds maximum depth (${MAX_MARKUP_DEPTH})`);
+  }
   if (node.nodeName === '#text') {
     const t = node as DefaultTreeAdapterTypes.TextNode;
     return txt(t.value);
@@ -88,12 +92,12 @@ function convertParse5Node(node: DefaultTreeAdapterTypes.ChildNode): MNode | nul
   if (elem.tagName === 'template') {
     const tmpl = elem as DefaultTreeAdapterTypes.Template;
     for (const c of tmpl.content.childNodes) {
-      const converted = convertParse5Node(c);
+      const converted = convertParse5Node(c, depth + 1);
       if (converted) children.push(converted);
     }
   } else if ('childNodes' in elem && Array.isArray(elem.childNodes)) {
     for (const c of elem.childNodes) {
-      const converted = convertParse5Node(c);
+      const converted = convertParse5Node(c, depth + 1);
       if (converted) children.push(converted);
     }
   }
@@ -141,8 +145,11 @@ export function parseXhtmlOrHtml(source: string, preferHtml = false): MElement {
   if (!preferHtml) {
     try {
       return parseXml(source, { strict: true, lowercaseXhtmlTags: true });
-    } catch {
-      // Fall back to HTML5 spec-compliant tag-soup recovery (`parse5`)
+    } catch (err) {
+      // Re-throw structural depth/size errors (`MAX_MARKUP_DEPTH`); fall back to `parse5` for tag-soup syntax
+      if (err instanceof MiniBookError && /maximum depth/i.test(err.message)) {
+        throw err;
+      }
     }
   }
   return parseHtmlDocument(source);
