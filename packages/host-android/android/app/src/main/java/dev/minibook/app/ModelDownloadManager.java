@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -114,6 +115,7 @@ public final class ModelDownloadManager {
     private final boolean allowInsecureHttpForTests;
 
     private final Object stateLock = new Object();
+    private final Object emitLock = new Object();
     private final AtomicInteger generation = new AtomicInteger(0);
     private JSONObject currentStatus;
     @Nullable private Call activeCall;
@@ -122,6 +124,8 @@ public final class ModelDownloadManager {
     private volatile boolean activeDownloading = false;
     private volatile @Nullable String lastGoodSource = null;
     private long lastProgressEmitMs = 0L;
+    @Nullable private String lastEmittedState = null;
+    @Nullable private String lastEmittedSource = null;
 
     public ModelDownloadManager(
         @Nullable Context context,
@@ -593,6 +597,30 @@ public final class ModelDownloadManager {
                             if (host != null) lastSourceHost[0] = host;
 
                             long finalTotalBytes = totalBytes;
+                            ByteProgressCallback progressCb = fileBytes -> {
+                                if (generation.get() != myGen) return;
+                                bytesByPath.put(f.path, fileBytes);
+                                long doneSum = 0L;
+                                for (long v : bytesByPath.values()) doneSum += v;
+                                JSONObject st = KokoroModelStore.buildStatusJson(
+                                    "downloading",
+                                    req.variant,
+                                    Math.min(doneSum, finalTotalBytes),
+                                    finalTotalBytes,
+                                    0L,
+                                    new JSONArray(store.detectInstalledVoicesOnDisk()),
+                                    lastSourceHost[0],
+                                    null,
+                                    null,
+                                    null
+                                );
+                                synchronized (stateLock) {
+                                    if (generation.get() != myGen) return;
+                                    currentStatus = st;
+                                }
+                                emitThrottled(st);
+                            };
+                            progressCb.onProgress(offset);
                             offset = downloadSingleSource(
                                 client,
                                 url,
@@ -600,29 +628,7 @@ public final class ModelDownloadManager {
                                 offset,
                                 f.size,
                                 myGen,
-                                fileBytes -> {
-                                    if (generation.get() != myGen) return;
-                                    bytesByPath.put(f.path, fileBytes);
-                                    long doneSum = 0L;
-                                    for (long v : bytesByPath.values()) doneSum += v;
-                                    JSONObject st = KokoroModelStore.buildStatusJson(
-                                        "downloading",
-                                        req.variant,
-                                        Math.min(doneSum, finalTotalBytes),
-                                        finalTotalBytes,
-                                        0L,
-                                        new JSONArray(store.detectInstalledVoicesOnDisk()),
-                                        lastSourceHost[0],
-                                        null,
-                                        null,
-                                        null
-                                    );
-                                    synchronized (stateLock) {
-                                        if (generation.get() != myGen) return;
-                                        currentStatus = st;
-                                    }
-                                    emitThrottled(st);
-                                }
+                                progressCb
                             );
                             if (generation.get() != myGen) return;
                             if (offset == f.size) {
@@ -944,15 +950,37 @@ public final class ModelDownloadManager {
         emitImmediate(err);
     }
 
-    private void emitImmediate(JSONObject status) {
+    private void recordEmittedLocked(JSONObject status) {
         lastProgressEmitMs = System.currentTimeMillis();
+        lastEmittedState = status.optString("state", "");
+        lastEmittedSource = status.has("source") && !status.isNull("source")
+            ? status.optString("source", null)
+            : null;
+    }
+
+    private void emitImmediate(JSONObject status) {
+        synchronized (emitLock) {
+            recordEmittedLocked(status);
+        }
         listener.onStatusChanged(cloneJson(status));
     }
 
     private void emitThrottled(JSONObject status) {
-        long now = System.currentTimeMillis();
-        if (now - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
-            lastProgressEmitMs = now;
+        boolean shouldEmit;
+        String state = status.optString("state", "");
+        String source = status.has("source") && !status.isNull("source")
+            ? status.optString("source", null)
+            : null;
+        synchronized (emitLock) {
+            long now = System.currentTimeMillis();
+            boolean stateChanged = !Objects.equals(state, lastEmittedState);
+            boolean sourceChanged = !Objects.equals(source, lastEmittedSource);
+            shouldEmit = stateChanged || sourceChanged || (now - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS);
+            if (shouldEmit) {
+                recordEmittedLocked(status);
+            }
+        }
+        if (shouldEmit) {
             listener.onStatusChanged(cloneJson(status));
         }
     }

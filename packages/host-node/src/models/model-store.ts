@@ -48,6 +48,7 @@ import {
   type ResolvedKokoroDownloadFile,
   type SpeechModelBackend,
   type SpeechModelId,
+  type SpeechModelState,
   type SpeechModelStatus,
   type SpeechModelVariant,
 } from '@minibook/core';
@@ -209,6 +210,8 @@ export class ModelStore {
   private jobGeneration = 0;
   private pauseRequested = false;
   private lastProgressEmitMs = 0;
+  private lastEmittedState: SpeechModelState | null = null;
+  private lastEmittedSource: string | undefined = undefined;
   private lastGoodSource: string | null = null;
   private activeSources: string[] = [];
   private activeVariant: SpeechModelVariant = 'onnx-fp32';
@@ -743,7 +746,16 @@ export class ModelStore {
           },
           onSourceUsed: (host) => {
             if (signal.aborted || this.jobGeneration !== myGen) return;
-            lastSourceHost = host;
+            if (lastSourceHost !== host) {
+              lastSourceHost = host;
+              if (this.statusState.source !== host) {
+                this.statusState = {
+                  ...this.statusState,
+                  source: host,
+                };
+                this.emitStatusImmediate();
+              }
+            }
           },
           onVerifying: () => {
             if (signal.aborted || this.jobGeneration !== myGen) return;
@@ -1109,13 +1121,19 @@ export class ModelStore {
 
   private emitStatusImmediate(): void {
     this.lastProgressEmitMs = this.now();
+    this.lastEmittedState = this.statusState.state;
+    this.lastEmittedSource = this.statusState.source;
     this.emitEvent({ type: 'speech-model', status: this.statusState });
   }
 
   private emitStatusThrottled(): void {
     const t = this.now();
-    if (t - this.lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
+    const stateChanged = this.statusState.state !== this.lastEmittedState;
+    const sourceChanged = this.statusState.source !== this.lastEmittedSource;
+    if (stateChanged || sourceChanged || t - this.lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
       this.lastProgressEmitMs = t;
+      this.lastEmittedState = this.statusState.state;
+      this.lastEmittedSource = this.statusState.source;
       this.emitEvent({ type: 'speech-model', status: this.statusState });
     }
   }
