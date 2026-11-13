@@ -309,10 +309,22 @@
 @media (prefers-reduced-motion: reduce) {
   :root {
     --mb-dur: 0ms;
+    --mb-dur-chrome: 0ms;
     --mb-dur-page: 0ms;
     --mb-dur-sheet: 0ms;
+    --mb-dur-sheet-exit: 0ms;
+    --mb-dur-popover: 0ms;
+    --mb-dur-screen: 0ms;
+    --mb-dur-screen-exit: 0ms;
     --mb-transition-fast: none;
     --mb-transition-sheet: none;
+    --mb-transition-sheet-exit: none;
+    --mb-transition-popover: none;
+    --mb-transition-backdrop: none;
+    --mb-transition-backdrop-exit: none;
+    --mb-transition-screen: none;
+    --mb-transition-screen-exit: none;
+    --mb-transition-chrome: none;
     --mb-transition-knob: none;
   }
 }

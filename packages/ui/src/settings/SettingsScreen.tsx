@@ -27,6 +27,7 @@ import {
   formatModelErrorInfo,
   formatSteppedEinkPct,
   getSpeechModelsApi,
+  resolveEffectiveModelSourceHost,
   useSpeechModelStatus,
 } from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
@@ -814,7 +815,13 @@ export function SettingsScreen(): ReactElement {
                   className="mb-primary-btn"
                   data-testid="kokoro-download-btn"
                   onClick={() => {
-                    void modelsApi.download(KOKORO_MODEL_ID);
+                    void modelsApi.download(
+                      KOKORO_MODEL_ID,
+                      {
+                        source: settings.modelDownloadSource,
+                        mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                      } as never,
+                    );
                   }}
                 >
                   {t('download')}
@@ -828,9 +835,16 @@ export function SettingsScreen(): ReactElement {
                   {isEink
                     ? formatSteppedEinkPct(displayPct)
                     : t('downloadingPct', { pct: displayPct })}
-                  {modelStatus?.source
-                    ? ` · ${t('viaSource', { source: modelStatus.source })}`
-                    : ''}
+                  {(() => {
+                    const effectiveSource = resolveEffectiveModelSourceHost(
+                      modelStatus?.source,
+                      settings.modelDownloadSource,
+                      settings.modelMirrorBaseUrl,
+                    );
+                    return effectiveSource
+                      ? ` · ${t('viaSource', { source: effectiveSource })}`
+                      : '';
+                  })()}
                 </span>
                 <button
                   type="button"
@@ -858,7 +872,13 @@ export function SettingsScreen(): ReactElement {
                     className="mb-primary-btn"
                     data-testid="kokoro-resume-btn"
                     onClick={() => {
-                      void modelsApi.download(KOKORO_MODEL_ID);
+                      void modelsApi.download(
+                        KOKORO_MODEL_ID,
+                        {
+                          source: settings.modelDownloadSource,
+                          mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                        } as never,
+                      );
                     }}
                   >
                     {t('resume')}
@@ -929,12 +949,16 @@ export function SettingsScreen(): ReactElement {
                     className="mb-primary-btn"
                     data-testid="kokoro-retry-btn"
                     onClick={() => {
+                      const dlOpts = {
+                        source: settings.modelDownloadSource,
+                        mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                      } as never;
                       if (errorInfo.actionKind === 'try-again') {
                         void modelsApi.remove(KOKORO_MODEL_ID).then(() => {
-                          void modelsApi.download(KOKORO_MODEL_ID);
+                          void modelsApi.download(KOKORO_MODEL_ID, dlOpts);
                         });
                       } else {
-                        void modelsApi.download(KOKORO_MODEL_ID);
+                        void modelsApi.download(KOKORO_MODEL_ID, dlOpts);
                       }
                     }}
                   >
@@ -973,7 +997,22 @@ export function SettingsScreen(): ReactElement {
                 { value: 'hf-mirror', label: t('sourceMirror') },
               ]}
               onChange={(modelDownloadSource) => {
-                void updateSettings({ modelDownloadSource });
+                setCustomMirrorUrl('');
+                void (async () => {
+                  await updateSettings({
+                    modelDownloadSource,
+                    modelMirrorBaseUrl: null,
+                  });
+                  if (modelStatus?.state === 'downloading') {
+                    void modelsApi.download(
+                      KOKORO_MODEL_ID,
+                      {
+                        source: modelDownloadSource,
+                        mirrorBaseUrl: null,
+                      } as never,
+                    );
+                  }
+                })();
               }}
             />
           </div>
@@ -988,10 +1027,23 @@ export function SettingsScreen(): ReactElement {
               const nextVal = e.target.value;
               setCustomMirrorUrl(nextVal);
               const trimmed = nextVal.trim();
-              void updateSettings({
-                modelMirrorBaseUrl: trimmed ? trimmed : null,
-                modelDownloadSource: trimmed ? 'custom' : 'auto',
-              });
+              const nextSource: ModelDownloadSource = trimmed ? 'custom' : 'auto';
+              const nextMirror = trimmed ? trimmed : null;
+              void (async () => {
+                await updateSettings({
+                  modelMirrorBaseUrl: nextMirror,
+                  modelDownloadSource: nextSource,
+                });
+                if (modelStatus?.state === 'downloading') {
+                  void modelsApi.download(
+                    KOKORO_MODEL_ID,
+                    {
+                      source: nextSource,
+                      mirrorBaseUrl: nextMirror,
+                    } as never,
+                  );
+                }
+              })();
             }}
           />
 
@@ -1029,7 +1081,14 @@ export function SettingsScreen(): ReactElement {
                         type="button"
                         className="mb-icon-btn"
                         onClick={() => {
-                          void modelsApi.download(KOKORO_MODEL_ID, { voices: [voiceId] });
+                          void modelsApi.download(
+                            KOKORO_MODEL_ID,
+                            {
+                              voices: [voiceId],
+                              source: settings.modelDownloadSource,
+                              mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                            } as never,
+                          );
                         }}
                       >
                         {t('get')}
@@ -1097,7 +1156,14 @@ export function SettingsScreen(): ReactElement {
                         });
                         useRouteStore.getState().closeSheetWithRefresh();
                       } else {
-                        void modelsApi.download(KOKORO_MODEL_ID, { voices: [item.voiceId] });
+                        void modelsApi.download(
+                          KOKORO_MODEL_ID,
+                          {
+                            voices: [item.voiceId],
+                            source: settings.modelDownloadSource,
+                            mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                          } as never,
+                        );
                       }
                     }}
                   >

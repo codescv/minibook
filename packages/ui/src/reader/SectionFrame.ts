@@ -117,14 +117,17 @@ function parseBookXhtml(xhtml: string, lang: string | null, dir: 'ltr' | 'rtl'):
 }
 
 /**
- * Manages the 2-iframe render window (visible + pre-rendered adjacent unit)
- * with 4-layer security isolation and direct `frameDoc` gesture bridging (`ARCHITECTURE.md` §6.1).
+ * Manages the active + pre-warmed neighbor iframes (`prevUnit` and `nextUnit`)
+ * with 4-layer security isolation and direct `frameDoc` 1:1 gesture bridging (`ARCHITECTURE.md` §6.1).
  */
 export class SectionFrameManager {
   private readonly stageEl: HTMLElement;
   private readonly callbacks: FrameGestureCallbacks;
   private activeUnit: FilledFrameUnit | null = null;
-  private prerenderUnit: FilledFrameUnit | null = null;
+  private prevUnit: FilledFrameUnit | null = null;
+  private nextUnit: FilledFrameUnit | null = null;
+  private isEink = false;
+  private edgeTweenRaf: number | null = null;
 
   constructor(stageEl: HTMLElement, callbacks: FrameGestureCallbacks) {
     this.stageEl = stageEl;
@@ -136,7 +139,88 @@ export class SectionFrameManager {
   }
 
   getPrerender(): FilledFrameUnit | null {
-    return this.prerenderUnit;
+    return this.nextUnit ?? this.prevUnit;
+  }
+
+  getPrevNeighbor(): FilledFrameUnit | null {
+    return this.prevUnit;
+  }
+
+  getNextNeighbor(): FilledFrameUnit | null {
+    return this.nextUnit;
+  }
+
+  private cancelEdgeTween(): void {
+    if (this.edgeTweenRaf !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this.edgeTweenRaf);
+      this.edgeTweenRaf = null;
+    }
+  }
+
+  resetEdgeTransforms(): void {
+    this.cancelEdgeTween();
+    if (this.activeUnit) {
+      this.activeUnit.iframe.style.transform = '';
+      this.activeUnit.iframe.setAttribute('data-frame-role', 'active');
+    }
+    if (this.prevUnit) {
+      this.prevUnit.iframe.style.transform = '';
+      this.prevUnit.iframe.style.visibility = 'hidden';
+      this.prevUnit.iframe.style.pointerEvents = 'none';
+      this.prevUnit.iframe.style.zIndex = '1';
+      this.prevUnit.iframe.setAttribute('data-frame-role', 'prev');
+    }
+    if (this.nextUnit) {
+      this.nextUnit.iframe.style.transform = '';
+      this.nextUnit.iframe.style.visibility = 'hidden';
+      this.nextUnit.iframe.style.pointerEvents = 'none';
+      this.nextUnit.iframe.style.zIndex = '1';
+      this.nextUnit.iframe.setAttribute('data-frame-role', 'next');
+    }
+  }
+
+  clearNeighbor(role: 'prev' | 'next'): void {
+    if (role === 'prev') {
+      this.prevUnit?.dispose();
+      this.prevUnit = null;
+    } else {
+      this.nextUnit?.dispose();
+      this.nextUnit = null;
+    }
+  }
+
+  updateNeighborsStylesAndLayout(options: {
+    readonly settings: AppSettings;
+    readonly isEink: boolean;
+    readonly frameWidth: number;
+    readonly frameHeight: number;
+    readonly safeTop: number;
+    readonly safeBottom: number;
+  }): void {
+    this.isEink = options.isEink;
+    this.resetEdgeTransforms();
+    for (const [role, unit] of [
+      ['prev', this.prevUnit],
+      ['next', this.nextUnit],
+    ] as const) {
+      if (!unit) continue;
+      const geom = computePaginationGeometry({
+        frameWidth: options.frameWidth,
+        frameHeight: options.frameHeight,
+        fontScale: options.settings.fontScale,
+        margins: options.settings.margins,
+        safeTop: options.safeTop,
+        safeBottom: options.safeBottom,
+        isEink: options.isEink,
+        ...(unit.sectionDoc.isCoverLike !== undefined
+          ? { isCoverLike: unit.sectionDoc.isCoverLike }
+          : {}),
+      });
+      unit.updateStylesAndLayout(options.settings, options.isEink, geom);
+      this.positionIframe(unit.iframe, options.frameWidth, geom, false, role);
+      const parkPage = role === 'prev' ? Math.max(0, unit.paginator.getPageCount() - 1) : 0;
+      unit.paginator.goToPage(parkPage, { animate: false, isEink: true });
+    }
   }
 
   async renderActive(options: {
@@ -149,17 +233,11 @@ export class SectionFrameManager {
     readonly safeTop: number;
     readonly safeBottom: number;
   }): Promise<FilledFrameUnit> {
-    // Fast-swap if pre-rendered unit already matches `(section, unit.start)`
-    if (
-      this.prerenderUnit &&
-      this.prerenderUnit.sectionDoc.index === options.sectionDoc.index &&
-      this.prerenderUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
-    ) {
-      const promoted = this.prerenderUnit;
-      this.prerenderUnit = null;
-      this.activeUnit?.dispose();
-      this.activeUnit = promoted;
-      const geom = computePaginationGeometry({
+    this.isEink = options.isEink;
+    this.cancelEdgeTween();
+
+    const computeGeomFor = (doc: SectionDoc): PaginationGeometry =>
+      computePaginationGeometry({
         frameWidth: options.frameWidth,
         frameHeight: options.frameHeight,
         fontScale: options.settings.fontScale,
@@ -167,42 +245,135 @@ export class SectionFrameManager {
         safeTop: options.safeTop,
         safeBottom: options.safeBottom,
         isEink: options.isEink,
-        ...(options.sectionDoc.isCoverLike !== undefined
-          ? { isCoverLike: options.sectionDoc.isCoverLike }
-          : {}),
+        ...(doc.isCoverLike !== undefined ? { isCoverLike: doc.isCoverLike } : {}),
       });
+
+    // Fast-promote if `nextUnit` matches `(section, unit.start)`
+    if (
+      this.nextUnit &&
+      this.nextUnit.sectionDoc.index === options.sectionDoc.index &&
+      this.nextUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
+    ) {
+      const promoted = this.nextUnit;
+      this.nextUnit = null;
+      this.prevUnit?.dispose();
+      this.prevUnit = null;
+
+      if (this.activeUnit && !options.isEink) {
+        const demotedPrev = this.activeUnit;
+        const prevGeom = computeGeomFor(demotedPrev.sectionDoc);
+        demotedPrev.updateStylesAndLayout(options.settings, options.isEink, prevGeom);
+        demotedPrev.paginator.goToPage(Math.max(0, demotedPrev.paginator.getPageCount() - 1), {
+          animate: false,
+          isEink: true,
+        });
+        this.positionIframe(demotedPrev.iframe, options.frameWidth, prevGeom, false, 'prev');
+        this.prevUnit = demotedPrev;
+      } else {
+        this.activeUnit?.dispose();
+      }
+
+      this.activeUnit = promoted;
+      if (this.stageEl.firstChild !== promoted.iframe) {
+        this.stageEl.insertBefore(promoted.iframe, this.stageEl.firstChild);
+      }
+      const geom = computeGeomFor(options.sectionDoc);
       promoted.updateStylesAndLayout(options.settings, options.isEink, geom);
-      this.positionIframe(promoted.iframe, options.frameWidth, geom, true);
+      this.positionIframe(promoted.iframe, options.frameWidth, geom, true, 'active');
       return promoted;
     }
 
-    const unit = await this.createFilledUnit(options, true);
+    // Fast-promote if `prevUnit` matches `(section, unit.start)`
+    if (
+      this.prevUnit &&
+      this.prevUnit.sectionDoc.index === options.sectionDoc.index &&
+      this.prevUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
+    ) {
+      const promoted = this.prevUnit;
+      this.prevUnit = null;
+      this.nextUnit?.dispose();
+      this.nextUnit = null;
+
+      if (this.activeUnit && !options.isEink) {
+        const demotedNext = this.activeUnit;
+        const nextGeom = computeGeomFor(demotedNext.sectionDoc);
+        demotedNext.updateStylesAndLayout(options.settings, options.isEink, nextGeom);
+        demotedNext.paginator.goToPage(0, { animate: false, isEink: true });
+        this.positionIframe(demotedNext.iframe, options.frameWidth, nextGeom, false, 'next');
+        this.nextUnit = demotedNext;
+      } else {
+        this.activeUnit?.dispose();
+      }
+
+      this.activeUnit = promoted;
+      if (this.stageEl.firstChild !== promoted.iframe) {
+        this.stageEl.insertBefore(promoted.iframe, this.stageEl.firstChild);
+      }
+      const geom = computeGeomFor(options.sectionDoc);
+      promoted.updateStylesAndLayout(options.settings, options.isEink, geom);
+      this.positionIframe(promoted.iframe, options.frameWidth, geom, true, 'active');
+      return promoted;
+    }
+
+    const unit = await this.createFilledUnit(options, true, 'active');
     this.activeUnit?.dispose();
+    this.prevUnit?.dispose();
+    this.prevUnit = null;
+    this.nextUnit?.dispose();
+    this.nextUnit = null;
     this.activeUnit = unit;
+    if (this.stageEl.firstChild !== unit.iframe) {
+      this.stageEl.insertBefore(unit.iframe, this.stageEl.firstChild);
+    }
     return unit;
   }
 
-  async prerenderAdjacent(options: {
-    readonly session: BookSession;
-    readonly sectionDoc: SectionDoc;
-    readonly settings: AppSettings;
-    readonly isEink: boolean;
-    readonly frameWidth: number;
-    readonly frameHeight: number;
-    readonly safeTop: number;
-    readonly safeBottom: number;
-  }): Promise<void> {
+  async prerenderAdjacent(
+    options: {
+      readonly session: BookSession;
+      readonly sectionDoc: SectionDoc;
+      readonly settings: AppSettings;
+      readonly isEink: boolean;
+      readonly frameWidth: number;
+      readonly frameHeight: number;
+      readonly safeTop: number;
+      readonly safeBottom: number;
+    },
+    role: 'prev' | 'next' = 'next',
+  ): Promise<void> {
+    const existing = role === 'prev' ? this.prevUnit : this.nextUnit;
     if (
-      this.prerenderUnit &&
-      this.prerenderUnit.sectionDoc.index === options.sectionDoc.index &&
-      this.prerenderUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
+      existing &&
+      existing.sectionDoc.index === options.sectionDoc.index &&
+      existing.sectionDoc.unit.start === options.sectionDoc.unit.start
     ) {
+      const parkPage = role === 'prev' ? Math.max(0, existing.paginator.getPageCount() - 1) : 0;
+      existing.paginator.goToPage(parkPage, { animate: false, isEink: true });
       return;
     }
-    this.prerenderUnit?.dispose();
-    this.prerenderUnit = null;
+    existing?.dispose();
+    if (role === 'prev') this.prevUnit = null;
+    else this.nextUnit = null;
+
     try {
-      this.prerenderUnit = await this.createFilledUnit(options, false);
+      const unit = await this.createFilledUnit(options, false, role);
+      if (
+        this.activeUnit &&
+        this.activeUnit.sectionDoc.index === options.sectionDoc.index &&
+        this.activeUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
+      ) {
+        unit.dispose();
+        return;
+      }
+      const parkPage = role === 'prev' ? Math.max(0, unit.paginator.getPageCount() - 1) : 0;
+      unit.paginator.goToPage(parkPage, { animate: false, isEink: true });
+      if (role === 'prev') {
+        this.prevUnit?.dispose();
+        this.prevUnit = unit;
+      } else {
+        this.nextUnit?.dispose();
+        this.nextUnit = unit;
+      }
     } catch {
       // Non-fatal pre-render failure
     }
@@ -213,14 +384,61 @@ export class SectionFrameManager {
     containerWidth: number,
     geom: PaginationGeometry,
     visible: boolean,
+    role: 'active' | 'prev' | 'next' = 'active',
   ): void {
     const leftOffset = Math.max(0, Math.floor((containerWidth - geom.Vw) / 2));
     iframe.style.width = `${geom.Vw}px`;
     iframe.style.height = `${geom.Vh}px`;
     iframe.style.left = `${leftOffset}px`;
+    iframe.style.transform = '';
     iframe.style.visibility = visible ? 'visible' : 'hidden';
     iframe.style.pointerEvents = visible ? 'auto' : 'none';
     iframe.style.zIndex = visible ? '2' : '1';
+    iframe.setAttribute('data-frame-role', role);
+  }
+
+  private animateEdgeTransition(
+    startDx: number,
+    targetDx: number,
+    neighbor: FilledFrameUnit | null,
+    neighborOffsetSign: -1 | 1,
+    onDone: () => void,
+  ): void {
+    this.cancelEdgeTween();
+    const active = this.activeUnit;
+    if (
+      !active ||
+      this.isEink ||
+      typeof requestAnimationFrame !== 'function' ||
+      Math.abs(targetDx - startDx) <= 1
+    ) {
+      onDone();
+      return;
+    }
+
+    const Vw = active.paginator.getGeometry().Vw;
+    const durationMs = 180;
+    const t0 = performance.now();
+
+    const tick = (now: number): void => {
+      const elapsed = now - t0;
+      if (elapsed >= durationMs) {
+        this.edgeTweenRaf = null;
+        onDone();
+        return;
+      }
+      const p = elapsed / durationMs;
+      const eased = 1 - Math.pow(1 - p, 3);
+      const curDx = Math.round(startDx + (targetDx - startDx) * eased);
+      active.iframe.style.transform = curDx === 0 ? '' : `translate3d(${curDx}px, 0, 0)`;
+      if (neighbor) {
+        neighbor.iframe.style.visibility = 'visible';
+        neighbor.iframe.style.transform = `translate3d(${neighborOffsetSign * Vw + curDx}px, 0, 0)`;
+      }
+      this.edgeTweenRaf = requestAnimationFrame(tick);
+    };
+
+    this.edgeTweenRaf = requestAnimationFrame(tick);
   }
 
   private async createFilledUnit(
@@ -235,6 +453,7 @@ export class SectionFrameManager {
       readonly safeBottom: number;
     },
     visible: boolean,
+    role: 'active' | 'prev' | 'next' = 'active',
   ): Promise<FilledFrameUnit> {
     const hostDoc = this.stageEl.ownerDocument;
     const iframe = hostDoc.createElement('iframe');
@@ -256,7 +475,7 @@ export class SectionFrameManager {
         : {}),
     });
 
-    this.positionIframe(iframe, options.frameWidth, geom, visible);
+    this.positionIframe(iframe, options.frameWidth, geom, visible, role);
     this.stageEl.appendChild(iframe);
 
     const frameDoc = iframe.contentDocument;
@@ -356,7 +575,7 @@ export class SectionFrameManager {
       sectionDoc: options.sectionDoc,
     });
 
-    const detachGestures = this.attachFrameGestures(frameDoc, paginator, options.sectionDoc);
+    const detachGestures = this.attachFrameGestures(iframe, frameDoc, paginator, options.sectionDoc);
 
     let disposed = false;
     return {
@@ -369,7 +588,15 @@ export class SectionFrameManager {
       resources,
       updateStylesAndLayout: (nextSettings, nextEink, nextGeom) => {
         if (disposed) return;
-        this.positionIframe(iframe, options.frameWidth, nextGeom, iframe.style.visibility === 'visible');
+        const curRole =
+          (iframe.getAttribute('data-frame-role') as 'active' | 'prev' | 'next' | null) ?? 'active';
+        this.positionIframe(
+          iframe,
+          options.frameWidth,
+          nextGeom,
+          curRole === 'active',
+          curRole,
+        );
         const styleEl = frameDoc.getElementById('mb-user-css');
         if (styleEl) {
           styleEl.textContent = buildFrameUserStylesheet({
@@ -400,18 +627,40 @@ export class SectionFrameManager {
   }
 
   private attachFrameGestures(
+    iframe: HTMLIFrameElement,
     frameDoc: Document,
     paginator: Paginator,
     sectionDoc: SectionDoc,
   ): () => void {
-    let downX = 0;
-    let downY = 0;
+    const hostDoc = this.stageEl.ownerDocument;
+    let startStationaryX = 0;
+    let startStationaryY = 0;
+    let downClientX = 0;
+    let downClientY = 0;
     let downTime = 0;
+    let lastPtX = 0;
+    let lastPtTime = 0;
+    let velocityX = 0;
     let pointerActive = false;
+    let activePointerId: number | null = null;
+    let dragLocked = false;
+    let dragKind: 'none' | 'intra' | 'edge' = 'none';
+    let lastDragDx = 0;
     let hadSelectionOnDown = false;
     let lastImageTap: { target: Element; time: number; timer: ReturnType<typeof setTimeout> } | null = null;
     let lastWheelAt = 0;
     let relayoutDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    const getStationaryPoint = (e: PointerEvent): { x: number; y: number } => {
+      if (e.view && e.view !== frameDoc.defaultView) {
+        return { x: e.clientX, y: e.clientY };
+      }
+      const rect = iframe.getBoundingClientRect();
+      return {
+        x: rect.left + e.clientX,
+        y: rect.top + e.clientY,
+      };
+    };
 
     const scheduleRelayout = (): void => {
       if (relayoutDebounce) clearTimeout(relayoutDebounce);
@@ -444,11 +693,96 @@ export class SectionFrameManager {
 
     const onPointerDown = (e: PointerEvent): void => {
       if (e.button !== 0 && e.pointerType === 'mouse') return;
-      pointerActive = true;
-      downX = e.clientX;
-      downY = e.clientY;
-      downTime = Date.now();
       hadSelectionOnDown = getNonEmptySelection() !== null;
+      if (e.pointerType === 'mouse' && !hadSelectionOnDown) {
+        e.preventDefault();
+      }
+      this.cancelEdgeTween();
+      const pt = getStationaryPoint(e);
+      pointerActive = true;
+      activePointerId = e.pointerId;
+      startStationaryX = pt.x;
+      startStationaryY = pt.y;
+      downClientX = e.clientX;
+      downClientY = e.clientY;
+      downTime = Date.now();
+      lastPtX = pt.x;
+      lastPtTime = performance.now();
+      velocityX = 0;
+      dragLocked = false;
+      dragKind = 'none';
+      lastDragDx = 0;
+    };
+
+    const onPointerMove = (e: PointerEvent): void => {
+      if (
+        !pointerActive ||
+        (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId)
+      ) {
+        return;
+      }
+      if (this.isEink) return;
+      if (hadSelectionOnDown) return;
+
+      const pt = getStationaryPoint(e);
+      const dx = pt.x - startStationaryX;
+      const dy = pt.y - startStationaryY;
+      const now = performance.now();
+      const dt = now - lastPtTime;
+      if (dt > 0) {
+        const instVx = (pt.x - lastPtX) / dt;
+        velocityX = velocityX === 0 ? instVx : velocityX * 0.4 + instVx * 0.6;
+        lastPtX = pt.x;
+        lastPtTime = now;
+      }
+
+      if (!dragLocked) {
+        if (Math.abs(dx) > 8 && Math.abs(dx) > 1.25 * Math.abs(dy)) {
+          dragLocked = true;
+        } else {
+          return;
+        }
+      }
+
+      lastDragDx = dx;
+      const curPage = paginator.getCurrentPage();
+      const totalPages = paginator.getPageCount();
+      const Vw = paginator.getGeometry().Vw;
+      const isRtl = sectionDoc.dir === 'rtl';
+      const wantsNext = isRtl ? dx > 0 : dx < 0;
+      const wantsPrev = isRtl ? dx < 0 : dx > 0;
+      const canIntraNext = wantsNext && curPage + 1 < totalPages;
+      const canIntraPrev = wantsPrev && curPage > 0;
+
+      if (canIntraNext || canIntraPrev || dx === 0) {
+        if (dragKind === 'edge') {
+          this.resetEdgeTransforms();
+        }
+        dragKind = 'intra';
+        paginator.setDragOffset(dx);
+        return;
+      }
+
+      // At render-unit / chapter edge: keep current unit scrollLeft parked and slide active + neighbor iframes 1:1
+      paginator.setDragOffset(0);
+      dragKind = 'edge';
+      const neighbor = wantsNext ? this.nextUnit : wantsPrev ? this.prevUnit : null;
+      const otherNeighbor = wantsNext ? this.prevUnit : this.nextUnit;
+      if (otherNeighbor) {
+        otherNeighbor.iframe.style.visibility = 'hidden';
+        otherNeighbor.iframe.style.transform = '';
+      }
+
+      if (neighbor) {
+        const clampedDx = Math.max(-Vw, Math.min(Vw, dx));
+        const offsetSign: -1 | 1 = clampedDx < 0 ? 1 : -1;
+        iframe.style.transform = `translate3d(${clampedDx}px, 0, 0)`;
+        neighbor.iframe.style.visibility = 'visible';
+        neighbor.iframe.style.transform = `translate3d(${offsetSign * Vw + clampedDx}px, 0, 0)`;
+      } else {
+        const dampedDx = Math.round(dx * 0.22);
+        iframe.style.transform = `translate3d(${dampedDx}px, 0, 0)`;
+      }
     };
 
     const executeZoneAction = (clientX: number, clientY: number): void => {
@@ -475,20 +809,79 @@ export class SectionFrameManager {
       this.callbacks.onToggleChrome();
     };
 
-    const onPointerUp = (e: PointerEvent): void => {
-      if (!pointerActive) return;
+    const finishPointerGesture = (e: PointerEvent, isCancel: boolean): void => {
+      if (
+        !pointerActive ||
+        (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId)
+      ) {
+        return;
+      }
       pointerActive = false;
+      activePointerId = null;
 
-      const dx = e.clientX - downX;
-      const dy = e.clientY - downY;
+      const pt = getStationaryPoint(e);
+      const dx = dragLocked ? lastDragDx || pt.x - startStationaryX : pt.x - startStationaryX;
+      const dy = pt.y - startStationaryY;
       const elapsed = Date.now() - downTime;
+
+      if (dragLocked && !this.isEink) {
+        const curPage = paginator.getCurrentPage();
+        const totalPages = paginator.getPageCount();
+        const Vw = paginator.getGeometry().Vw;
+        const isRtl = sectionDoc.dir === 'rtl';
+        const wantsNext = isRtl ? dx > 0 : dx < 0;
+        const wantsPrev = isRtl ? dx < 0 : dx > 0;
+        const absDx = Math.abs(dx);
+        const flickInDir = velocityX * Math.sign(dx) >= 0.35;
+        const shouldCommit =
+          !isCancel && (absDx >= Math.min(72, Vw * 0.18) || (absDx >= 20 && flickInDir));
+
+        if (dragKind === 'intra') {
+          this.resetEdgeTransforms();
+          if (shouldCommit && wantsNext && curPage + 1 < totalPages) {
+            this.callbacks.onNextPage();
+          } else if (shouldCommit && wantsPrev && curPage > 0) {
+            this.callbacks.onPrevPage();
+          } else {
+            paginator.goToPage(curPage, { animate: true, isEink: false });
+          }
+          return;
+        }
+
+        if (dragKind === 'edge') {
+          const neighbor = wantsNext ? this.nextUnit : wantsPrev ? this.prevUnit : null;
+          const clampedDx = neighbor ? Math.max(-Vw, Math.min(Vw, dx)) : Math.round(dx * 0.22);
+          const offsetSign: -1 | 1 = dx < 0 ? 1 : -1;
+
+          if (shouldCommit && neighbor) {
+            const targetDx = dx < 0 ? -Vw : Vw;
+            this.animateEdgeTransition(clampedDx, targetDx, neighbor, offsetSign, () => {
+              if (wantsNext) this.callbacks.onNextPage();
+              else this.callbacks.onPrevPage();
+            });
+          } else if (shouldCommit && !neighbor && wantsNext) {
+            this.resetEdgeTransforms();
+            this.callbacks.onNextPage();
+          } else {
+            this.animateEdgeTransition(clampedDx, 0, neighbor, offsetSign, () => {
+              this.resetEdgeTransforms();
+            });
+          }
+          return;
+        }
+      }
+
+      if (isCancel) {
+        this.resetEdgeTransforms();
+        return;
+      }
 
       // Active text selection suppresses page turn (`ARCHITECTURE.md` §6.1.1)
       if (getNonEmptySelection() !== null || hadSelectionOnDown) {
         return;
       }
 
-      // Horizontal swipe on release (`>= 40px` and `|dx| > 2*|dy|`)
+      // Horizontal swipe on release (`>= 40px` and `|dx| > 2*|dy|`, e.g. E-Ink mode)
       if (Math.abs(dx) >= 40 && Math.abs(dx) > 2 * Math.abs(dy)) {
         const isRtl = sectionDoc.dir === 'rtl';
         if (dx < 0) {
@@ -528,8 +921,8 @@ export class SectionFrameManager {
             if (src) this.callbacks.onImageZoom(src, alt);
             return;
           }
-          const cx = e.clientX;
-          const cy = e.clientY;
+          const cx = downClientX;
+          const cy = downClientY;
           const timer = setTimeout(() => {
             lastImageTap = null;
             executeZoneAction(cx, cy);
@@ -538,12 +931,16 @@ export class SectionFrameManager {
           return;
         }
 
-        executeZoneAction(e.clientX, e.clientY);
+        executeZoneAction(downClientX, downClientY);
       }
     };
 
-    const onPointerCancel = (): void => {
-      pointerActive = false;
+    const onPointerUp = (e: PointerEvent): void => {
+      finishPointerGesture(e, false);
+    };
+
+    const onPointerCancel = (e: PointerEvent): void => {
+      finishPointerGesture(e, true);
     };
 
     const onSelectionChange = (): void => {
@@ -580,8 +977,12 @@ export class SectionFrameManager {
 
     frameDoc.addEventListener('click', onClickCapture, true);
     frameDoc.addEventListener('pointerdown', onPointerDown);
+    frameDoc.addEventListener('pointermove', onPointerMove);
     frameDoc.addEventListener('pointerup', onPointerUp);
     frameDoc.addEventListener('pointercancel', onPointerCancel);
+    hostDoc.addEventListener('pointermove', onPointerMove);
+    hostDoc.addEventListener('pointerup', onPointerUp);
+    hostDoc.addEventListener('pointercancel', onPointerCancel);
     frameDoc.addEventListener('selectionchange', onSelectionChange);
     frameDoc.addEventListener('keydown', onKeyDown);
     frameDoc.addEventListener('wheel', onWheel, { passive: false });
@@ -597,8 +998,12 @@ export class SectionFrameManager {
       }
       frameDoc.removeEventListener('click', onClickCapture, true);
       frameDoc.removeEventListener('pointerdown', onPointerDown);
+      frameDoc.removeEventListener('pointermove', onPointerMove);
       frameDoc.removeEventListener('pointerup', onPointerUp);
       frameDoc.removeEventListener('pointercancel', onPointerCancel);
+      hostDoc.removeEventListener('pointermove', onPointerMove);
+      hostDoc.removeEventListener('pointerup', onPointerUp);
+      hostDoc.removeEventListener('pointercancel', onPointerCancel);
       frameDoc.removeEventListener('selectionchange', onSelectionChange);
       frameDoc.removeEventListener('keydown', onKeyDown);
       frameDoc.removeEventListener('wheel', onWheel);
@@ -606,9 +1011,12 @@ export class SectionFrameManager {
   }
 
   disposeAll(): void {
+    this.cancelEdgeTween();
     this.activeUnit?.dispose();
     this.activeUnit = null;
-    this.prerenderUnit?.dispose();
-    this.prerenderUnit = null;
+    this.prevUnit?.dispose();
+    this.prevUnit = null;
+    this.nextUnit?.dispose();
+    this.nextUnit = null;
   }
 }

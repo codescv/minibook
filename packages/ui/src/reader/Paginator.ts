@@ -161,6 +161,10 @@ export class Paginator {
   }
 
   updateGeometry(next: PaginationGeometry): void {
+    if (this.tweenRaf !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this.tweenRaf);
+      this.tweenRaf = null;
+    }
     this.geom = next;
     this.ensureSentinel();
     this.scaleOversizedBlocks();
@@ -272,7 +276,39 @@ export class Paginator {
     return s * this.geom.Vw;
   }
 
-  goToPage(page: number, options?: { readonly animate?: boolean; readonly isEink?: boolean }): number {
+  /**
+   * Applies a live 1:1 horizontal pointer drag offset (`dx` in screen px, `< 0` when dragging left,
+   * `> 0` when dragging right) relative to `currentPage`, revealing the adjacent page content
+   * continuously from the viewport edge in normal mode (`!isEink`).
+   */
+  setDragOffset(dx: number): void {
+    if (this.tweenRaf !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this.tweenRaf);
+      this.tweenRaf = null;
+    }
+    const html = this.frameDoc.documentElement;
+    const maxMag = Math.max(0, (this.screenCount - 1) * this.geom.Vw);
+    const base = this.targetScrollLeftForPage(this.currentPage);
+
+    if (this.dir === 'rtl') {
+      if (usesNegativeRtlScroll(this.frameDoc)) {
+        const next = Math.max(-maxMag, Math.min(0, Math.round(base - dx)));
+        html.scrollLeft = next;
+      } else {
+        const next = Math.max(0, Math.min(maxMag, Math.round(base + dx)));
+        html.scrollLeft = next;
+      }
+      return;
+    }
+
+    const next = Math.max(0, Math.min(maxMag, Math.round(base - dx)));
+    html.scrollLeft = next;
+  }
+
+  goToPage(
+    page: number,
+    options?: { readonly animate?: boolean; readonly isEink?: boolean; readonly durationMs?: number },
+  ): number {
     if (this.tweenRaf !== null && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(this.tweenRaf);
       this.tweenRaf = null;
@@ -302,7 +338,7 @@ export class Paginator {
 
     const startScroll = html.scrollLeft;
     const delta = targetScroll - startScroll;
-    const durationMs = 180;
+    const durationMs = options?.durationMs ?? 180;
     const t0 = performance.now();
 
     const tick = (now: number): void => {

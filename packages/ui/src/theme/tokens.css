@@ -91,14 +91,35 @@
 
   /* Motion & Opacity Tokens (overridden to 0s / none / 1 in E-Ink mode) */
   --mb-dur: 150ms;
+  --mb-dur-chrome: 200ms;
   --mb-dur-page: 180ms;
-  --mb-dur-sheet: 220ms;
-  --mb-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --mb-dur-sheet: 280ms;
+  --mb-dur-sheet-exit: 220ms;
+  --mb-dur-popover: 180ms;
+  --mb-dur-screen: 260ms;
+  --mb-dur-screen-exit: 220ms;
+  --mb-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --mb-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --mb-transition-fast: background-color var(--mb-dur) var(--mb-ease),
     color var(--mb-dur) var(--mb-ease),
     border-color var(--mb-dur) var(--mb-ease);
-  --mb-transition-sheet: transform var(--mb-dur-sheet) var(--mb-ease);
+  --mb-transition-sheet: transform var(--mb-dur-sheet) var(--mb-ease),
+    opacity var(--mb-dur-sheet) var(--mb-ease);
+  --mb-transition-sheet-exit: transform var(--mb-dur-sheet-exit) var(--mb-ease),
+    opacity var(--mb-dur-sheet-exit) var(--mb-ease);
+  --mb-transition-popover: transform var(--mb-dur-popover) var(--mb-ease),
+    opacity var(--mb-dur-popover) var(--mb-ease);
+  --mb-transition-backdrop: opacity var(--mb-dur-sheet) var(--mb-ease);
+  --mb-transition-backdrop-exit: opacity var(--mb-dur-sheet-exit) var(--mb-ease);
+  --mb-transition-screen: transform var(--mb-dur-screen) var(--mb-ease),
+    opacity var(--mb-dur-screen) var(--mb-ease);
+  --mb-transition-screen-exit: transform var(--mb-dur-screen-exit) var(--mb-ease),
+    opacity var(--mb-dur-screen-exit) var(--mb-ease);
+  --mb-transition-chrome: transform var(--mb-dur-chrome) var(--mb-ease),
+    opacity var(--mb-dur-chrome) var(--mb-ease);
   --mb-transition-knob: transform var(--mb-dur) var(--mb-ease);
+  --mb-opacity-zero: 0;
+  --mb-opacity-covered: 0.72;
   --mb-opacity-full: 1;
   --mb-opacity-disabled: 0.38;
   --mb-filter-none: none;

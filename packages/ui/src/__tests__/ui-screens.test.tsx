@@ -453,4 +453,68 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     mounted.unmount();
     container.remove();
   });
+
+  it('[v0.2.1] live-switches active Kokoro download from hf-mirror.com to huggingface.co when clicking Hugging Face and supports Sheet grabber pull-down-to-dismiss', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const host = createMockPlatformHost({
+      platform: 'desktop',
+      initialSettings: {
+        einkMode: 'off',
+        modelDownloadSource: 'hf-mirror',
+        modelMirrorBaseUrl: 'https://custom-mirror.example.com',
+      },
+      initialModelStatus: {
+        state: 'downloading',
+        bytesDone: 25_000_000,
+        bytesTotal: 100_000_000,
+        source: 'hf-mirror.com',
+      },
+    });
+    const speech = createMockSpeechPlayer();
+    const mounted = mountMiniBookApp(container, host, speech);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-screen')).toBeInTheDocument();
+    });
+
+    // Library layer remains mounted underneath with inert + aria-hidden in normal mode
+    const libLayer = container.querySelector('.mb-screen-layer.mb-screen-library');
+    expect(libLayer).not.toBeNull();
+    expect(libLayer?.getAttribute('aria-hidden')).toBe('true');
+    expect(libLayer?.hasAttribute('inert')).toBe(true);
+
+    // Open On-device neural voice sheet -> initially shows 'via hf-mirror.com'
+    fireEvent.click(container.querySelector('[data-setting-row="on-device-neural-voice"]')!);
+    expect(await screen.findByTestId('kokoro-status-text')).toHaveTextContent(/via hf-mirror\.com/i);
+
+    // Click 'Hugging Face' in 'Download from' Segmented control -> clears custom mirror URL and live-switches active download to huggingface.co!
+    const hfTab = screen.getByRole('tab', { name: 'Hugging Face' });
+    await act(async () => {
+      fireEvent.click(hfTab);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('kokoro-status-text')).toHaveTextContent(/via huggingface\.co/i);
+    });
+    expect(( await host.settings.get() ).modelDownloadSource).toBe('huggingface');
+    expect(( await host.settings.get() ).modelMirrorBaseUrl).toBeNull();
+
+    // Test Sheet grabber pull-down-to-dismiss: < 56px springs back, >= 56px closes sheet
+    const grabber = container.querySelector('.mb-sheet-grabber')!;
+    expect(grabber).not.toBeNull();
+    fireEvent.touchStart(grabber, { touches: [{ clientY: 100 }] });
+    fireEvent.touchMove(grabber, { touches: [{ clientY: 130 }] });
+    fireEvent.touchEnd(grabber);
+    expect(screen.getByRole('dialog', { name: /On-device neural voice/i })).toBeInTheDocument();
+
+    fireEvent.touchStart(grabber, { touches: [{ clientY: 100 }] });
+    fireEvent.touchMove(grabber, { touches: [{ clientY: 180 }] });
+    fireEvent.touchEnd(grabber);
+    expect(screen.queryByRole('dialog', { name: /On-device neural voice/i })).toBeNull();
+
+    mounted.unmount();
+    container.remove();
+  });
 });

@@ -1,8 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
-import type { PlatformHost, SpeechModelStatus } from '@minibook/core';
+import type { ModelDownloadSource, PlatformHost, SpeechModelStatus } from '@minibook/core';
 import { KOKORO_MODEL_ID } from '@minibook/core';
 import type { I18nKey } from '../i18n/en';
+
+export function resolveEffectiveModelSourceHost(
+  statusSource: string | undefined,
+  sourceSetting: ModelDownloadSource,
+  mirrorBaseUrl: string | null,
+): string | undefined {
+  if (sourceSetting === 'huggingface') return 'huggingface.co';
+  if (sourceSetting === 'hf-mirror') return 'hf-mirror.com';
+  if (sourceSetting === 'custom' && mirrorBaseUrl) {
+    try {
+      return new URL(mirrorBaseUrl).host || mirrorBaseUrl;
+    } catch {
+      return mirrorBaseUrl;
+    }
+  }
+  return statusSource;
+}
 
 interface SpeechModelStoreState {
   /** Always holds the latest unthrottled status for non-UI logic (e.g. ReadAloudController). */
@@ -149,6 +166,7 @@ export class SpeechModelUiThrottle {
   private lastDisplayedPct = -1;
   private lastRepaintAtMs = -Infinity;
   private lastVoicesKey = '';
+  private lastSource = '';
 
   shouldRepaint(next: SpeechModelStatus, isEink: boolean, nowMs = Date.now()): {
     repaint: boolean;
@@ -157,16 +175,19 @@ export class SpeechModelUiThrottle {
     const rawPct = computeModelProgressPct(next);
     const displayPct = isEink ? stepEinkPct(rawPct) : rawPct;
     const voicesKey = next.installedVoices.join(',');
+    const sourceKey = next.source ?? '';
 
     if (
       this.lastState !== next.state ||
       this.lastVoicesKey !== voicesKey ||
+      this.lastSource !== sourceKey ||
       next.state !== 'downloading'
     ) {
       this.lastState = next.state;
       this.lastDisplayedPct = displayPct;
       this.lastRepaintAtMs = nowMs;
       this.lastVoicesKey = voicesKey;
+      this.lastSource = sourceKey;
       return { repaint: true, displayPct };
     }
 

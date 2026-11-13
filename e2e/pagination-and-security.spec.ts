@@ -497,4 +497,192 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
         .toBeLessThanOrEqual(2);
     }
   });
+
+  test('[v0.2.1] supports 1:1 horizontal drag revealing adjacent page content mid-gesture, cross-chapter neighbor drag, smooth UI transitions, and Hugging Face source switching', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.goto('/?theme=paper');
+
+    // 1. Verify Settings screen & Sheet transitions + Hugging Face download source switch in normal mode
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
+
+    const settingsLayerTransition = await page
+      .locator('.mb-screen-layer.mb-screen-settings')
+      .evaluate((el) => window.getComputedStyle(el).transitionDuration);
+    expect(parseFloat(settingsLayerTransition)).toBeGreaterThan(0);
+
+    await page.locator('[data-setting-row="on-device-neural-voice"]').click();
+    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toBeVisible();
+
+    const sheetTransition = await page
+      .locator('.mb-sheet')
+      .evaluate((el) => window.getComputedStyle(el).transitionDuration);
+    expect(parseFloat(sheetTransition)).toBeGreaterThan(0);
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'downloading',
+        bytesDone: 30_000_000,
+        bytesTotal: 100_000_000,
+        source: 'hf-mirror.com',
+      });
+    });
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('via hf-mirror.com');
+
+    await page.getByRole('tab', { name: 'Hugging Face' }).click();
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('via huggingface.co');
+
+    // Close sheet and return to Library
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Back' }).click();
+
+    // 2. Open multi-page book (`b_long40k`) and test 1:1 intra-chapter drag + cancelled drag spring-back
+    await page.goto('/?book=b_long40k&theme=paper');
+    await page.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
+
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const f = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[data-frame-role="active"]',
+          );
+          return f?.contentDocument?.body?.textContent?.includes('Paragraph 1.') ?? false;
+        }),
+      )
+      .toBe(true);
+
+    // Drag left by 120px and hold BEFORE mouse.up -> verify scrollLeft == 120 (both Page 0 and Page 1 visible simultaneously!)
+    await page.mouse.move(300, 420);
+    await page.mouse.down();
+    await page.mouse.move(280, 420);
+    await page.mouse.move(180, 420);
+
+    const midIntraDrag = await page.evaluate(() => {
+      const f = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      const fDoc = f.contentDocument!;
+      const Vw = parseFloat(f.style.width);
+      return {
+        scrollLeft: fDoc.documentElement.scrollLeft,
+        Vw,
+      };
+    });
+    expect(midIntraDrag.scrollLeft).toBeGreaterThanOrEqual(100);
+    expect(midIntraDrag.scrollLeft).toBeLessThan(midIntraDrag.Vw);
+
+    // Release finger -> commits turn and settles smoothly to Page 1 (scrollLeft === Vw)
+    await page.mouse.up();
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const f = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[data-frame-role="active"]',
+          )!;
+          return f.contentDocument!.documentElement.scrollLeft;
+        }),
+      )
+      .toBe(midIntraDrag.Vw);
+
+    // Cancelled short drag (-14px) shifts mid-gesture and springs back to Page 1 on release
+    await page.mouse.move(250, 420);
+    await page.mouse.down();
+    await page.mouse.move(236, 420);
+    const midShortDrag = await page.evaluate(() => {
+      const f = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      return f.contentDocument!.documentElement.scrollLeft;
+    });
+    expect(midShortDrag).toBeGreaterThan(midIntraDrag.Vw);
+    await page.mouse.up();
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const f = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[data-frame-role="active"]',
+          )!;
+          return f.contentDocument!.documentElement.scrollLeft;
+        }),
+      )
+      .toBe(midIntraDrag.Vw);
+
+    // 3. Cross-chapter edge drag on `b_dickens`: pre-warmed next neighbor slides into view mid-gesture!
+    await page.goto('/?book=b_dickens&theme=paper');
+    await page.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const nextFrame = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[data-frame-role="next"]',
+          );
+          return Boolean(nextFrame?.contentDocument?.body?.textContent?.trim().length);
+        }),
+      )
+      .toBe(true);
+
+    // Turn to the last page of Section 0 if needed
+    await page.evaluate(() => {
+      const activeFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      const Vw = parseFloat(activeFrame.style.width);
+      const html = activeFrame.contentDocument!.documentElement;
+      // Ensure we are on the last page of Section 0
+      while (html.scrollLeft + Vw < html.scrollWidth - 2) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+        break;
+      }
+    });
+
+    // Advance via ArrowRight until we are on the last page of the first section, or drag at the boundary
+    const pagesInSec0 = await page.evaluate(() => {
+      const activeFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      const Vw = parseFloat(activeFrame.style.width);
+      return Math.max(1, Math.round(activeFrame.contentDocument!.documentElement.scrollWidth / Vw));
+    });
+    for (let i = 1; i < pagesInSec0; i++) {
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(220);
+    }
+
+    // Now at the last page of Section 0: drag left by 140px and hold BEFORE mouse.up
+    await page.mouse.move(300, 420);
+    await page.mouse.down();
+    await page.mouse.move(280, 420);
+    await page.mouse.move(160, 420);
+
+    const midEdgeDrag = await page.evaluate(() => {
+      const activeFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="active"]',
+      )!;
+      const nextFrame = document.querySelector<HTMLIFrameElement>(
+        'iframe.mb-reader-frame[data-frame-role="next"]',
+      )!;
+      return {
+        activeTransform: activeFrame.style.transform,
+        nextVisible: nextFrame?.style.visibility === 'visible',
+        nextTransform: nextFrame?.style.transform ?? '',
+      };
+    });
+    expect(midEdgeDrag.activeTransform).toContain('translate3d(');
+    expect(midEdgeDrag.nextVisible).toBe(true);
+    expect(midEdgeDrag.nextTransform).toContain('translate3d(');
+
+    await page.mouse.up();
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const activeFrame = document.querySelector<HTMLIFrameElement>(
+            'iframe.mb-reader-frame[data-frame-role="active"]',
+          )!;
+          return activeFrame.style.transform;
+        }),
+      )
+      .toBe('');
+  });
 });

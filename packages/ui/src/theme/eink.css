@@ -60,11 +60,25 @@
 
   /* R2 — Zero Motion */
   --mb-dur: 0s !important;
+  --mb-dur-chrome: 0s !important;
   --mb-dur-page: 0s !important;
   --mb-dur-sheet: 0s !important;
+  --mb-dur-sheet-exit: 0s !important;
+  --mb-dur-popover: 0s !important;
+  --mb-dur-screen: 0s !important;
+  --mb-dur-screen-exit: 0s !important;
   --mb-transition-fast: none !important;
   --mb-transition-sheet: none !important;
+  --mb-transition-sheet-exit: none !important;
+  --mb-transition-popover: none !important;
+  --mb-transition-backdrop: none !important;
+  --mb-transition-backdrop-exit: none !important;
+  --mb-transition-screen: none !important;
+  --mb-transition-screen-exit: none !important;
+  --mb-transition-chrome: none !important;
   --mb-transition-knob: none !important;
+  --mb-opacity-zero: 1 !important;
+  --mb-opacity-covered: 1 !important;
   --mb-opacity-full: 1 !important;
   --mb-opacity-disabled: 1 !important;
   --mb-filter-none: none !important;

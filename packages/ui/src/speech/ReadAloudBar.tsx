@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useRouteStore } from '../app/routes';
 import { IconButton } from '../components/IconButton';
 import {
@@ -31,8 +31,38 @@ export function ReadAloudBar({ controller, isEink }: ReadAloudBarProps): ReactEl
   const barOpen = useRouteStore((s) => s.readAloudBarOpen);
   const activeSheet = useRouteStore((s) => s.activeSheet);
 
+  const shouldShow = active && barOpen;
+  const [mounted, setMounted] = useState<boolean>(shouldShow);
+  const [entered, setEntered] = useState<boolean>(shouldShow);
+
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
+
+  useEffect(() => {
+    if (isEink) {
+      setMounted(shouldShow);
+      setEntered(shouldShow);
+      return;
+    }
+    if (shouldShow) {
+      setMounted(true);
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          setEntered(true);
+        });
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      };
+    }
+    setEntered(false);
+    const timer = setTimeout(() => {
+      setMounted(false);
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [shouldShow, isEink]);
 
   useEffect(() => {
     if (!active || !barOpen || isEink || activeSheet !== null) return;
@@ -42,7 +72,16 @@ export function ReadAloudBar({ controller, isEink }: ReadAloudBarProps): ReactEl
     return () => clearTimeout(timer);
   }, [active, barOpen, isEink, activeSheet, status, rate]);
 
-  if (!active || !barOpen) return null;
+  if (isEink ? !shouldShow : !shouldShow && !mounted) return null;
+
+  const phase: 'entering' | 'open' | 'closing' = isEink
+    ? 'open'
+    : !shouldShow
+      ? 'closing'
+      : entered
+        ? 'open'
+        : 'entering';
+  const isClosing = phase === 'closing';
 
   const isPlaying = status === 'playing' || status === 'buffering';
 
@@ -66,7 +105,13 @@ export function ReadAloudBar({ controller, isEink }: ReadAloudBarProps): ReactEl
   };
 
   return (
-    <nav className="mb-tts-bar" aria-label={t('readAloud')}>
+    <nav
+      className="mb-tts-bar"
+      data-state={phase}
+      aria-label={isClosing ? undefined : t('readAloud')}
+      aria-hidden={isClosing ? 'true' : undefined}
+      style={isClosing ? { pointerEvents: 'none' } : undefined}
+    >
       <IconButton label={t('stopReadAloud')} onClick={() => controller.stop()}>
         <CloseIcon />
       </IconButton>
