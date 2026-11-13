@@ -502,4 +502,77 @@ public class ModelDownloadManagerTest {
 
         mgr.shutdown();
     }
+
+    @Test
+    public void neverDropsVerifyingToDownloadingTransitionWithinOneSecondWindow() throws Exception {
+        byte[] voiceBytes = makeBytes(4 * 1024, 41);
+        byte[] modelBytes = makeBytes(8 * 1024, 43);
+        String voiceSha = sha256(voiceBytes);
+        String modelSha = sha256(modelBytes);
+
+        List<ModelDownloadManager.FileSpec> files = Arrays.asList(
+            new ModelDownloadManager.FileSpec("voices/zf_001.bin", voiceBytes.length, voiceSha, "repo", "rev1"),
+            new ModelDownloadManager.FileSpec("onnx/model_quantized.onnx", modelBytes.length, modelSha, "repo", "rev1")
+        );
+
+        MockWebServer srv = newServer();
+        CountDownLatch file2Requested = new CountDownLatch(1);
+        CountDownLatch releaseFile2 = new CountDownLatch(1);
+        srv.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                if (request.getPath().contains("zf_001.bin")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(voiceBytes));
+                }
+                file2Requested.countDown();
+                try {
+                    releaseFile2.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {}
+                return new MockResponse().setResponseCode(200).setBody(new Buffer().write(modelBytes));
+            }
+        });
+
+        List<JSONObject> events = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch postVerifyDownloading = new CountDownLatch(1);
+        ModelDownloadManager mgr = new ModelDownloadManager(
+            null,
+            store,
+            st -> {
+                events.add(st);
+                boolean sawVerifying = false;
+                for (JSONObject ev : events) {
+                    String s = ev.optString("state");
+                    if ("verifying".equals(s)) sawVerifying = true;
+                    else if (sawVerifying && "downloading".equals(s)) {
+                        postVerifyDownloading.countDown();
+                        break;
+                    }
+                }
+            },
+            null,
+            new long[] { 0L },
+            2_000,
+            2_000,
+            0L,
+            dir -> 100_000_000L,
+            true
+        );
+
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            files,
+            Collections.singletonList("http://localhost:" + srv.getPort()),
+            Collections.singletonList("localhost")
+        ));
+
+        assertTrue(file2Requested.await(3, TimeUnit.SECONDS));
+        assertTrue(
+            "verifying -> downloading transition for file 2 must be emitted immediately (<1s)",
+            postVerifyDownloading.await(500, TimeUnit.MILLISECONDS)
+        );
+        releaseFile2.countDown();
+        mgr.pause(KokoroModelStore.MODEL_ID);
+        mgr.shutdown();
+    }
 }
