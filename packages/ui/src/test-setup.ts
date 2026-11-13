@@ -38,3 +38,40 @@ if (typeof window !== 'undefined') {
     URL.revokeObjectURL = () => {};
   }
 }
+
+// Serve bundled `@minibook/core` Kokoro G2P `.gz` dictionaries for relative `/kokoro-g2p/v1/*` fetches in Vitest.
+{
+  const proc = (globalThis as Record<string, any>).process;
+  const nodeFs = proc?.getBuiltinModule?.('node:fs');
+  const nodePath = proc?.getBuiltinModule?.('node:path');
+  const origFetch = globalThis.fetch;
+  if (nodeFs && nodePath && typeof origFetch === 'function') {
+    const cwd = typeof proc.cwd === 'function' ? proc.cwd() : '.';
+    const g2pDir = [
+      nodePath.resolve(cwd, 'packages/core/assets/kokoro-g2p/v1'),
+      nodePath.resolve(cwd, '../core/assets/kokoro-g2p/v1'),
+    ].find((dir: string) => nodeFs.existsSync(dir));
+    if (g2pDir) {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const rawUrl =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        const match = /(?:^|\/)kokoro-g2p\/v1\/([A-Za-z0-9._-]+)$/.exec(rawUrl);
+        if (match) {
+          const filePath = nodePath.join(g2pDir, match[1]);
+          if (nodeFs.existsSync(filePath)) {
+            const bytes = nodeFs.readFileSync(filePath);
+            return new Response(new Uint8Array(bytes), {
+              status: 200,
+              headers: { 'Content-Type': 'application/gzip' },
+            });
+          }
+        }
+        return origFetch(input, init);
+      }) as typeof fetch;
+    }
+  }
+}

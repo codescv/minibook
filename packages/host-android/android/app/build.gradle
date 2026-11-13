@@ -17,6 +17,22 @@ android {
     androidResources {
         noCompress += ['gz', 'bin', 'onnx']
     }
+    applicationVariants.configureEach { variant ->
+        variant.mergeAssetsProvider.configure {
+            doLast {
+                def srcG2p = file("src/main/assets/public/kokoro-g2p/v1")
+                def dstG2p = new File(outputDir.get().asFile, "public/kokoro-g2p/v1")
+                if (srcG2p.exists()) {
+                    dstG2p.mkdirs()
+                    dstG2p.listFiles()?.each { it.delete() }
+                    copy {
+                        from srcG2p
+                        into dstG2p
+                    }
+                }
+            }
+        }
+    }
     signingConfigs {
         release {
             storeFile file('minibook-release.keystore')
