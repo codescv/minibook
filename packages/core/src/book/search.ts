@@ -1,4 +1,4 @@
-import type { BookSession, SearchHit, TocItem } from '../types.js';
+import type { BookSession, SearchHit, SectionText, TocItem } from '../types.js';
 import { throwIfAborted } from '../util/abort.js';
 
 interface FoldedTextWithMap {
@@ -7,11 +7,33 @@ interface FoldedTextWithMap {
   readonly toOrig: Int32Array;
 }
 
-function foldCaseAndWidthWithMap(original: string): FoldedTextWithMap {
+/**
+ * Folds case + NFKC width while inserting a virtual `' '` at block boundaries (`block.end`)
+ * where adjacent HTML blocks (`<h1>Chapter 1</h1><p>Paragraph 0</p>`) have no literal whitespace
+ * between them in `SectionText.text`. Preserves 100% exact `Locator` offsets into `SectionText.text`!
+ */
+function foldCaseAndWidthWithMap(sectionText: SectionText): FoldedTextWithMap {
+  const original = sectionText.text;
+  const blockEndBoundaries = new Set<number>();
+  for (const b of sectionText.blocks) {
+    if (b.end > 0 && b.end < original.length) {
+      blockEndBoundaries.add(b.end);
+    }
+  }
+
   const foldedParts: string[] = [];
   const offsets: number[] = [];
 
   for (let i = 0; i < original.length; ) {
+    if (blockEndBoundaries.has(i)) {
+      const prevCh = original[i - 1]!;
+      const curCh = original[i]!;
+      if (!/\s/.test(prevCh) && !/\s/.test(curCh)) {
+        foldedParts.push(' ');
+        offsets.push(i);
+      }
+    }
+
     const cp = original.codePointAt(i)!;
     const charLen = cp > 0xffff ? 2 : 1;
     const rawChar = original.slice(i, i + charLen);
@@ -49,14 +71,28 @@ function buildSectionChapterMap(toc: readonly TocItem[]): Map<number, Array<{ of
   return map;
 }
 
-function makeSearchSnippet(text: string, start: number, end: number): string {
+function makeSearchSnippet(sectionText: SectionText, start: number, end: number): string {
+  const text = sectionText.text;
   const ctxBefore = 28;
   const ctxAfter = 36;
   const sStart = Math.max(0, start - ctxBefore);
   const sEnd = Math.min(text.length, end + ctxAfter);
   const prefix = sStart > 0 ? '…' : '';
   const suffix = sEnd < text.length ? '…' : '';
-  const raw = text.slice(sStart, sEnd).replace(/\s+/g, ' ').trim();
+
+  const blockEnds = new Set<number>();
+  for (const b of sectionText.blocks) {
+    if (b.end > sStart && b.end < sEnd) blockEnds.add(b.end);
+  }
+
+  let raw = '';
+  for (let i = sStart; i < sEnd; i++) {
+    if (blockEnds.has(i) && raw.length > 0 && !/\s/.test(raw[raw.length - 1]!) && !/\s/.test(text[i]!)) {
+      raw += ' ';
+    }
+    raw += text[i]!;
+  }
+  raw = raw.replace(/\s+/g, ' ').trim();
   return `${prefix}${raw}${suffix}`;
 }
 
@@ -75,7 +111,7 @@ export async function* search(
   query: string,
   options?: { readonly signal?: AbortSignal; readonly maxHits?: number },
 ): AsyncGenerator<SearchHit, void, void> {
-  const trimmedQuery = query.trim();
+  const trimmedQuery = query.replace(/\s+/g, ' ').trim();
   if (!trimmedQuery) return;
 
   const foldedQuery = trimmedQuery.normalize('NFKC').toLowerCase();
@@ -96,7 +132,7 @@ export async function* search(
     throwIfAborted(options?.signal);
 
     if (sectionText.text.length > 0) {
-      const { folded, toOrig } = foldCaseAndWidthWithMap(sectionText.text);
+      const { folded, toOrig } = foldCaseAndWidthWithMap(sectionText);
       const tocEntries = tocMap.get(sectionRef.index);
       let pos = 0;
       while (pos <= folded.length - foldedQuery.length) {
@@ -119,7 +155,7 @@ export async function* search(
         yield {
           locator: { section: sectionRef.index, offset: origStart },
           length: origLen,
-          snippet: makeSearchSnippet(sectionText.text, origStart, origEnd),
+          snippet: makeSearchSnippet(sectionText, origStart, origEnd),
           ...(chapterTitle !== undefined ? { chapterTitle } : {}),
         };
 

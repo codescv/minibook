@@ -203,14 +203,18 @@ export async function readMobiIndxTable(
     throw new MiniBookError('corrupt-book', `Record ${metaRecordIndex} is not an INDX record`);
   }
 
+  // MobileRead INDX header layout (`4..55`):
+  //   4: headerLen, 8: nul1, 12: type (0=normal, 2=inflection/meta), 16: gen,
+  //   20: idxtOffset, 24: count, 28: encoding, 32: language, 36: totalEntries,
+  //   40: ordtOffset, 44: ligtOffset, 48: numLigt, 52: numCncx (`nctoc`), 180: tagxOffset
   const headerLen = mr.u32beAt(4);
-  const indxType = mr.u32beAt(8); // 0 = normal leaf, 2 = inflection / meta header
+  const indxType = metaBytes.byteLength >= 16 ? mr.u32beAt(12) : 0;
   const idxtOffset = mr.u32beAt(20);
   const countField = mr.u32beAt(24);
   const codepage = mr.u32beAt(28);
   const encoding: 'utf-8' | 'windows-1252' = codepage === 65001 ? 'utf-8' : 'windows-1252';
   const tagxOffset = headerLen >= 184 && metaBytes.byteLength >= 184 ? mr.u32beAt(180) : 0;
-  const cncxCount = headerLen >= 192 && metaBytes.byteLength >= 192 ? mr.u32beAt(188) : 0;
+  const cncxCount = headerLen >= 56 && metaBytes.byteLength >= 56 ? mr.u32beAt(52) : 0;
 
   const { numControlBytes, rules } = parseTagxSection(metaBytes, tagxOffset);
 

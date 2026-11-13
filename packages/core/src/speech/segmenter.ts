@@ -35,6 +35,7 @@ const LATIN_ABBREVIATIONS = new Set([
   'st',
   'mt',
   'vs',
+  'v',
   'etc',
   'e.g',
   'i.e',
@@ -47,24 +48,102 @@ const LATIN_ABBREVIATIONS = new Set([
   'vol',
   'vols',
   'ch',
+  'chs',
   'pt',
+  'pts',
   'sec',
+  'secs',
+  'art',
+  'arts',
+  'pp',
+  'ed',
+  'eds',
+  'trans',
+  'op',
+  'cit',
+  'ibid',
   'inc',
   'ltd',
   'co',
   'corp',
   'jr',
   'sr',
+  'esq',
+  'hon',
+  'messrs',
+  'mmes',
+  'msgr',
   'rev',
   'gen',
   'col',
+  'lt',
+  'maj',
   'capt',
   'sgt',
+  'cmdr',
+  'adm',
+  'gov',
+  'sen',
+  'rep',
+  'supt',
+  'det',
   'approx',
   'dept',
   'est',
   'min',
   'max',
+  'ave',
+  'blvd',
+  'rd',
+  'ln',
+  'ct',
+  'pl',
+  'sq',
+  'ft',
+  // Months & Days (`Jan. 3.`, `Oct. 12`, `Mon.`)
+  'jan',
+  'feb',
+  'mar',
+  'apr',
+  'jun',
+  'jul',
+  'aug',
+  'sep',
+  'sept',
+  'oct',
+  'nov',
+  'dec',
+  'mon',
+  'tue',
+  'tues',
+  'wed',
+  'thu',
+  'thur',
+  'thurs',
+  'fri',
+  'sat',
+  'sun',
+  // Time & Academic / Country abbreviations (`Ph.D.`, `U.S.`)
+  'ph.d',
+  'm.d',
+  'b.a',
+  'm.a',
+  'b.s',
+  'm.s',
+  'd.d.s',
+  'u.s',
+  'u.k',
+  'e.u',
+  'u.n',
+]);
+
+const SENTENCE_FINAL_CAPABLE_ABBREVS = new Set(['a.m', 'p.m', 'am', 'pm']);
+const CALENDAR_CONTINUATION_WORDS = new Set([
+  'jan', 'january', 'feb', 'february', 'mar', 'march', 'apr', 'april', 'may',
+  'jun', 'june', 'jul', 'july', 'aug', 'august', 'sep', 'sept', 'september',
+  'oct', 'october', 'nov', 'november', 'dec', 'december',
+  'mon', 'monday', 'tue', 'tues', 'tuesday', 'wed', 'wednesday',
+  'thu', 'thur', 'thurs', 'thursday', 'fri', 'friday', 'sat', 'saturday', 'sun', 'sunday',
 ]);
 
 function isWhitespaceCode(c: number): boolean {
@@ -137,6 +216,21 @@ function isAbbreviationOrNumberDot(str: string, dotIndex: number, blockStart: nu
   if (!rawToken) return false;
 
   const lowerToken = rawToken.toLowerCase().replace(/\.+$/, '');
+  if (SENTENCE_FINAL_CAPABLE_ABBREVS.has(lowerToken)) {
+    // `a.m.` / `p.m.` stays mid-sentence before lowercase, digits (`5 p.m. 2026`), or calendar nouns (`5 p.m. Jan. 3`),
+    // but ends the sentence before a normal capitalized word (`at 8 a.m. Then leave.`)!
+    let k = dotIndex + 1;
+    while (k < blockEnd && (isWhitespaceCode(str.charCodeAt(k)) || CLOSING_PUNCT.has(str[k]!))) k++;
+    if (k < blockEnd) {
+      let wordEnd = k;
+      while (wordEnd < blockEnd && /[A-Za-z0-9]/.test(str[wordEnd]!)) wordEnd++;
+      const nextWord = str.slice(k, wordEnd);
+      if (/^\d/.test(nextWord) || CALENDAR_CONTINUATION_WORDS.has(nextWord.toLowerCase())) {
+        return true;
+      }
+    }
+    return false;
+  }
   if (LATIN_ABBREVIATIONS.has(lowerToken) || LATIN_ABBREVIATIONS.has(rawToken.toLowerCase())) {
     return true;
   }

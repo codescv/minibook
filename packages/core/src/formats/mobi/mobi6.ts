@@ -126,49 +126,67 @@ export async function buildMobi6IndexFromStream(params: {
 
   let toc: TocItem[] = rawTocItems.map((t) => {
     const secIdx = findMobi6SectionForByteOffset(sections, t.filepos);
+    const sec = sections[secIdx]!;
+    // Compute tag-stripped character offset within `sec` when a section contains sub-anchors
+    let approxOff = 0;
+    if (t.filepos > sec.byteStart) {
+      const prefixStr = decodeBytesWithEncoding(
+        textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, t.filepos)),
+        header.encoding,
+      );
+      approxOff = prefixStr.replace(/<[^>]+>/g, '').length;
+    }
     return {
       title: t.title,
-      locator: { section: secIdx, offset: 0 },
+      locator: { section: secIdx, offset: approxOff },
       href: `${secIdx}#mb-fp-${t.filepos}`,
       children: [],
     };
   });
 
-  if (toc.length === 0) {
-    // Fallback: extract first heading from each section (`§4.4`)
-    for (const sec of sections) {
-      const sliceStr = decodeBytesWithEncoding(
-        textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, sec.byteStart + 2048)),
-        header.encoding,
-      );
-      const hMatch = /<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]>/i.exec(sliceStr);
-      const cleanTitle = hMatch?.[1]
-        ? hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-        : '';
-      if (cleanTitle) {
-        spine[sec.index] = { ...spine[sec.index]!, title: cleanTitle };
-        toc.push({
-          title: cleanTitle,
-          locator: { section: sec.index, offset: 0 },
-          children: [],
-        });
-      }
-    }
-  } else {
+  const extractHeadingForMobi6Section = (sec: Mobi6SectionIndex): string => {
+    const sliceStr = decodeBytesWithEncoding(
+      textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, sec.byteStart + 3072)),
+      header.encoding,
+    );
+    const hMatch = /<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]>/i.exec(sliceStr);
+    return hMatch?.[1]
+      ? hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+      : '';
+  };
+
+  const coveredMobi6 = new Set(toc.map((t) => t.locator.section));
+  if (toc.length === 0 || (sections.length >= 2 && coveredMobi6.size < sections.length * 0.5)) {
+    const bySec = new Map<number, TocItem[]>();
     for (const item of toc) {
-      const sp = spine[item.locator.section];
-      if (sp && !sp.title) {
-        spine[item.locator.section] = { ...sp, title: item.title };
-      }
+      const list = bySec.get(item.locator.section) ?? [];
+      list.push(item);
+      bySec.set(item.locator.section, list);
     }
+    const rebuilt: TocItem[] = [];
+    for (let idx = 0; idx < sections.length; idx++) {
+      const sec = sections[idx]!;
+      const existing = bySec.get(sec.index);
+      if (existing && existing.length > 0) {
+        rebuilt.push(...existing);
+        continue;
+      }
+      const cleanTitle = extractHeadingForMobi6Section(sec) || `Section ${idx + 1}`;
+      spine[sec.index] = { ...spine[sec.index]!, title: cleanTitle };
+      rebuilt.push({
+        title: cleanTitle,
+        locator: { section: sec.index, offset: 0 },
+        children: [],
+      });
+    }
+    toc = rebuilt;
   }
 
-  if (toc.length === 0) {
-    toc = spine.map((s, idx) => ({
-      title: s.title || `Section ${idx + 1}`,
-      locator: { section: s.index, offset: 0 },
-      children: [],
-    }));
+  for (const item of toc) {
+    const sp = spine[item.locator.section];
+    if (sp && !sp.title) {
+      spine[item.locator.section] = { ...sp, title: item.title };
+    }
   }
 
   const firstImageGlobal =

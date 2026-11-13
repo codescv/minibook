@@ -1,9 +1,14 @@
 /**
  * Lightweight DOM-free markup AST shared by the XML tokenizer, `parse5` adapter,
  * FB2/TXT/Markdown builders, sanitizer, canonical text-model extractor, and XHTML serializer.
+ *
+ * All tree traversals (`textContent`, `findFirst`, `findAll`) are iterative so pathologically
+ * deep book markup can never overflow the JS call stack.
  */
 
 export type MNamespace = 'xhtml' | 'svg' | 'math';
+
+export const MAX_MARKUP_DEPTH = 512;
 
 export interface MElement {
   readonly type: 'element';
@@ -49,11 +54,19 @@ export function getAttr(node: MElement, name: string): string | undefined {
   return undefined;
 }
 
-export function textContent(node: MNode): string {
-  if (node.type === 'text') return node.value;
+export function textContent(root: MNode): string {
+  if (root.type === 'text') return root.value;
   let out = '';
-  for (let i = 0; i < node.children.length; i++) {
-    out += textContent(node.children[i]!);
+  const stack: MNode[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur.type === 'text') {
+      out += cur.value;
+    } else {
+      for (let i = cur.children.length - 1; i >= 0; i--) {
+        stack.push(cur.children[i]!);
+      }
+    }
   }
   return out;
 }
@@ -74,11 +87,13 @@ export function findFirst(
   root: MElement,
   predicate: (node: MElement) => boolean,
 ): MElement | null {
-  if (predicate(root)) return root;
-  for (const child of root.children) {
-    if (child.type === 'element') {
-      const hit = findFirst(child, predicate);
-      if (hit) return hit;
+  const stack: MElement[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (predicate(cur)) return cur;
+    for (let i = cur.children.length - 1; i >= 0; i--) {
+      const child = cur.children[i]!;
+      if (child.type === 'element') stack.push(child);
     }
   }
   return null;
@@ -89,10 +104,13 @@ export function findAll(
   predicate: (node: MElement) => boolean,
   acc: MElement[] = [],
 ): MElement[] {
-  if (predicate(root)) acc.push(root);
-  for (const child of root.children) {
-    if (child.type === 'element') {
-      findAll(child, predicate, acc);
+  const stack: MElement[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (predicate(cur)) acc.push(cur);
+    for (let i = cur.children.length - 1; i >= 0; i--) {
+      const child = cur.children[i]!;
+      if (child.type === 'element') stack.push(child);
     }
   }
   return acc;

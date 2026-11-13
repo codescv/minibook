@@ -103,6 +103,7 @@ export async function openBook(
       const { zip, index: epubIdx } = await (await import('../formats/epub/epub.js')).buildEpubIndex(
         src,
         detected.zip,
+        { isInspect: false },
       );
       return createEpubSession(src, epubIdx, zip);
     }
