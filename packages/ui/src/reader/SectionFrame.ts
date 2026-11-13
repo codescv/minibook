@@ -11,6 +11,13 @@ import { buildFrameUserStylesheet } from './user-stylesheet';
 export const FRAME_CSP_CONTENT =
   "default-src 'none'; script-src 'none'; connect-src 'none'; img-src blob: data:; font-src blob: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 let cachedSandboxValue: string | null = null;
 
 /**
@@ -128,6 +135,8 @@ export class SectionFrameManager {
   private nextUnit: FilledFrameUnit | null = null;
   private isEink = false;
   private edgeTweenRaf: number | null = null;
+  private edgeTweenCleanup: (() => void) | null = null;
+  private edgeAlreadySlid = false;
 
   constructor(stageEl: HTMLElement, callbacks: FrameGestureCallbacks) {
     this.stageEl = stageEl;
@@ -154,6 +163,11 @@ export class SectionFrameManager {
     if (this.edgeTweenRaf !== null && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(this.edgeTweenRaf);
       this.edgeTweenRaf = null;
+    }
+    if (this.edgeTweenCleanup !== null) {
+      const cleanup = this.edgeTweenCleanup;
+      this.edgeTweenCleanup = null;
+      cleanup();
     }
   }
 
@@ -254,32 +268,42 @@ export class SectionFrameManager {
       this.nextUnit.sectionDoc.index === options.sectionDoc.index &&
       this.nextUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
     ) {
+      const alreadySlid = this.edgeAlreadySlid;
+      this.edgeAlreadySlid = false;
       const promoted = this.nextUnit;
       this.nextUnit = null;
       this.prevUnit?.dispose();
       this.prevUnit = null;
 
-      if (this.activeUnit && !options.isEink) {
-        const demotedPrev = this.activeUnit;
-        const prevGeom = computeGeomFor(demotedPrev.sectionDoc);
-        demotedPrev.updateStylesAndLayout(options.settings, options.isEink, prevGeom);
-        demotedPrev.paginator.goToPage(Math.max(0, demotedPrev.paginator.getPageCount() - 1), {
-          animate: false,
-          isEink: true,
-        });
-        this.positionIframe(demotedPrev.iframe, options.frameWidth, prevGeom, false, 'prev');
-        this.prevUnit = demotedPrev;
+      const oldActive = this.activeUnit;
+      if (oldActive && !options.isEink) {
+        const prevGeom = computeGeomFor(oldActive.sectionDoc);
+        oldActive.updateStylesAndLayout(options.settings, options.isEink, prevGeom);
+        this.positionIframe(oldActive.iframe, options.frameWidth, prevGeom, false, 'prev');
+        this.prevUnit = oldActive;
       } else {
-        this.activeUnit?.dispose();
+        oldActive?.dispose();
       }
 
       this.activeUnit = promoted;
-      if (this.stageEl.firstChild !== promoted.iframe) {
-        this.stageEl.insertBefore(promoted.iframe, this.stageEl.firstChild);
-      }
       const geom = computeGeomFor(options.sectionDoc);
       promoted.updateStylesAndLayout(options.settings, options.isEink, geom);
       this.positionIframe(promoted.iframe, options.frameWidth, geom, true, 'active');
+
+      if (oldActive && this.prevUnit === oldActive) {
+        const parkPrev = (): void => {
+          oldActive.paginator.goToPage(Math.max(0, oldActive.paginator.getPageCount() - 1), {
+            animate: false,
+            isEink: true,
+          });
+        };
+        if (!alreadySlid && !options.isEink) {
+          const incomingSign: -1 | 1 = options.sectionDoc.dir === 'rtl' ? -1 : 1;
+          this.startPromoteSlide(promoted, oldActive, incomingSign, geom.Vw, parkPrev);
+        } else {
+          parkPrev();
+        }
+      }
       return promoted;
     }
 
@@ -289,41 +313,93 @@ export class SectionFrameManager {
       this.prevUnit.sectionDoc.index === options.sectionDoc.index &&
       this.prevUnit.sectionDoc.unit.start === options.sectionDoc.unit.start
     ) {
+      const alreadySlid = this.edgeAlreadySlid;
+      this.edgeAlreadySlid = false;
       const promoted = this.prevUnit;
       this.prevUnit = null;
       this.nextUnit?.dispose();
       this.nextUnit = null;
 
-      if (this.activeUnit && !options.isEink) {
-        const demotedNext = this.activeUnit;
-        const nextGeom = computeGeomFor(demotedNext.sectionDoc);
-        demotedNext.updateStylesAndLayout(options.settings, options.isEink, nextGeom);
-        demotedNext.paginator.goToPage(0, { animate: false, isEink: true });
-        this.positionIframe(demotedNext.iframe, options.frameWidth, nextGeom, false, 'next');
-        this.nextUnit = demotedNext;
+      const oldActive = this.activeUnit;
+      if (oldActive && !options.isEink) {
+        const nextGeom = computeGeomFor(oldActive.sectionDoc);
+        oldActive.updateStylesAndLayout(options.settings, options.isEink, nextGeom);
+        this.positionIframe(oldActive.iframe, options.frameWidth, nextGeom, false, 'next');
+        this.nextUnit = oldActive;
       } else {
-        this.activeUnit?.dispose();
+        oldActive?.dispose();
       }
 
       this.activeUnit = promoted;
-      if (this.stageEl.firstChild !== promoted.iframe) {
-        this.stageEl.insertBefore(promoted.iframe, this.stageEl.firstChild);
-      }
       const geom = computeGeomFor(options.sectionDoc);
       promoted.updateStylesAndLayout(options.settings, options.isEink, geom);
       this.positionIframe(promoted.iframe, options.frameWidth, geom, true, 'active');
+
+      if (oldActive && this.nextUnit === oldActive) {
+        const parkNext = (): void => {
+          oldActive.paginator.goToPage(0, { animate: false, isEink: true });
+        };
+        if (!alreadySlid && !options.isEink) {
+          const incomingSign: -1 | 1 = options.sectionDoc.dir === 'rtl' ? 1 : -1;
+          this.startPromoteSlide(promoted, oldActive, incomingSign, geom.Vw, parkNext);
+        } else {
+          parkNext();
+        }
+      }
       return promoted;
     }
 
+    const alreadySlid = this.edgeAlreadySlid;
+    this.edgeAlreadySlid = false;
     const unit = await this.createFilledUnit(options, true, 'active');
-    this.activeUnit?.dispose();
+    const oldActive = this.activeUnit;
     this.prevUnit?.dispose();
     this.prevUnit = null;
     this.nextUnit?.dispose();
     this.nextUnit = null;
     this.activeUnit = unit;
-    if (this.stageEl.firstChild !== unit.iframe) {
-      this.stageEl.insertBefore(unit.iframe, this.stageEl.firstChild);
+
+    if (
+      oldActive &&
+      !options.isEink &&
+      (oldActive.sectionDoc.index !== options.sectionDoc.index ||
+        oldActive.sectionDoc.unit.start !== options.sectionDoc.unit.start)
+    ) {
+      const isForward =
+        options.sectionDoc.index > oldActive.sectionDoc.index ||
+        (options.sectionDoc.index === oldActive.sectionDoc.index &&
+          options.sectionDoc.unit.start > oldActive.sectionDoc.unit.start);
+      const demotedRole: 'prev' | 'next' = isForward ? 'prev' : 'next';
+      const demotedGeom = computeGeomFor(oldActive.sectionDoc);
+      oldActive.updateStylesAndLayout(options.settings, options.isEink, demotedGeom);
+      this.positionIframe(oldActive.iframe, options.frameWidth, demotedGeom, false, demotedRole);
+      if (demotedRole === 'prev') {
+        this.prevUnit = oldActive;
+      } else {
+        this.nextUnit = oldActive;
+      }
+      const parkDemoted = (): void => {
+        const p =
+          demotedRole === 'prev'
+            ? Math.max(0, oldActive.paginator.getPageCount() - 1)
+            : 0;
+        oldActive.paginator.goToPage(p, { animate: false, isEink: true });
+      };
+      if (!alreadySlid) {
+        const isRtl = options.sectionDoc.dir === 'rtl';
+        const incomingSign: -1 | 1 = isForward ? (isRtl ? -1 : 1) : isRtl ? 1 : -1;
+        this.startPromoteSlide(
+          unit,
+          oldActive,
+          incomingSign,
+          unit.paginator.getGeometry().Vw,
+          parkDemoted,
+        );
+      } else {
+        parkDemoted();
+      }
+    } else {
+      oldActive?.dispose();
     }
     return unit;
   }
@@ -347,8 +423,10 @@ export class SectionFrameManager {
       existing.sectionDoc.index === options.sectionDoc.index &&
       existing.sectionDoc.unit.start === options.sectionDoc.unit.start
     ) {
-      const parkPage = role === 'prev' ? Math.max(0, existing.paginator.getPageCount() - 1) : 0;
-      existing.paginator.goToPage(parkPage, { animate: false, isEink: true });
+      if (this.edgeTweenRaf === null) {
+        const parkPage = role === 'prev' ? Math.max(0, existing.paginator.getPageCount() - 1) : 0;
+        existing.paginator.goToPage(parkPage, { animate: false, isEink: true });
+      }
       return;
     }
     existing?.dispose();
@@ -397,6 +475,62 @@ export class SectionFrameManager {
     iframe.setAttribute('data-frame-role', role);
   }
 
+  private startPromoteSlide(
+    promoted: FilledFrameUnit,
+    demoted: FilledFrameUnit,
+    incomingSign: -1 | 1,
+    Vw: number,
+    onFinishPark?: () => void,
+  ): void {
+    this.cancelEdgeTween();
+    if (
+      this.isEink ||
+      prefersReducedMotion() ||
+      typeof requestAnimationFrame !== 'function' ||
+      Vw <= 0
+    ) {
+      onFinishPark?.();
+      return;
+    }
+
+    const durationMs = 250;
+    const t0 = performance.now();
+
+    promoted.iframe.style.visibility = 'visible';
+    promoted.iframe.style.transform = `translate3d(${incomingSign * Vw}px, 0, 0)`;
+    demoted.iframe.style.visibility = 'visible';
+    demoted.iframe.style.transform = 'translate3d(0px, 0, 0)';
+
+    this.edgeTweenCleanup = () => {
+      promoted.iframe.style.transform = '';
+      demoted.iframe.style.transform = '';
+      if (this.activeUnit !== demoted) {
+        demoted.iframe.style.visibility = 'hidden';
+      }
+      onFinishPark?.();
+    };
+
+    const tick = (now: number): void => {
+      const elapsed = now - t0;
+      if (elapsed >= durationMs) {
+        this.edgeTweenRaf = null;
+        const cleanup = this.edgeTweenCleanup;
+        this.edgeTweenCleanup = null;
+        cleanup?.();
+        return;
+      }
+      const p = elapsed / durationMs;
+      const eased = 1 - Math.pow(1 - p, 3);
+      const promX = Math.round(incomingSign * Vw * (1 - eased));
+      const demX = Math.round(-incomingSign * Vw * eased);
+      promoted.iframe.style.transform = promX === 0 ? '' : `translate3d(${promX}px, 0, 0)`;
+      demoted.iframe.style.transform = `translate3d(${demX}px, 0, 0)`;
+      this.edgeTweenRaf = requestAnimationFrame(tick);
+    };
+
+    this.edgeTweenRaf = requestAnimationFrame(tick);
+  }
+
   private animateEdgeTransition(
     startDx: number,
     targetDx: number,
@@ -409,6 +543,7 @@ export class SectionFrameManager {
     if (
       !active ||
       this.isEink ||
+      prefersReducedMotion() ||
       typeof requestAnimationFrame !== 'function' ||
       Math.abs(targetDx - startDx) <= 1
     ) {
@@ -417,14 +552,25 @@ export class SectionFrameManager {
     }
 
     const Vw = active.paginator.getGeometry().Vw;
-    const durationMs = 180;
+    const durationMs = 250;
     const t0 = performance.now();
+
+    this.edgeTweenCleanup = () => {
+      active.iframe.style.transform = targetDx === 0 ? '' : `translate3d(${targetDx}px, 0, 0)`;
+      if (neighbor) {
+        const nX = neighborOffsetSign * Vw + targetDx;
+        neighbor.iframe.style.transform = nX === 0 ? '' : `translate3d(${nX}px, 0, 0)`;
+      }
+      onDone();
+    };
 
     const tick = (now: number): void => {
       const elapsed = now - t0;
       if (elapsed >= durationMs) {
         this.edgeTweenRaf = null;
-        onDone();
+        const cleanup = this.edgeTweenCleanup;
+        this.edgeTweenCleanup = null;
+        cleanup?.();
         return;
       }
       const p = elapsed / durationMs;
@@ -666,7 +812,15 @@ export class SectionFrameManager {
       if (relayoutDebounce) clearTimeout(relayoutDebounce);
       relayoutDebounce = setTimeout(() => {
         relayoutDebounce = null;
-        this.callbacks.onContentRelayout?.();
+        if (this.activeUnit?.iframe === iframe) {
+          this.callbacks.onContentRelayout?.();
+        } else {
+          paginator.measure();
+          const curRole = iframe.getAttribute('data-frame-role');
+          const parkPage =
+            curRole === 'prev' ? Math.max(0, paginator.getPageCount() - 1) : 0;
+          paginator.goToPage(parkPage, { animate: false, isEink: true });
+        }
       }, 100);
     };
 
@@ -832,9 +986,11 @@ export class SectionFrameManager {
         const wantsNext = isRtl ? dx > 0 : dx < 0;
         const wantsPrev = isRtl ? dx < 0 : dx > 0;
         const absDx = Math.abs(dx);
-        const flickInDir = velocityX * Math.sign(dx) >= 0.35;
+        const recentMove = performance.now() - lastPtTime <= 80;
+        const flickInDir =
+          recentMove && elapsed <= 280 && absDx >= 36 && velocityX * Math.sign(dx) >= 0.45;
         const shouldCommit =
-          !isCancel && (absDx >= Math.min(72, Vw * 0.18) || (absDx >= 20 && flickInDir));
+          !isCancel && (absDx >= Math.min(84, Vw * 0.22) || flickInDir);
 
         if (dragKind === 'intra') {
           this.resetEdgeTransforms();
@@ -856,6 +1012,7 @@ export class SectionFrameManager {
           if (shouldCommit && neighbor) {
             const targetDx = dx < 0 ? -Vw : Vw;
             this.animateEdgeTransition(clampedDx, targetDx, neighbor, offsetSign, () => {
+              this.edgeAlreadySlid = true;
               if (wantsNext) this.callbacks.onNextPage();
               else this.callbacks.onPrevPage();
             });

@@ -73,6 +73,48 @@ export function Sheet({
     return () => clearTimeout(timer);
   }, [open, instant]);
 
+  const handleClose = (): void => {
+    const rect = sheetRef.current?.getBoundingClientRect();
+    const vh = typeof window !== 'undefined' ? window.innerHeight || 800 : 800;
+    const coveredHalf = rect ? rect.height >= vh * 0.5 : false;
+    onClose(coveredHalf);
+  };
+  const handleCloseRef = useRef(handleClose);
+  handleCloseRef.current = handleClose;
+
+  useEffect(() => {
+    if (instant || !open || typeof window === 'undefined') return;
+    const onWinPointerMove = (e: PointerEvent): void => {
+      const st = dragStateRef.current;
+      const pid = e.pointerId ?? 0;
+      if (!st || (st.pointerId !== pid && st.pointerId !== 0) || typeof e.clientY !== 'number' || Number.isNaN(e.clientY)) {
+        return;
+      }
+      const dy = Math.max(0, e.clientY - st.startY);
+      st.dy = dy;
+      setDragDy(dy);
+    };
+    const onWinPointerEnd = (e: PointerEvent): void => {
+      const st = dragStateRef.current;
+      const pid = e.pointerId ?? 0;
+      if (!st || (st.pointerId !== pid && st.pointerId !== 0)) return;
+      const finalDy = st.dy;
+      dragStateRef.current = null;
+      setDragDy(0);
+      if (e.type !== 'pointercancel' && finalDy >= 56) {
+        handleCloseRef.current();
+      }
+    };
+    window.addEventListener('pointermove', onWinPointerMove);
+    window.addEventListener('pointerup', onWinPointerEnd);
+    window.addEventListener('pointercancel', onWinPointerEnd);
+    return () => {
+      window.removeEventListener('pointermove', onWinPointerMove);
+      window.removeEventListener('pointerup', onWinPointerEnd);
+      window.removeEventListener('pointercancel', onWinPointerEnd);
+    };
+  }, [instant, open]);
+
   if (instant) {
     if (!open) return null;
   } else if (!open && !mounted) {
@@ -87,14 +129,7 @@ export function Sheet({
         ? 'open'
         : 'entering';
 
-  const handleClose = (): void => {
-    const rect = sheetRef.current?.getBoundingClientRect();
-    const vh = typeof window !== 'undefined' ? window.innerHeight || 800 : 800;
-    const coveredHalf = rect ? rect.height >= vh * 0.5 : false;
-    onClose(coveredHalf);
-  };
-
-  const onGrabberPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+  const startPointerDrag = (e: ReactPointerEvent<HTMLElement>): void => {
     if (instant || !open || typeof e.clientY !== 'number' || Number.isNaN(e.clientY)) return;
     const pid = e.pointerId ?? 0;
     dragStateRef.current = {
@@ -111,10 +146,29 @@ export function Sheet({
     }
   };
 
-  const onGrabberPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
+  const onGrabberPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    startPointerDrag(e);
+  };
+
+  const onSheetPointerDown = (e: ReactPointerEvent<HTMLElement>): void => {
+    if (dragStateRef.current || instant || !open) return;
+    const rect = sheetRef.current?.getBoundingClientRect();
+    if (!rect || e.clientY - rect.top > 36) return;
+    const target = e.target as Element | null;
+    if (
+      target?.closest?.(
+        'button, input, a, select, textarea, [role="button"], [role="tab"], [role="slider"], [role="option"], [role="switch"]',
+      )
+    ) {
+      return;
+    }
+    startPointerDrag(e);
+  };
+
+  const onGrabberPointerMove = (e: ReactPointerEvent<HTMLElement>): void => {
     const st = dragStateRef.current;
     const pid = e.pointerId ?? 0;
-    if (!st || st.pointerId !== pid || typeof e.clientY !== 'number' || Number.isNaN(e.clientY)) {
+    if (!st || (st.pointerId !== pid && st.pointerId !== 0) || typeof e.clientY !== 'number' || Number.isNaN(e.clientY)) {
       return;
     }
     const dy = Math.max(0, e.clientY - st.startY);
@@ -122,10 +176,10 @@ export function Sheet({
     setDragDy(dy);
   };
 
-  const onGrabberPointerEnd = (e: ReactPointerEvent<HTMLDivElement>): void => {
+  const onGrabberPointerEnd = (e: ReactPointerEvent<HTMLElement>): void => {
     const st = dragStateRef.current;
     const pid = e.pointerId ?? 0;
-    if (!st || st.pointerId !== pid) return;
+    if (!st || (st.pointerId !== pid && st.pointerId !== 0)) return;
     const finalDy = st.dy;
     dragStateRef.current = null;
     setDragDy(0);
@@ -192,6 +246,10 @@ export function Sheet({
             setMounted(false);
           }
         }}
+        onPointerDown={onSheetPointerDown}
+        onPointerMove={onGrabberPointerMove}
+        onPointerUp={onGrabberPointerEnd}
+        onPointerCancel={onGrabberPointerEnd}
         style={
           isClosing
             ? { pointerEvents: 'none' }
