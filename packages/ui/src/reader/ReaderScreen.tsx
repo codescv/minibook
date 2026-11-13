@@ -44,6 +44,19 @@ function readSafeInsets(el: HTMLElement | null): { safeTop: number; safeBottom: 
   return { safeTop, safeBottom };
 }
 
+function computePageRange(
+  unit: FilledFrameUnit,
+  page: number,
+): { readonly startLoc: Locator; readonly endOffset: number } {
+  const startLoc = unit.paginator.firstVisibleLocator(page);
+  const total = unit.paginator.getPageCount();
+  const endOffset =
+    page + 1 < total
+      ? unit.paginator.firstVisibleLocator(page + 1).offset
+      : unit.sectionDoc.unit.end;
+  return { startLoc, endOffset };
+}
+
 export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactElement {
   const t = useT();
   const { host, settings, isEink, refreshController, updateSettings } = useHostContext();
@@ -61,6 +74,15 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   const stageRef = useRef<HTMLDivElement | null>(null);
   const frameManagerRef = useRef<SectionFrameManager | null>(null);
   const sessionRef = useRef<BookSession | null>(null);
+
+  /**
+   * Sticky reading anchor (`[P1-U2]` / DoD #2):
+   * Updated ONLY by intentional navigation (open, manual turn, link/TOC/scrubber jump, TTS advance).
+   * Never overwritten by relayout (`fontScale`, `margins`, `lineSpacing`, `ResizeObserver`, late fonts/images),
+   * eliminating cumulative backward page-boundary rounding drift.
+   */
+  const readingAnchorRef = useRef<Locator>({ section: 0, offset: 0 });
+  const relayoutFnRef = useRef<() => void>(() => {});
 
   const [session, setSession] = useState<BookSession | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -81,7 +103,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Immersive status bar + Keep-screen-on lifecycle (`ARCHITECTURE.md` §10)
   useEffect(() => {
     void host.device.setImmersive(true).catch(() => {});
     return () => {
@@ -95,10 +116,9 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   }, [host, settings.keepScreenOn, isEink]);
 
   const schedulePositionSave = useCallback(
-    (sess: BookSession, unit: FilledFrameUnit, page: number) => {
-      const loc = unit.paginator.firstVisibleLocator(page);
-      const frac = fractionForLocator(sess.spine, loc, unit.sectionDoc.unit.end);
-      const localOff = Math.max(0, loc.offset - unit.sectionDoc.unit.start);
+    (sess: BookSession, unit: FilledFrameUnit, anchorLoc: Locator) => {
+      const frac = fractionForLocator(sess.spine, anchorLoc, unit.sectionDoc.unit.end);
+      const localOff = Math.max(0, anchorLoc.offset - unit.sectionDoc.unit.start);
       const snippet = unit.sectionDoc.text.text.slice(localOff, localOff + 32);
 
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -106,8 +126,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         saveTimerRef.current = null;
         void host.state
           .savePosition(bookId, {
-            section: loc.section,
-            offset: loc.offset,
+            section: anchorLoc.section,
+            offset: anchorLoc.offset,
             fraction: frac,
             snippet,
             updatedAt: Date.now(),
@@ -126,6 +146,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         readonly targetOffset?: number;
         readonly targetEndOfSection?: boolean;
         readonly targetUnitIndex?: number;
+        readonly preserveStickyAnchor?: boolean;
+        readonly notifySpeechFollow?: boolean;
       },
     ): Promise<FilledFrameUnit | null> => {
       const stage = stageRef.current;
@@ -174,13 +196,26 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
       }
 
       filled.paginator.goToPage(destPage, { animate: false, isEink });
+
+      if (!options?.preserveStickyAnchor) {
+        readingAnchorRef.current =
+          options?.targetOffset !== undefined
+            ? { section: targetSection, offset: options.targetOffset }
+            : filled.paginator.firstVisibleLocator(destPage);
+      }
+
       setSectionIndex(targetSection);
       setUnitIndex(chosenUnitIdx);
       setPageIndex(destPage);
       setPageCount(totalPages);
       setRightMarginPx(filled.paginator.getGeometry().G / 2);
       setFinishedScreen(false);
-      schedulePositionSave(sess, filled, destPage);
+      schedulePositionSave(sess, filled, readingAnchorRef.current);
+
+      if (options?.notifySpeechFollow) {
+        const { startLoc, endOffset } = computePageRange(filled, destPage);
+        readAloud.notifyManualPageTurn(startLoc, endOffset);
+      }
 
       // Asynchronously pre-render next adjacent unit for instant chapter turns (`§6.1`)
       const totalUnits = chosenDoc.units?.length ?? 1;
@@ -209,7 +244,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
       return filled;
     },
-    [settings, isEink, schedulePositionSave],
+    [settings, isEink, schedulePositionSave, readAloud],
   );
 
   const turnPage = useCallback(
@@ -230,36 +265,34 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         if (delta > 0) {
           if (curPage + 1 < total) {
             const next = active.paginator.goToPage(curPage + 1, { animate: manual, isEink });
+            const { startLoc, endOffset } = computePageRange(active, next);
+            readingAnchorRef.current = startLoc;
             setPageIndex(next);
-            schedulePositionSave(sess, active, next);
+            schedulePositionSave(sess, active, startLoc);
             if (manual) {
-              readAloud.notifyManualPageTurn(active.paginator.firstVisibleLocator(next));
+              readAloud.notifyManualPageTurn(startLoc, endOffset);
             }
             return;
           }
 
-          // Advance to next virtual render unit or next linear spine section
           const unitsCount = active.sectionDoc.units?.length ?? 1;
           if (unitIndex + 1 < unitsCount) {
-            const nextUnit = await loadAndShowUnit(sess, sectionIndex, {
+            await loadAndShowUnit(sess, sectionIndex, {
               targetUnitIndex: unitIndex + 1,
+              notifySpeechFollow: manual,
             });
-            if (manual && nextUnit) {
-              readAloud.notifyManualPageTurn(nextUnit.paginator.firstVisibleLocator(0));
-            }
             return;
           }
 
           const nextLinear = sess.spine.find((s) => s.index > sectionIndex && s.linear);
           if (nextLinear) {
-            const nextUnit = await loadAndShowUnit(sess, nextLinear.index, { targetOffset: 0 });
-            if (manual && nextUnit) {
-              readAloud.notifyManualPageTurn(nextUnit.paginator.firstVisibleLocator(0));
-            }
+            await loadAndShowUnit(sess, nextLinear.index, {
+              targetOffset: 0,
+              notifySpeechFollow: manual,
+            });
             return;
           }
 
-          // End of book (`PRODUCT_DESIGN.md` §6): quiet end page + mark book finished ✓
           setFinishedScreen(true);
           void host.library.setFinished(bookId, true).catch(() => {});
         } else {
@@ -269,24 +302,22 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           }
           if (curPage > 0) {
             const prev = active.paginator.goToPage(curPage - 1, { animate: manual, isEink });
+            const { startLoc, endOffset } = computePageRange(active, prev);
+            readingAnchorRef.current = startLoc;
             setPageIndex(prev);
-            schedulePositionSave(sess, active, prev);
+            schedulePositionSave(sess, active, startLoc);
             if (manual) {
-              readAloud.notifyManualPageTurn(active.paginator.firstVisibleLocator(prev));
+              readAloud.notifyManualPageTurn(startLoc, endOffset);
             }
             return;
           }
 
           if (unitIndex > 0) {
-            const prevUnit = await loadAndShowUnit(sess, sectionIndex, {
+            await loadAndShowUnit(sess, sectionIndex, {
               targetUnitIndex: unitIndex - 1,
               targetEndOfSection: true,
+              notifySpeechFollow: manual,
             });
-            if (manual && prevUnit) {
-              readAloud.notifyManualPageTurn(
-                prevUnit.paginator.firstVisibleLocator(prevUnit.paginator.getPageCount() - 1),
-              );
-            }
             return;
           }
 
@@ -294,14 +325,10 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
             .reverse()
             .find((s) => s.index < sectionIndex && s.linear);
           if (prevLinear) {
-            const prevUnit = await loadAndShowUnit(sess, prevLinear.index, {
+            await loadAndShowUnit(sess, prevLinear.index, {
               targetEndOfSection: true,
+              notifySpeechFollow: manual,
             });
-            if (manual && prevUnit) {
-              readAloud.notifyManualPageTurn(
-                prevUnit.paginator.firstVisibleLocator(prevUnit.paginator.getPageCount() - 1),
-              );
-            }
           }
         }
       };
@@ -328,7 +355,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     ],
   );
 
-  // Keep latest callbacks in a ref for `SectionFrameManager` gesture handlers
   const gestureHandlersRef = useRef({
     onPrev: () => {},
     onNext: () => {},
@@ -370,22 +396,24 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         void host.files.openExternal(resolved.external);
         return;
       }
-      const prevLoc = active.paginator.firstVisibleLocator(pageIndex);
-      setBackJump({ locator: prevLoc, label: `p. ${pageIndex + 1}` });
-      void loadAndShowUnit(sess, resolved.section, { targetOffset: resolved.offset });
+      setBackJump({ locator: readingAnchorRef.current, label: `p. ${pageIndex + 1}` });
+      void loadAndShowUnit(sess, resolved.section, {
+        targetOffset: resolved.offset,
+        notifySpeechFollow: true,
+      });
     },
     onExternalLink: (url: string) => {
       void host.files.openExternal(url);
     },
     onReadAloudTap: (loc: Locator) => {
       if (raActive && raBookId === bookId) {
+        readingAnchorRef.current = loc;
         return readAloud.seekToLocator(loc);
       }
       return false;
     },
   };
 
-  // Mount SectionFrameManager & open book session
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -399,6 +427,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
       onImageZoom: (src, alt) => useRouteStore.getState().openImagePreview(src, alt),
       onSelectionChange: (sel) => setSelectionState(sel),
       onReadAloudTapLocator: (loc) => gestureHandlersRef.current.onReadAloudTap(loc),
+      onContentRelayout: () => relayoutFnRef.current(),
     });
     frameManagerRef.current = mgr;
 
@@ -423,7 +452,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         sessionRef.current = sess;
         setSession(sess);
 
-        // If re-opening the book currently speaking in Read Aloud, rejoin at spoken utterance (`§6`)
         const ra = useReadAloudStore.getState();
         if (ra.active && ra.bookId === bookId && ra.activeUtterance) {
           await loadAndShowUnit(sess, ra.activeUtterance.section, {
@@ -461,7 +489,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId, host]);
 
-  // Live re-pagination on Appearance / E-Ink / window resize while preserving exact first visible Locator!
+  // Live re-pagination on Appearance / E-Ink / viewport resize / late image/font load
+  // Always re-anchors to sticky `readingAnchorRef.current` without mutating it (`[P1-U2]`).
   useLayoutEffect(() => {
     const stage = stageRef.current;
     const active = frameManagerRef.current?.getActive();
@@ -470,8 +499,23 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
     const applyRelayout = (): void => {
       const curUnit = frameManagerRef.current?.getActive();
-      if (!curUnit || !stageRef.current) return;
-      const anchor = curUnit.paginator.firstVisibleLocator(curUnit.paginator.getCurrentPage());
+      const curSess = sessionRef.current;
+      if (!curUnit || !curSess || !stageRef.current) return;
+
+      const anchor = readingAnchorRef.current;
+      const unitRange = curUnit.sectionDoc.unit;
+      if (
+        anchor.section === curUnit.sectionDoc.index &&
+        unitRange.end > unitRange.start &&
+        (anchor.offset < unitRange.start || anchor.offset >= unitRange.end)
+      ) {
+        void loadAndShowUnit(curSess, anchor.section, {
+          targetOffset: anchor.offset,
+          preserveStickyAnchor: true,
+        });
+        return;
+      }
+
       const w = stageRef.current.clientWidth || window.innerWidth || 393;
       const h = stageRef.current.clientHeight || window.innerHeight || 852;
       const { safeTop, safeBottom } = readSafeInsets(stageRef.current);
@@ -495,10 +539,10 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
       setRightMarginPx(geom.G / 2);
     };
 
+    relayoutFnRef.current = applyRelayout;
     applyRelayout();
 
     const ro = new ResizeObserver(() => {
-      // Ignore transient IME keyboard viewport resizes while typing in Search or Go to % (`ARCHITECTURE.md` §6.3)
       if (useRouteStore.getState().textInputFocused) return;
       applyRelayout();
     });
@@ -514,9 +558,9 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     settings.matchSystemTheme,
     settings.textBoldness,
     isEink,
+    loadAndShowUnit,
   ]);
 
-  // Register Reader as screen-level pageable layer (`ARCHITECTURE.md` §9.5)
   useEffect(() => {
     return registerPageableHandler({
       id: 'reader-paginator',
@@ -526,11 +570,14 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     });
   }, [turnPage]);
 
-  // Connect ReadAloudController view adapter for AutoPageTurn + wake reconciliation
+  // Connect ReadAloudController view adapter (exposing `visibleUnitRange` for `[P1-U3]`)
   useEffect(() => {
     readAloud.attachViewAdapter({
       get visibleSection() {
         return sectionIndex;
+      },
+      get visibleUnitRange() {
+        return frameManagerRef.current?.getActive()?.sectionDoc.unit ?? { start: 0, end: 0 };
       },
       currentPage: () => frameManagerRef.current?.getActive()?.paginator.getCurrentPage() ?? 0,
       pageOf: (off) => frameManagerRef.current?.getActive()?.paginator.pageOf(off) ?? 0,
@@ -545,14 +592,17 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           cadence: settings.fullRefreshEvery,
           swap: () => {
             const p = active.paginator.goToPage(targetPage, { animate: true, isEink });
+            const loc = active.paginator.firstVisibleLocator(p);
+            readingAnchorRef.current = loc;
             setPageIndex(p);
-            schedulePositionSave(sess, active, p);
+            schedulePositionSave(sess, active, loc);
           },
         });
       },
       jumpToLocator: (loc) => {
         const sess = sessionRef.current;
         if (!sess) return;
+        readingAnchorRef.current = loc;
         void refreshController.runTurn({
           isEink,
           cadence: settings.fullRefreshEvery,
@@ -583,7 +633,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     loadAndShowUnit,
   ]);
 
-  // Paint active Read-Aloud sentence/word highlights & search hits without mutating text DOM
   useEffect(() => {
     const active = frameManagerRef.current?.getActive();
     if (!active) return;
@@ -617,6 +666,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     raUtterance,
     raWord,
     sectionIndex,
+    unitIndex,
     pageIndex,
     settings,
     isEink,
@@ -626,7 +676,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   const activeUnit = frameManagerRef.current?.getActive() ?? null;
   const currentFirstLoc: Locator = activeUnit
     ? activeUnit.paginator.firstVisibleLocator(pageIndex)
-    : { section: sectionIndex, offset: 0 };
+    : readingAnchorRef.current;
 
   const currentFraction = session
     ? fractionForLocator(session.spine, currentFirstLoc, activeUnit?.sectionDoc.unit.end)
@@ -677,19 +727,24 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
   ]);
 
   const handleStartReadAloud = useCallback(
-    (fromLocator?: Locator) => {
+    (fromSelectionLocator?: Locator) => {
       if (!session) return;
+      const curActive = frameManagerRef.current?.getActive();
+      const pageRange = curActive ? computePageRange(curActive, pageIndex) : null;
       void readAloud.start({
         bookId,
-        startLocator: fromLocator ?? currentFirstLoc,
+        startLocator: fromSelectionLocator ?? pageRange?.startLoc ?? currentFirstLoc,
+        ...(fromSelectionLocator === undefined && pageRange !== null
+          ? { pageEndOffset: pageRange.endOffset }
+          : {}),
+        preferContaining: fromSelectionLocator !== undefined,
         sharedSession: session,
         chapterTitle: currentChapterTitle || session.meta.title,
       });
     },
-    [session, readAloud, bookId, currentFirstLoc, currentChapterTitle],
+    [session, readAloud, bookId, pageIndex, currentFirstLoc, currentChapterTitle],
   );
 
-  // PC keyboard shortcuts (`B`, `R`, `P`, `[`/`]`)
   useEffect(() => {
     return setReaderShortcutActions({
       toggleBookmark: handleToggleBookmark,
@@ -724,7 +779,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     [isEink, refreshController, settings.fullRefreshEvery],
   );
 
-  // Bare-page caption (`PRODUCT_DESIGN.md` §4.2): cycles `pages-left` -> `percent` -> `hidden`
   const pagesLeft = Math.max(0, pageCount - pageIndex - 1);
   const cycleCaptionMode = (): void => {
     const order: readonly BarePageCaptionMode[] = ['pages-left', 'percent', 'hidden'];
@@ -763,7 +817,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
   return (
     <main className="mb-reader" data-testid="reader-screen">
-      {/* Constant-geometry stage: never resized or padded differently when Chrome or ReadAloudBar opens */}
       <div ref={stageRef} className="mb-reader-stage" data-testid="reader-stage" />
 
       {!chromeOpen &&
@@ -795,7 +848,6 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         </section>
       )}
 
-      {/* Selection Bar: strictly 2 items (`Copy` · `Read from here`) per PRODUCT_DESIGN.md §4.2 */}
       {selectionState && (
         <div className="mb-selection-bar" role="toolbar" aria-label="Text selection actions">
           <button
@@ -845,9 +897,12 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         onStartReadAloud={() => handleStartReadAloud()}
         onScrubFraction={(targetFrac) => {
           if (!session) return;
-          setBackJump({ locator: currentFirstLoc, label: `${Math.round(currentFraction * 100)}%` });
+          setBackJump({ locator: readingAnchorRef.current, label: `${Math.round(currentFraction * 100)}%` });
           const dest = locatorForFraction(session.spine, targetFrac);
-          void loadAndShowUnit(session, dest.section, { targetOffset: dest.offset });
+          void loadAndShowUnit(session, dest.section, {
+            targetOffset: dest.offset,
+            notifySpeechFollow: true,
+          });
         }}
         onPreviewChapterForFraction={(frac) => {
           if (!session) return '';
@@ -863,14 +918,20 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           const curPos = linear.findIndex((s) => s.index === sectionIndex);
           const target = linear[Math.max(0, Math.min(linear.length - 1, curPos + delta))];
           if (target) {
-            void loadAndShowUnit(session, target.index, { targetOffset: 0 });
+            void loadAndShowUnit(session, target.index, {
+              targetOffset: 0,
+              notifySpeechFollow: true,
+            });
           }
         }}
         onReturnBackJump={() => {
           if (!session || !backJump) return;
           const target = backJump.locator;
           setBackJump(null);
-          void loadAndShowUnit(session, target.section, { targetOffset: target.offset });
+          void loadAndShowUnit(session, target.section, {
+            targetOffset: target.offset,
+            notifySpeechFollow: true,
+          });
         }}
       />
 
@@ -890,7 +951,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
         bookmarks={bookmarks}
         onSelectLocator={(loc, matchLen) => {
           if (!session) return;
-          setBackJump({ locator: currentFirstLoc, label: `p. ${pageIndex + 1}` });
+          setBackJump({ locator: readingAnchorRef.current, label: `p. ${pageIndex + 1}` });
           if (matchLen && matchLen > 0) {
             setSearchHighlight({
               section: loc.section,
@@ -900,7 +961,10 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           } else {
             setSearchHighlight(null);
           }
-          void loadAndShowUnit(session, loc.section, { targetOffset: loc.offset });
+          void loadAndShowUnit(session, loc.section, {
+            targetOffset: loc.offset,
+            notifySpeechFollow: true,
+          });
         }}
         onRemoveBookmark={(id) => {
           void host.state.removeBookmark(bookId, id).then(async () => {

@@ -43,22 +43,22 @@ export async function openBookWithHost(
   bookId: BookId,
   detail: LibraryBookDetail | null,
 ): Promise<BookSession> {
-  const rawBytes = new WindowedByteSource(host.files.byteSource(bookId, 'book'));
-  try {
-    return await openBook(
-      rawBytes,
-      {
-        fileName: detail?.fileName ?? `${bookId}.epub`,
-        getDerived: (name) => (name === 'text.bin' ? new WindowedByteSource(host.files.byteSource(bookId, 'text')) : null),
-      },
-      detail?.index,
-    );
-  } catch (err) {
-    if (err instanceof MiniBookError && err.code === 'unsupported' && isMockHost(host)) {
-      return host.openMockSession(bookId);
-    }
-    throw err;
+  if (isMockHost(host)) {
+    return host.openMockSession(bookId);
   }
+  const rawBytes = new WindowedByteSource(host.files.byteSource(bookId, 'book'));
+  return openBook(
+    rawBytes,
+    {
+      fileName: detail?.fileName ?? `${bookId}.epub`,
+      getDerived: (name) => {
+        if (name !== 'text.bin') return null;
+        const derived = host.files.byteSource(bookId, 'text');
+        return derived.size > 0 ? new WindowedByteSource(derived) : null;
+      },
+    },
+    detail?.index,
+  );
 }
 
 export async function inspectBookWithHost(
@@ -66,14 +66,10 @@ export async function inspectBookWithHost(
   src: ImportSource,
   hint: BookInspectHint,
 ): Promise<InspectedBook> {
-  try {
-    return await inspectBook(src.bytes, hint);
-  } catch (err) {
-    if (err instanceof MiniBookError && err.code === 'unsupported' && isMockHost(host)) {
-      return host.inspectMockSource(src, hint);
-    }
-    throw err;
+  if (isMockHost(host)) {
+    return host.inspectMockSource(src, hint);
   }
+  return inspectBook(src.bytes, hint);
 }
 
 const CJK_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
@@ -169,6 +165,53 @@ export function segmentSectionSafe(
       const isLastInBlock = i === rawRanges.length - 1;
       const pauseAfterMs =
         block.kind === 'h' ? 800 : isLastInBlock ? 450 : 200;
+
+      // First-utterance rule (`ARCHITECTURE.md` §8.1 #6): split >80-char initial mid-book utterance once at a clause mark
+      if (out.length === 0 && options?.splitFirstLongUtterance && text.length > 80) {
+        const mid = Math.floor(text.length / 2);
+        let splitRel = -1;
+        let bestDist = Infinity;
+        for (let k = 16; k < text.length - 16; k++) {
+          if (/^[，、；：,;:—]$/.test(text[k]!)) {
+            const d = Math.abs(k - mid);
+            if (d < bestDist) {
+              bestDist = d;
+              splitRel = k + 1;
+            }
+          }
+        }
+        if (splitRel > 0) {
+          let leftEnd = s + splitRel;
+          while (leftEnd > s && /\s/.test(full[leftEnd - 1]!)) leftEnd--;
+          let rightStart = s + splitRel;
+          while (rightStart < e && /\s/.test(full[rightStart]!)) rightStart++;
+          if (leftEnd > s && e > rightStart) {
+            const leftText = full.slice(s, leftEnd);
+            const rightText = full.slice(rightStart, e);
+            out.push({
+              id: `${sectionIndex}:${s}-${leftEnd}`,
+              section: sectionIndex,
+              start: s,
+              end: leftEnd,
+              blockIndex,
+              text: leftText,
+              lang: detectLang(leftText, block.lang, options?.bookLang ?? null),
+              pauseAfterMs: 150,
+            });
+            out.push({
+              id: `${sectionIndex}:${rightStart}-${e}`,
+              section: sectionIndex,
+              start: rightStart,
+              end: e,
+              blockIndex,
+              text: rightText,
+              lang: detectLang(rightText, block.lang, options?.bookLang ?? null),
+              pauseAfterMs,
+            });
+            continue;
+          }
+        }
+      }
 
       out.push({
         id: `${sectionIndex}:${s}-${e}`,

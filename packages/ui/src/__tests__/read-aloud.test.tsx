@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_APP_SETTINGS } from '@minibook/core';
 import {
+  AutoPageTurn,
   createMockPlatformHost,
   createMockSpeechPlayer,
   ReadAloudController,
@@ -39,8 +40,7 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
       ctl.notifyManualPageTurn({ section: 1, offset: sec1First.start });
       vi.advanceTimersByTime(590);
       expect(useReadAloudStore.getState().activeUtterance?.section).toBe(0);
-      vi.advanceTimersByTime(20);
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(20);
       expect(useReadAloudStore.getState().activeUtterance?.section).toBe(1);
 
       // Re-opening SAME book keeps session alive
@@ -232,5 +232,185 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
       'flash:white',
       'flash:off',
     ]);
+  });
+
+  it('[P1-U3] advances across >40k virtual render unit boundaries in AutoPageTurn', () => {
+    vi.useFakeTimers();
+    try {
+      const apt = new AutoPageTurn();
+      let jumpedTo: { section: number; offset: number } | null = null;
+      const adapter = {
+        visibleSection: 0,
+        visibleUnitRange: { start: 0, end: 40_000 },
+        currentPage: () => 54,
+        pageOf: () => 54,
+        countCharsOnPage: () => 25,
+        goToPage: () => {},
+        jumpToLocator: (loc: { section: number; offset: number }) => {
+          jumpedTo = loc;
+        },
+      };
+
+      // Utterance starting in unit 1 (offset 40010 >= unit.end 40000) triggers jumpToLocator immediately
+      apt.onUtteranceStart(
+        {
+          id: '0:40010-40060',
+          section: 0,
+          start: 40_010,
+          end: 40_060,
+          blockIndex: 180,
+          text: 'Next render unit sentence.',
+          lang: 'en',
+          pauseAfterMs: 200,
+        },
+        adapter,
+        { rate: 1.0 },
+      );
+      expect(jumpedTo).toEqual({ section: 0, offset: 40_010 });
+
+      // Utterance straddling unit 0 -> unit 1 boundary ([39975, 40025)) jumps proportionally to 40000
+      jumpedTo = null;
+      apt.onUtteranceStart(
+        {
+          id: '0:39975-40025',
+          section: 0,
+          start: 39_975,
+          end: 40_025,
+          blockIndex: 179,
+          text: 'x'.repeat(50),
+          lang: 'en',
+          pauseAfterMs: 200,
+        },
+        adapter,
+        { rate: 1.0, attachedDurationMs: 1000 },
+      );
+      vi.advanceTimersByTime(520);
+      expect(jumpedTo).toEqual({ section: 0, offset: 40_000 });
+      apt.reset();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('[P1-U4, P1-U5, P2] picks first sentence BEGINNING on new page without backward snap, preserves contiguous spine order on backward jumps, and stocks >=25 across tiny sections', async () => {
+    vi.useFakeTimers();
+    try {
+      // Build 16 tiny 32-char sections to verify horizon looping + backward jump spine continuity
+      const tinySections = Array.from({ length: 16 }, (_, idx) => {
+        const txt = `Tiny chapter ${idx + 1} has one line.`;
+        return {
+          title: `Ch ${idx + 1}`,
+          xhtml: `<p>${txt}</p>`,
+          lang: 'en',
+          dir: 'ltr' as const,
+          text: {
+            text: txt,
+            blocks: [{ start: 0, end: txt.length, kind: 'p' as const, lang: 'en' }],
+          },
+        };
+      });
+
+      const host = createMockPlatformHost({
+        books: [
+          {
+            id: 'b_tiny16',
+            meta: {
+              title: 'Sixteen Short Chapters',
+              authors: ['Anon'],
+              language: 'en',
+              identifier: 'tiny16',
+              format: 'epub',
+              direction: 'ltr',
+              fixedLayout: false,
+            },
+            fileName: 'tiny16.epub',
+            size: 4096,
+            hasCover: false,
+            addedAt: 1000,
+            openedAt: 2000,
+            finished: false,
+            fraction: 0,
+            toc: tinySections.map((s, idx) => ({
+              title: s.title,
+              locator: { section: idx, offset: 0 },
+              children: [],
+            })),
+            sections: tinySections,
+          },
+        ],
+      });
+
+      const player = createMockSpeechPlayer();
+      const ctl = new ReadAloudController({
+        host,
+        player,
+        getSettings: () => DEFAULT_APP_SETTINGS,
+        getIsEink: () => false,
+      });
+
+      // Start at section 5 -> stocks all remaining sections 5..15 in order!
+      await ctl.start({
+        bookId: 'b_tiny16',
+        startLocator: { section: 5, offset: 0 },
+      });
+      expect(player.getQueue().map((u) => u.section)).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+      // Jump BACKWARD to section 1 while speaking -> queue rebuilds contiguously [1, 2, 3, ..., 15] without skipping 2..5!
+      ctl.notifyManualPageTurn({ section: 1, offset: 0 });
+      await vi.advanceTimersByTimeAsync(620);
+      expect(player.getQueue().map((u) => u.section)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      ]);
+      expect(useReadAloudStore.getState().activeUtterance?.section).toBe(1);
+      ctl.dispose();
+
+      // Verify [P1-U4]: turning onto page 1 where sentence 0 straddled from page 0 picks sentence 1 (beginning on page 1) and NEVER snaps back to page 0!
+      const host2 = createMockPlatformHost();
+      const player2 = createMockSpeechPlayer();
+      const ctl2 = new ReadAloudController({
+        host: host2,
+        player: player2,
+        getSettings: () => DEFAULT_APP_SETTINGS,
+        getIsEink: () => false,
+      });
+
+      let currentPage = 0;
+      await ctl2.start({
+        bookId: 'b_dickens',
+        startLocator: { section: 0, offset: 0 },
+      });
+      const sec0Queue = player2.getQueue().filter((u) => u.section === 0);
+      expect(sec0Queue.length).toBeGreaterThanOrEqual(3);
+      const u1 = sec0Queue[1]!; // e.g. starts at heading end = 13, ends ~430
+      const u2 = sec0Queue[2]!; // starts ~430
+
+      // Simulate u1 straddling from Page 0 onto Page 1 (Page 1 starts mid-u1 at u1.start + 60, u2 begins on Page 1)
+      const midU1 = u1.start + 60;
+      const page2Start = u2.end + 50;
+      ctl2.attachViewAdapter({
+        visibleSection: 0,
+        visibleUnitRange: { start: 0, end: 5000 },
+        currentPage: () => currentPage,
+        pageOf: (off) => (off < midU1 ? 0 : off < page2Start ? 1 : 2),
+        countCharsOnPage: () => 50,
+        goToPage: (p) => {
+          currentPage = p;
+        },
+        jumpToLocator: () => {},
+      });
+
+      // User manually turns to Page 1!
+      currentPage = 1;
+      ctl2.notifyManualPageTurn({ section: 0, offset: midU1 }, page2Start);
+      await vi.advanceTimersByTimeAsync(620);
+
+      // Voice picks u2 (the first sentence BEGINNING on Page 1) and stays on Page 1!
+      expect(useReadAloudStore.getState().activeUtterance?.id).toBe(u2.id);
+      expect(currentPage).toBe(1);
+
+      ctl2.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

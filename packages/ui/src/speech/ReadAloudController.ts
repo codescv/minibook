@@ -23,6 +23,8 @@ import {
 import { resolveLocale, translate } from '../i18n';
 import { AutoPageTurn, type AutoPageTurnViewAdapter } from './AutoPageTurn';
 
+const MIN_QUEUE_HORIZON = 25;
+
 export interface ReadAloudStoreState {
   active: boolean;
   bookId: BookId | null;
@@ -68,9 +70,10 @@ export const useReadAloudStore = create<ReadAloudStoreState>((set) => ({
  *
  * Lives for the entire session independent of `ReaderScreen` mounting:
  * - Enforces the single-book rule: opening another book cleanly stops the previous session.
- * - Stocks `SpeechPlayer` with current + next section utterances and tops up on `queue-low`.
- * - Drives `SynthScheduler` prefetch + RTF slow-voice warnings.
- * - Follows manual page turns after a 600ms settle (`PRODUCT_DESIGN.md` §4.6).
+ * - Stocks `SpeechPlayer` until `>= 25` utterances are queued ahead (looping across tiny sections).
+ * - Rebuilds contiguous spine queues cleanly on out-of-order / backward seeks (`[P1-U5]`).
+ * - Follows manual page turns after a 600ms settle starting at the first sentence that BEGINS
+ *   on the new page (`[P1-U4]`), never snapping the user backward.
  */
 export class ReadAloudController {
   private readonly host: PlatformHost;
@@ -89,7 +92,9 @@ export class ReadAloudController {
   private attachedDurations = new Map<string, number>();
   private loadedSections = new Set<number>();
   private highestQueuedSection = -1;
+  private lowestQueuedSection = Infinity;
   private toppingUp = false;
+  private suppressBackwardSnapForId: string | null = null;
 
   private viewAdapter: AutoPageTurnViewAdapter | null = null;
   private manualTurnDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -112,10 +117,6 @@ export class ReadAloudController {
     this.viewAdapter = adapter;
   }
 
-  /**
-   * Enforces "One book at a time" (`PRODUCT_DESIGN.md` §6 & `ARCHITECTURE.md` §8.2):
-   * Opening a different book stops any active Read-Aloud session first.
-   */
   onBookOpened(bookId: BookId): void {
     const state = useReadAloudStore.getState();
     if (state.active && state.bookId && state.bookId !== bookId) {
@@ -142,6 +143,8 @@ export class ReadAloudController {
   async start(options: {
     readonly bookId: BookId;
     readonly startLocator: Locator;
+    readonly pageEndOffset?: number;
+    readonly preferContaining?: boolean;
     readonly sharedSession?: BookSession;
     readonly chapterTitle?: string;
   }): Promise<void> {
@@ -151,25 +154,16 @@ export class ReadAloudController {
     }
 
     this.clearManualTurnTimer();
-    this.utterances = [];
-    this.utteranceById.clear();
-    this.attachedDurations.clear();
-    this.loadedSections.clear();
-    this.highestQueuedSection = -1;
+    this.suppressBackwardSnapForId = null;
 
     if (options.sharedSession) {
       this.session = options.sharedSession;
       this.ownsSession = false;
-    } else {
+    } else if (!this.session || prevState.bookId !== options.bookId) {
       const detail = await this.host.library.get(options.bookId);
       this.session = await openBookWithHost(this.host, options.bookId, detail);
       this.ownsSession = true;
     }
-
-    const settings = this.getSettings();
-    const voice = this.resolvePreferredVoice(this.session.meta.language);
-    const rate = settings.speechRate;
-    const coverUrl = this.host.library.coverUrl(options.bookId);
 
     this.scheduler?.dispose();
     this.scheduler = createSynthScheduler({
@@ -186,23 +180,138 @@ export class ReadAloudController {
       isHidden: () => typeof document !== 'undefined' && document.visibilityState === 'hidden',
     });
 
-    await this.loadAndAppendSection(options.startLocator.section);
+    const settings = this.getSettings();
+    const voice = this.resolvePreferredVoice(this.session.meta.language);
+    const rate = settings.speechRate;
+
+    await this.rebuildContiguousQueue({
+      bookId: options.bookId,
+      startLocator: options.startLocator,
+      ...(options.pageEndOffset !== undefined ? { pageEndOffset: options.pageEndOffset } : {}),
+      preferContaining: options.preferContaining ?? false,
+      voice,
+      rate,
+      sleepTimer: { mode: 'off' },
+      chapterTitle: options.chapterTitle ?? this.session.meta.title,
+    });
+
+    useRouteStore.getState().setChromeOpen(false);
+    useRouteStore.getState().setReadAloudBarOpen(!this.getIsEink());
+  }
+
+  private pickStartUtterance(options: {
+    readonly section: number;
+    readonly offset: number;
+    readonly pageEndOffset?: number;
+    readonly preferContaining: boolean;
+  }): Utterance | null {
+    if (this.utterances.length === 0) return null;
+
+    if (options.preferContaining) {
+      return (
+        this.utterances.find(
+          (u) =>
+            u.section === options.section &&
+            options.offset >= u.start &&
+            options.offset <= u.end,
+        ) ??
+        this.utterances.find(
+          (u) => u.section === options.section && u.start >= options.offset,
+        ) ??
+        this.utterances[0]!
+      );
+    }
+
+    // Spec §4.6 / §8.2: first utterance that BEGINS on the current page (`u.start >= offset && u.start < pageEndOffset`)
+    const beginningOnPage = this.utterances.find(
+      (u) =>
+        u.section === options.section &&
+        u.start >= options.offset &&
+        (options.pageEndOffset === undefined || u.start < options.pageEndOffset),
+    );
+    if (beginningOnPage) {
+      return beginningOnPage;
+    }
+
+    // Fallback when a single long sentence spans the entire page (`u.start < offset < u.end`):
+    // suppress backward page-snap so AutoPageTurn never yanks the user back to the previous page!
+    const containing = this.utterances.find(
+      (u) =>
+        u.section === options.section &&
+        u.start <= options.offset &&
+        u.end > options.offset,
+    );
+    if (containing) {
+      if (containing.start < options.offset) {
+        this.suppressBackwardSnapForId = containing.id;
+      }
+      return containing;
+    }
+
+    // Next available utterance at or after `(section, offset)` (e.g. if page tail only had whitespace)
+    return (
+      this.utterances.find(
+        (u) =>
+          u.section > options.section ||
+          (u.section === options.section && u.start >= options.offset),
+      ) ?? this.utterances[0]!
+    );
+  }
+
+  private async rebuildContiguousQueue(options: {
+    readonly bookId: BookId;
+    readonly startLocator: Locator;
+    readonly pageEndOffset?: number;
+    readonly preferContaining: boolean;
+    readonly voice: VoiceRef;
+    readonly rate: number;
+    readonly sleepTimer: SleepTimerConfig;
+    readonly chapterTitle: string;
+  }): Promise<void> {
+    if (!this.session) return;
+
+    this.utterances = [];
+    this.utteranceById.clear();
+    this.attachedDurations.clear();
+    this.loadedSections.clear();
+    this.highestQueuedSection = -1;
+    this.lowestQueuedSection = options.startLocator.section;
+
+    // Load full starting section (splitting first long utterance when starting mid-section, §8.1 #6)
+    await this.loadAndAppendSection(options.startLocator.section, {
+      ...(options.preferContaining && options.startLocator.offset > 0
+        ? {
+            startOffset: options.startLocator.offset,
+            splitFirstLongUtterance: true,
+          }
+        : options.startLocator.offset > 0 && !options.preferContaining
+          ? { splitFirstLongUtterance: false }
+          : {}),
+    });
+
+    // Always stock at least the next linear section + loop until >= 25 utterances ahead (`[P2 #1]`)
     const nextLinear = this.findNextLinearSection(options.startLocator.section);
     if (nextLinear !== null) {
       await this.loadAndAppendSection(nextLinear);
     }
 
-    if (this.utterances.length === 0) {
-      return;
-    }
+    const targetUtterance = this.pickStartUtterance({
+      section: options.startLocator.section,
+      offset: options.startLocator.offset,
+      ...(options.pageEndOffset !== undefined ? { pageEndOffset: options.pageEndOffset } : {}),
+      preferContaining: options.preferContaining,
+    });
 
-    // Pick first utterance starting >= startLocator.offset, or containing startLocator.offset
-    const targetUtterance =
-      this.utterances.find(
-        (u) =>
-          u.section === options.startLocator.section &&
-          (u.start >= options.startLocator.offset || u.end > options.startLocator.offset),
-      ) ?? this.utterances[0]!;
+    if (!targetUtterance) return;
+
+    const startIdx = Math.max(
+      0,
+      this.utterances.findIndex((u) => u.id === targetUtterance.id),
+    );
+    await this.stockAheadUntilHorizon(startIdx, MIN_QUEUE_HORIZON);
+
+    const settings = this.getSettings();
+    const coverUrl = this.host.library.coverUrl(options.bookId);
 
     useReadAloudStore.setState({
       active: true,
@@ -211,9 +320,9 @@ export class ReadAloudController {
       bookAuthor: this.session.meta.authors.join(', '),
       bookLang: this.session.meta.language,
       status: 'playing',
-      rate,
-      voice,
-      sleepTimer: { mode: 'off' },
+      rate: options.rate,
+      voice: options.voice,
+      sleepTimer: options.sleepTimer,
       activeUtterance: targetUtterance,
       activeWordRange: null,
       slowVoiceRtf: null,
@@ -224,22 +333,21 @@ export class ReadAloudController {
       bookId: options.bookId,
       title: this.session.meta.title,
       author: this.session.meta.authors.join(', '),
-      chapterTitle: options.chapterTitle ?? this.session.meta.title,
+      chapterTitle: options.chapterTitle,
       coverUrl,
-      voice,
+      voice: options.voice,
       systemFallback: settings.fallbackToSystemVoice ? { kind: 'system', voiceId: null } : null,
-      rate,
+      rate: options.rate,
     });
 
-    const startIdx = Math.max(0, this.utterances.findIndex((u) => u.id === targetUtterance.id));
+    if (options.sleepTimer.mode !== 'off') {
+      this.player.setSleepTimer(options.sleepTimer);
+    }
+
     const sliceToQueue = this.utterances.slice(startIdx);
     this.player.enqueue(sliceToQueue);
-    this.configureSchedulerForVoice(voice, sliceToQueue, targetUtterance.id);
+    this.configureSchedulerForVoice(options.voice, sliceToQueue, targetUtterance.id);
     this.player.play();
-
-    // Normal mode shows floating bar for 4s; E-Ink mode keeps ReadAloudBar hidden while speaking unless summoned (`§8.2 R4`)
-    useRouteStore.getState().setChromeOpen(false);
-    useRouteStore.getState().setReadAloudBarOpen(!this.getIsEink());
   }
 
   togglePlayPause(): void {
@@ -257,6 +365,7 @@ export class ReadAloudController {
     this.autoPageTurn.reset();
     this.scheduler?.dispose();
     this.scheduler = null;
+    this.suppressBackwardSnapForId = null;
 
     const st = useReadAloudStore.getState();
     if (st.active && st.bookId && st.activeUtterance && this.session) {
@@ -272,25 +381,50 @@ export class ReadAloudController {
     this.utterances = [];
     this.utteranceById.clear();
     this.loadedSections.clear();
+    this.highestQueuedSection = -1;
+    this.lowestQueuedSection = Infinity;
 
     useReadAloudStore.getState().reset();
     useRouteStore.getState().setReadAloudBarOpen(false);
   }
 
+  /**
+   * Tap-to-seek on a specific sentence inside the currently rendered page (`preferContaining = true`).
+   */
   seekToLocator(locator: Locator): boolean {
     const st = useReadAloudStore.getState();
-    if (!st.active) return false;
-    const hit = this.utterances.find(
-      (u) =>
-        u.section === locator.section &&
-        locator.offset >= u.start &&
-        locator.offset <= u.end,
-    ) ?? this.utterances.find(
-      (u) => u.section === locator.section && u.start >= locator.offset,
-    );
+    if (!st.active || !st.bookId || !this.session) return false;
+
+    if (!this.isSectionInContiguousQueue(locator.section)) {
+      void this.rebuildContiguousQueue({
+        bookId: st.bookId,
+        startLocator: locator,
+        preferContaining: true,
+        voice: st.voice ?? { kind: 'system', voiceId: null },
+        rate: st.rate,
+        sleepTimer: st.sleepTimer,
+        chapterTitle:
+          this.session.spine.find((s) => s.index === locator.section)?.title ??
+          this.session.meta.title,
+      });
+      return true;
+    }
+
+    const hit = this.pickStartUtterance({
+      section: locator.section,
+      offset: locator.offset,
+      preferContaining: true,
+    });
     if (!hit) return false;
-    this.scheduler?.onUtteranceStart(hit.id);
-    this.player.seekTo(hit.id);
+
+    const hitIdx = Math.max(0, this.utterances.findIndex((u) => u.id === hit.id));
+    void this.stockAheadUntilHorizon(hitIdx, MIN_QUEUE_HORIZON).then((added) => {
+      if (added.length > 0) {
+        this.player.enqueue(added);
+      }
+      this.scheduler?.onUtteranceStart(hit.id);
+      this.player.seekTo(hit.id);
+    });
     return true;
   }
 
@@ -379,9 +513,11 @@ export class ReadAloudController {
   }
 
   /**
-   * Turning a page manually while speaking moves the voice after a 600ms settle (`PRODUCT_DESIGN.md` §4.6).
+   * Turning a page manually (or jumping chapters via TOC/scrubber) while speaking moves the voice
+   * after a 600ms settle (`PRODUCT_DESIGN.md` §4.6), starting at the first sentence that BEGINS
+   * on the new page (`[P1-U4]`) and rebuilding contiguous spine order if out-of-range (`[P1-U5]`).
    */
-  notifyManualPageTurn(firstVisibleLocator: Locator): void {
+  notifyManualPageTurn(firstVisibleLocator: Locator, pageEndOffset?: number): void {
     const st = useReadAloudStore.getState();
     if (!st.active || (st.status !== 'playing' && st.status !== 'buffering')) return;
 
@@ -389,11 +525,101 @@ export class ReadAloudController {
     this.manualTurnDebounce = setTimeout(() => {
       this.manualTurnDebounce = null;
       const nowState = useReadAloudStore.getState();
-      if (!nowState.active || (nowState.status !== 'playing' && nowState.status !== 'buffering')) {
+      if (
+        !nowState.active ||
+        !nowState.bookId ||
+        !this.session ||
+        (nowState.status !== 'playing' && nowState.status !== 'buffering')
+      ) {
         return;
       }
-      void this.ensureSectionLoadedAndSeek(firstVisibleLocator);
+      void this.seekToPageRange(nowState.bookId, firstVisibleLocator, pageEndOffset);
     }, 600);
+  }
+
+  private isSectionInContiguousQueue(sectionIndex: number): boolean {
+    return (
+      this.loadedSections.has(sectionIndex) &&
+      sectionIndex >= this.lowestQueuedSection &&
+      sectionIndex <= this.highestQueuedSection
+    );
+  }
+
+  private async seekToPageRange(
+    bookId: BookId,
+    pageStart: Locator,
+    pageEndOffset?: number,
+  ): Promise<void> {
+    const st = useReadAloudStore.getState();
+    if (!this.session) return;
+
+    // Out-of-order jump (e.g. backward to an earlier chapter or past buffered horizon):
+    // rebuild contiguous queue from `pageStart.section` so `highestQueuedSection` and player queue never skip chapters!
+    if (!this.isSectionInContiguousQueue(pageStart.section)) {
+      await this.rebuildContiguousQueue({
+        bookId,
+        startLocator: pageStart,
+        ...(pageEndOffset !== undefined ? { pageEndOffset } : {}),
+        preferContaining: false,
+        voice: st.voice ?? { kind: 'system', voiceId: null },
+        rate: st.rate,
+        sleepTimer: st.sleepTimer,
+        chapterTitle:
+          this.session.spine.find((s) => s.index === pageStart.section)?.title ??
+          this.session.meta.title,
+      });
+      return;
+    }
+
+    const hit = this.pickStartUtterance({
+      section: pageStart.section,
+      offset: pageStart.offset,
+      ...(pageEndOffset !== undefined ? { pageEndOffset } : {}),
+      preferContaining: false,
+    });
+    if (!hit) return;
+
+    const hitIdx = Math.max(0, this.utterances.findIndex((u) => u.id === hit.id));
+    const added = await this.stockAheadUntilHorizon(hitIdx, MIN_QUEUE_HORIZON);
+
+    // Note: if seeking backward within `this.utterances` to an utterance earlier than what was
+    // originally passed to `player.enqueue`, rebuild the player queue from `hit` so `player.seekTo` always finds it!
+    await this.reloadPlayerFromIndex(hitIdx, bookId);
+    if (added.length > 0 && this.scheduler) {
+      this.scheduler.setQueue(this.utterances.slice(hitIdx), hit.id);
+    }
+  }
+
+  private async reloadPlayerFromIndex(startIdx: number, bookId: BookId): Promise<void> {
+    if (!this.session) return;
+    const target = this.utterances[startIdx];
+    if (!target) return;
+    const st = useReadAloudStore.getState();
+    const settings = this.getSettings();
+    const voice = st.voice ?? { kind: 'system', voiceId: null };
+    const coverUrl = this.host.library.coverUrl(bookId);
+
+    await this.player.load({
+      bookId,
+      title: this.session.meta.title,
+      author: this.session.meta.authors.join(', '),
+      chapterTitle:
+        this.session.spine.find((s) => s.index === target.section)?.title ??
+        this.session.meta.title,
+      coverUrl,
+      voice,
+      systemFallback: settings.fallbackToSystemVoice ? { kind: 'system', voiceId: null } : null,
+      rate: st.rate,
+    });
+
+    if (st.sleepTimer.mode !== 'off') {
+      this.player.setSleepTimer(st.sleepTimer);
+    }
+
+    const slice = this.utterances.slice(startIdx);
+    this.player.enqueue(slice);
+    this.configureSchedulerForVoice(voice, slice, target.id);
+    this.player.play();
   }
 
   async reconcileOnWake(): Promise<void> {
@@ -419,15 +645,6 @@ export class ReadAloudController {
     this.stop();
     this.unsubPlayer?.();
     this.unsubPlayer = null;
-  }
-
-  private async ensureSectionLoadedAndSeek(locator: Locator): Promise<void> {
-    if (!this.loadedSections.has(locator.section)) {
-      await this.loadAndAppendSection(locator.section);
-      const fromHere = this.utterances.filter((u) => u.section === locator.section);
-      this.player.enqueue(fromHere);
-    }
-    this.seekToLocator(locator);
   }
 
   private configureSchedulerForVoice(
@@ -471,8 +688,11 @@ export class ReadAloudController {
     return null;
   }
 
-  private async loadAndAppendSection(sectionIndex: number): Promise<void> {
-    if (!this.session || this.loadedSections.has(sectionIndex)) return;
+  private async loadAndAppendSection(
+    sectionIndex: number,
+    segOpts?: { readonly startOffset?: number; readonly splitFirstLongUtterance?: boolean },
+  ): Promise<Utterance[]> {
+    if (!this.session || this.loadedSections.has(sectionIndex)) return [];
     this.loadedSections.add(sectionIndex);
 
     const sectionText = this.session.loadSectionText
@@ -481,33 +701,54 @@ export class ReadAloudController {
 
     const segs = segmentSectionSafe(sectionIndex, sectionText, {
       bookLang: this.session.meta.language,
+      ...(segOpts?.startOffset !== undefined ? { startOffset: segOpts.startOffset } : {}),
+      ...(segOpts?.splitFirstLongUtterance !== undefined
+        ? { splitFirstLongUtterance: segOpts.splitFirstLongUtterance }
+        : {}),
     });
 
+    const added: Utterance[] = [];
     for (const u of segs) {
       if (!this.utteranceById.has(u.id)) {
         this.utterances.push(u);
         this.utteranceById.set(u.id, u);
+        added.push(u);
       }
     }
     if (sectionIndex > this.highestQueuedSection) {
       this.highestQueuedSection = sectionIndex;
     }
+    if (sectionIndex < this.lowestQueuedSection) {
+      this.lowestQueuedSection = sectionIndex;
+    }
+    return added;
+  }
+
+  /**
+   * Loops across consecutive linear sections until at least `minAhead` utterances are queued
+   * after `fromIndex` or the book's spine ends (`[P2 #1]`: handles tiny 31-char sections cleanly).
+   */
+  private async stockAheadUntilHorizon(fromIndex: number, minAhead: number): Promise<Utterance[]> {
+    const newlyAdded: Utterance[] = [];
+    while (this.utterances.length - fromIndex < minAhead) {
+      const nextSec = this.findNextLinearSection(this.highestQueuedSection);
+      if (nextSec === null) break;
+      const chunk = await this.loadAndAppendSection(nextSec);
+      newlyAdded.push(...chunk);
+    }
+    return newlyAdded;
   }
 
   private async topUpNextSection(): Promise<void> {
     if (this.toppingUp || !this.session) return;
-    const nextSec = this.findNextLinearSection(this.highestQueuedSection);
-    if (nextSec === null) return;
-
     this.toppingUp = true;
     try {
-      const prevLen = this.utterances.length;
-      await this.loadAndAppendSection(nextSec);
-      const added = this.utterances.slice(prevLen);
+      const cur = useReadAloudStore.getState().activeUtterance;
+      const curIdx = cur ? Math.max(0, this.utterances.findIndex((u) => u.id === cur.id)) : 0;
+      const added = await this.stockAheadUntilHorizon(curIdx, MIN_QUEUE_HORIZON);
       if (added.length > 0) {
         this.player.enqueue(added);
-        const cur = useReadAloudStore.getState().activeUtterance;
-        this.scheduler?.setQueue(this.utterances, cur?.id ?? null);
+        this.scheduler?.setQueue(this.utterances.slice(curIdx), cur?.id ?? null);
       }
     } finally {
       this.toppingUp = false;
@@ -554,6 +795,10 @@ export class ReadAloudController {
           lang: st.bookLang ?? 'en',
           pauseAfterMs: 200,
         };
+        const suppressBackwardSnap = this.suppressBackwardSnapForId === u.id;
+        if (suppressBackwardSnap) {
+          this.suppressBackwardSnapForId = null;
+        }
         useReadAloudStore.setState({
           activeUtterance: u,
           activeWordRange: null,
@@ -567,12 +812,13 @@ export class ReadAloudController {
         this.autoPageTurn.onUtteranceStart(u, this.viewAdapter, {
           rate: st.rate,
           ...(attachedDur !== undefined ? { attachedDurationMs: attachedDur } : {}),
+          ...(suppressBackwardSnap ? { suppressBackwardSnap: true } : {}),
         });
         break;
       }
 
       case 'utterance-word': {
-        if (this.getIsEink()) break; // R4: zero word-level repaints in E-Ink mode
+        if (this.getIsEink()) break;
         const u = this.utteranceById.get(ev.id) ?? st.activeUtterance;
         if (!u) break;
         useReadAloudStore.setState({
