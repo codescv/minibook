@@ -181,6 +181,24 @@ describe('Highlighter Seam-Free Line Rects & E-Ink 2px Underline (§8.7, #13 P2 
       expect((lines[0] as HTMLElement).style.height).toBe('2px');
       expect((lines[0] as HTMLElement).style.backgroundColor).toBe('rgb(0, 0, 0)');
       expect(doc.querySelectorAll('.mb-hl-overlay-box')).toHaveLength(0);
+
+      // Independent speechLayer and searchLayer: paintSearchHit clears old search lines and survives paintSpeech
+      hl.paintSearchHit({ start: 0, end: 5 }, true);
+      hl.paintSearchHit({ start: 6, end: 11 }, true);
+      expect(doc.querySelectorAll('[data-layer="search"] .mb-hl-overlay-eink-line')).toHaveLength(1);
+
+      hl.paintSpeech({
+        sentence: { start: 0, end: 18 },
+        word: null,
+        settings: DEFAULT_APP_SETTINGS,
+        isEink: true,
+      });
+      expect(doc.querySelectorAll('[data-layer="speech"] .mb-hl-overlay-eink-line')).toHaveLength(1);
+      expect(doc.querySelectorAll('[data-layer="search"] .mb-hl-overlay-eink-line')).toHaveLength(1);
+
+      hl.paintSearchHit(null, true);
+      expect(doc.querySelectorAll('[data-layer="search"] .mb-hl-overlay-eink-line')).toHaveLength(0);
+      expect(doc.querySelectorAll('[data-layer="speech"] .mb-hl-overlay-eink-line')).toHaveLength(1);
     } finally {
       textRangeProto.getClientRects = origGetRects;
     }

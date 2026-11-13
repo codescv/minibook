@@ -43,7 +43,6 @@ export function SettingsScreen(): ReactElement {
   const [storageMb, setStorageMb] = useState<string>('0.0 MB');
   const [cacheBytes, setCacheBytes] = useState<number>(0);
   const [voices, setVoices] = useState<Voice[]>([]);
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
 
   const [srvUrl, setSrvUrl] = useState(settings.customSpeechServer?.baseUrl ?? '');
   const [srvModel, setSrvModel] = useState(settings.customSpeechServer?.model ?? 'tts-1');
@@ -251,7 +250,7 @@ export function SettingsScreen(): ReactElement {
           type="button"
           className="mb-list-row"
           data-setting-row="voice"
-          onClick={() => setVoicePickerOpen(true)}
+          onClick={() => useRouteStore.getState().openSheet('settings-voice')}
         >
           <span>{t('voice')}</span>
           <span className="mb-list-row-meta">{currentVoiceLabel} ▸</span>
@@ -387,6 +386,60 @@ export function SettingsScreen(): ReactElement {
     updateSettings,
   ]);
 
+  const voiceOptions = useMemo(() => {
+    const opts: Array<{
+      readonly key: string;
+      readonly label: string;
+      readonly meta: string;
+      readonly selected: boolean;
+      readonly onSelect: () => void;
+    }> = [
+      {
+        key: 'sys-default',
+        label: t('systemDefault'),
+        meta: '',
+        selected:
+          currentDefaultVoice.kind === 'system' && currentDefaultVoice.voiceId === null,
+        onSelect: () => {
+          void updateSettings({
+            preferredVoices: {
+              ...settings.preferredVoices,
+              default: { kind: 'system', voiceId: null },
+            },
+          });
+          useRouteStore.getState().closeSheetWithRefresh();
+        },
+      },
+    ];
+    for (const v of voices) {
+      opts.push({
+        key: `v:${v.id}`,
+        label: v.name,
+        meta: v.engine ?? v.lang,
+        selected:
+          currentDefaultVoice.kind === 'system' && currentDefaultVoice.voiceId === v.id,
+        onSelect: () => {
+          void updateSettings({
+            preferredVoices: {
+              ...settings.preferredVoices,
+              default: {
+                kind: 'system',
+                voiceId: v.id,
+                ...(v.engine ? { engine: v.engine } : {}),
+              },
+            },
+          });
+          useRouteStore.getState().closeSheetWithRefresh();
+        },
+      });
+    }
+    return opts;
+  }, [t, voices, currentDefaultVoice, settings.preferredVoices, updateSettings]);
+
+  const handleCloseSheet = (coveredHalf: boolean): void => {
+    useRouteStore.getState().closeSheetWithRefresh(coveredHalf);
+  };
+
   return (
     <main className="mb-settings" data-testid="settings-screen">
       <div className="mb-settings-inner">
@@ -409,11 +462,11 @@ export function SettingsScreen(): ReactElement {
           prevLabel={t('prevPage')}
           nextLabel={t('nextPage')}
           ariaLabel={t('settings')}
-          onPageTurn={() => {
+          onPageTurn={(swap) => {
             void refreshController.runTurn({
               isEink,
               cadence: settings.fullRefreshEvery,
-              swap: () => {},
+              swap,
             });
           }}
           renderItems={(visible) => (
@@ -432,68 +485,57 @@ export function SettingsScreen(): ReactElement {
         />
       </div>
 
-      {/* Default System Voice Selector Sheet */}
+      {/* Default System Voice Selector Sheet (`activeSheet === 'settings-voice'`, backed by PagedList) */}
       <Sheet
-        open={voicePickerOpen}
+        open={activeSheet === 'settings-voice'}
         label={t('voice')}
-        onClose={() => setVoicePickerOpen(false)}
+        listSheet
+        onClose={handleCloseSheet}
       >
-        <button
-          type="button"
-          className="mb-list-row"
-          onClick={() => {
-            void updateSettings({
-              preferredVoices: {
-                ...settings.preferredVoices,
-                default: { kind: 'system', voiceId: null },
-              },
+        <PagedList
+          items={voiceOptions}
+          isEink={isEink}
+          layer="sheet"
+          estimatedItemHeight={48}
+          fallbackPageSize={6}
+          prevLabel={t('prevPage')}
+          nextLabel={t('nextPage')}
+          ariaLabel={t('voice')}
+          onPageTurn={(swap) => {
+            void refreshController.runTurn({
+              isEink,
+              cadence: settings.fullRefreshEvery,
+              swap,
             });
-            setVoicePickerOpen(false);
           }}
-        >
-          <span>{t('systemDefault')}</span>
-          <span>
-            {currentDefaultVoice.kind === 'system' && currentDefaultVoice.voiceId === null
-              ? '✓'
-              : ''}
-          </span>
-        </button>
-        {voices.map((v) => (
-          <button
-            key={v.id}
-            type="button"
-            className="mb-list-row"
-            onClick={() => {
-              void updateSettings({
-                preferredVoices: {
-                  ...settings.preferredVoices,
-                  default: {
-                    kind: 'system',
-                    voiceId: v.id,
-                    ...(v.engine ? { engine: v.engine } : {}),
-                  },
-                },
-              });
-              setVoicePickerOpen(false);
-            }}
-          >
-            <span>
-              {v.name} <span className="mb-list-row-meta">{v.engine ?? v.lang}</span>
-            </span>
-            <span>
-              {currentDefaultVoice.kind === 'system' && currentDefaultVoice.voiceId === v.id
-                ? '✓'
-                : ''}
-            </span>
-          </button>
-        ))}
+          renderItems={(visible) => (
+            <div role="listbox" aria-label={t('voice')}>
+              {visible.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  role="option"
+                  aria-selected={opt.selected}
+                  className="mb-list-row"
+                  onClick={opt.onSelect}
+                >
+                  <span>
+                    {opt.label}{' '}
+                    {opt.meta && <span className="mb-list-row-meta">{opt.meta}</span>}
+                  </span>
+                  <span aria-hidden="true">{opt.selected ? '✓' : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        />
       </Sheet>
 
       {/* Custom OpenAI-Compatible Speech Server Sheet */}
       <Sheet
         open={activeSheet === 'custom-server'}
         label={t('customSpeechServer')}
-        onClose={() => useRouteStore.getState().closeSheet()}
+        onClose={handleCloseSheet}
       >
         <input
           type="url"
@@ -545,7 +587,7 @@ export function SettingsScreen(): ReactElement {
                     }
                   : null,
               });
-              useRouteStore.getState().closeSheet();
+              useRouteStore.getState().closeSheetWithRefresh();
             }}
           >
             {t('save')}
@@ -557,7 +599,7 @@ export function SettingsScreen(): ReactElement {
               onClick={() => {
                 void host.settings.setSecret('openai-api-key', null);
                 void updateSettings({ customSpeechServer: null });
-                useRouteStore.getState().closeSheet();
+                useRouteStore.getState().closeSheetWithRefresh();
               }}
             >
               {t('clear')}
@@ -570,7 +612,7 @@ export function SettingsScreen(): ReactElement {
       <Sheet
         open={activeSheet === 'licenses'}
         label="Licenses"
-        onClose={() => useRouteStore.getState().closeSheet()}
+        onClose={handleCloseSheet}
       >
         <div className="mb-sheet-row">
           <div>

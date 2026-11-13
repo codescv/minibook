@@ -11,7 +11,8 @@ export type ActiveSheetKind =
   | 'sleep'
   | 'book-info'
   | 'custom-server'
-  | 'licenses';
+  | 'licenses'
+  | 'settings-voice';
 
 export type ContentsTab = 'contents' | 'bookmarks' | 'search';
 
@@ -20,6 +21,43 @@ export interface PageableHandler {
   readonly layer: 'screen' | 'sheet';
   nextPage(): void;
   prevPage(): void;
+}
+
+export interface OverlayTurnRequest {
+  readonly swap: () => void | Promise<void>;
+  readonly closedSheetCoveredHalfScreen?: boolean;
+  readonly countTurn?: boolean;
+}
+
+export type OverlayTurnRunner = (req: OverlayTurnRequest) => Promise<void>;
+
+let activeOverlayTurnRunner: OverlayTurnRunner | null = null;
+let closingSheetPending = false;
+let closingChromePending = false;
+
+export function registerOverlayTurnRunner(runner: OverlayTurnRunner): () => void {
+  activeOverlayTurnRunner = runner;
+  return () => {
+    if (activeOverlayTurnRunner === runner) {
+      activeOverlayTurnRunner = null;
+    }
+  };
+}
+
+export function runOverlayTurn(req: OverlayTurnRequest): Promise<void> {
+  if (activeOverlayTurnRunner) {
+    return activeOverlayTurnRunner(req);
+  }
+  return Promise.resolve(req.swap());
+}
+
+export function measureOpenSheetCoveredHalf(): boolean {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return false;
+  const sheet = document.querySelector<HTMLElement>('.mb-sheet');
+  if (!sheet) return false;
+  const rect = sheet.getBoundingClientRect();
+  const vh = window.innerHeight || 800;
+  return rect.height >= vh * 0.5;
 }
 
 export interface RouteState {
@@ -45,9 +83,11 @@ export interface RouteState {
   openSettings(): void;
   setChromeOpen(open: boolean): void;
   toggleChrome(): void;
+  closeChromeWithRefresh(extraSwap?: () => void): void;
   setReadAloudBarOpen(open: boolean): void;
   openSheet(sheet: ActiveSheetKind, opts?: { contentsTab?: ContentsTab; infoBookId?: BookId }): void;
   closeSheet(): void;
+  closeSheetWithRefresh(coveredHalfOverride?: boolean, extraSwap?: () => void): void;
   setContentsTab(tab: ContentsTab): void;
   openImagePreview(url: string, alt?: string): void;
   closeImagePreview(): void;
@@ -60,6 +100,8 @@ export interface RouteState {
   goBack(): boolean;
   reset(): void;
 }
+
+const LIST_SHEETS = new Set<ActiveSheetKind>(['contents', 'voice', 'settings-voice']);
 
 const pageableStack: PageableHandler[] = [];
 const pageableListeners = new Set<() => void>();
@@ -87,11 +129,13 @@ export function subscribePageableStack(fn: () => void): () => void {
   };
 }
 
-export function getTopmostPageableHandler(state: Pick<RouteState, 'activeSheet' | 'imagePreviewUrl' | 'goToPercentOpen'>): PageableHandler | null {
+export function getTopmostPageableHandler(
+  state: Pick<RouteState, 'activeSheet' | 'imagePreviewUrl' | 'goToPercentOpen'>,
+): PageableHandler | null {
   if (state.imagePreviewUrl || state.goToPercentOpen) return null;
   if (state.activeSheet !== null) {
     // Non-list sheets never delegate paging to background screens (ARCHITECTURE.md §9.5)
-    if (state.activeSheet !== 'contents' && state.activeSheet !== 'voice') {
+    if (!LIST_SHEETS.has(state.activeSheet)) {
       return null;
     }
     for (let i = pageableStack.length - 1; i >= 0; i--) {
@@ -113,8 +157,8 @@ export function computeTopmostLayerIsPageable(
 ): boolean {
   if (state.imagePreviewUrl !== null || state.goToPercentOpen) return false;
   if (state.activeSheet !== null) {
-    // Only sheets backed by PagedList (`contents` and `voice`) are pageable, and PagedList pages in E-Ink mode
-    if (state.activeSheet === 'contents' || state.activeSheet === 'voice') {
+    // Only sheets backed by PagedList (`contents`, `voice`, `settings-voice`) are pageable in E-Ink mode
+    if (LIST_SHEETS.has(state.activeSheet)) {
       return isEink && getTopmostPageableHandler(state) !== null;
     }
     return false;
@@ -149,6 +193,8 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   ...INITIAL_STATE,
 
   openBook(bookId) {
+    closingSheetPending = false;
+    closingChromePending = false;
     set({
       screen: 'reader',
       activeBookId: bookId,
@@ -160,6 +206,8 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   },
 
   openLibrary() {
+    closingSheetPending = false;
+    closingChromePending = false;
     set({
       screen: 'library',
       chromeOpen: false,
@@ -171,6 +219,8 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   },
 
   openSettings() {
+    closingSheetPending = false;
+    closingChromePending = false;
     set({
       screen: 'settings',
       chromeOpen: false,
@@ -181,16 +231,33 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   },
 
   setChromeOpen(open) {
+    if (!open) closingChromePending = false;
     set({ chromeOpen: open, ...(open ? {} : { goToPercentOpen: false }) });
+  },
+
+  closeChromeWithRefresh(extraSwap) {
+    closingChromePending = true;
+    void runOverlayTurn({
+      closedSheetCoveredHalfScreen: false,
+      swap: () => {
+        closingChromePending = false;
+        extraSwap?.();
+        set({ chromeOpen: false, readAloudBarOpen: false, goToPercentOpen: false });
+      },
+    });
   },
 
   toggleChrome() {
     const s = get();
-    if (s.activeSheet !== null) {
-      set({ activeSheet: null });
+    if (s.activeSheet !== null && !closingSheetPending) {
+      get().closeSheetWithRefresh();
       return;
     }
-    set({ chromeOpen: !s.chromeOpen, goToPercentOpen: false });
+    if (s.chromeOpen && !closingChromePending) {
+      get().closeChromeWithRefresh();
+      return;
+    }
+    set({ chromeOpen: true, goToPercentOpen: false });
   },
 
   setReadAloudBarOpen(open) {
@@ -198,6 +265,11 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   },
 
   openSheet(sheet, opts) {
+    if (sheet === null) {
+      get().closeSheetWithRefresh();
+      return;
+    }
+    closingSheetPending = false;
     set((prev) => ({
       activeSheet: sheet,
       contentsTab: opts?.contentsTab ?? prev.contentsTab,
@@ -207,7 +279,21 @@ export const useRouteStore = create<RouteState>((set, get) => ({
   },
 
   closeSheet() {
+    closingSheetPending = false;
     set({ activeSheet: null, infoBookId: null });
+  },
+
+  closeSheetWithRefresh(coveredHalfOverride, extraSwap) {
+    const coveredHalf = coveredHalfOverride ?? measureOpenSheetCoveredHalf();
+    closingSheetPending = true;
+    void runOverlayTurn({
+      closedSheetCoveredHalfScreen: coveredHalf,
+      swap: () => {
+        closingSheetPending = false;
+        extraSwap?.();
+        set({ activeSheet: null, infoBookId: null });
+      },
+    });
   },
 
   setContentsTab(tab) {
@@ -256,20 +342,47 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       set({ goToPercentOpen: false });
       return true;
     }
-    if (s.activeSheet !== null) {
-      set({ activeSheet: null, infoBookId: null });
+    if (s.activeSheet !== null && !closingSheetPending) {
+      get().closeSheetWithRefresh();
       return true;
     }
     if (s.screen === 'reader') {
-      if (s.chromeOpen || s.readAloudBarOpen) {
-        set({ chromeOpen: false, readAloudBarOpen: false });
+      if ((s.chromeOpen || s.readAloudBarOpen) && !closingChromePending) {
+        get().closeChromeWithRefresh();
         return true;
       }
-      set({ screen: 'library', chromeOpen: false, readAloudBarOpen: false });
+      if (closingSheetPending || closingChromePending) {
+        void runOverlayTurn({
+          countTurn: false,
+          swap: () => {
+            closingSheetPending = false;
+            closingChromePending = false;
+            set({
+              screen: 'library',
+              chromeOpen: false,
+              readAloudBarOpen: false,
+              activeSheet: null,
+              infoBookId: null,
+            });
+          },
+        });
+      } else {
+        set({ screen: 'library', chromeOpen: false, readAloudBarOpen: false });
+      }
       return true;
     }
     if (s.screen === 'settings') {
-      set({ screen: 'library' });
+      if (closingSheetPending) {
+        void runOverlayTurn({
+          countTurn: false,
+          swap: () => {
+            closingSheetPending = false;
+            set({ screen: 'library', activeSheet: null });
+          },
+        });
+      } else {
+        set({ screen: 'library' });
+      }
       return true;
     }
     return false;
@@ -277,6 +390,8 @@ export const useRouteStore = create<RouteState>((set, get) => ({
 
   reset() {
     pageableStack.length = 0;
+    closingSheetPending = false;
+    closingChromePending = false;
     set({ ...INITIAL_STATE });
   },
 }));

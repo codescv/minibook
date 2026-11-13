@@ -37,6 +37,8 @@ function defaultSleep(ms: number): Promise<void> {
 export class RefreshController {
   private turnsSinceFull = 0;
   private vendorRefreshUsable: boolean;
+  private pending: Promise<void> = Promise.resolve();
+  private inFlight = false;
   private readonly host: PlatformHost;
   private readonly setFlashPhase: (phase: 'black' | 'white' | null) => void;
   private readonly blackHoldMs: number;
@@ -62,14 +64,80 @@ export class RefreshController {
     return this.vendorRefreshUsable;
   }
 
-  async runTurn(options: {
+  runTurn(options: {
     readonly isEink: boolean;
     readonly cadence: FullRefreshCadence;
     readonly swap: () => void | Promise<void>;
     readonly closedSheetCoveredHalfScreen?: boolean;
     readonly userPressedRefresh?: boolean;
+    readonly countTurn?: boolean;
   }): Promise<void> {
     if (!options.isEink) {
+      return Promise.resolve(options.swap());
+    }
+
+    const shouldCount = options.countTurn !== false && !options.userPressedRefresh;
+
+    // Fast synchronous path when idle and no full refresh is triggered on this turn:
+    // avoids async microtask lag on non-flashing turns/Back navigation while staying strictly serialized
+    // whenever a 210ms software flash or vendor refresh is active (`inFlight`).
+    if (!this.inFlight) {
+      const nextCount = shouldCount ? this.turnsSinceFull + 1 : this.turnsSinceFull;
+      const needNow =
+        options.countTurn !== false &&
+        options.cadence !== 0 &&
+        (nextCount >= options.cadence ||
+          Boolean(options.closedSheetCoveredHalfScreen) ||
+          Boolean(options.userPressedRefresh));
+
+      if (!needNow) {
+        this.turnsSinceFull = nextCount;
+        const syncOrAsync = options.swap();
+        if (syncOrAsync && typeof (syncOrAsync as PromiseLike<void>).then === 'function') {
+          this.inFlight = true;
+          const tracked = Promise.resolve(syncOrAsync).finally(() => {
+            this.inFlight = false;
+          });
+          this.pending = tracked.catch(() => {});
+          return tracked;
+        }
+        return Promise.resolve();
+      }
+    }
+
+    this.inFlight = true;
+    let safeRun!: Promise<void>;
+    const run = this.pending
+      .then(
+        () => this.executeEinkTurn(options),
+        () => this.executeEinkTurn(options),
+      )
+      .finally(() => {
+        if (this.pending === safeRun) {
+          this.inFlight = false;
+        }
+      });
+    safeRun = run.catch(() => {
+      this.inFlight = false;
+    });
+    this.pending = safeRun;
+    return run;
+  }
+
+  private async executeEinkTurn(options: {
+    readonly isEink: boolean;
+    readonly cadence: FullRefreshCadence;
+    readonly swap: () => void | Promise<void>;
+    readonly closedSheetCoveredHalfScreen?: boolean;
+    readonly userPressedRefresh?: boolean;
+    readonly countTurn?: boolean;
+  }): Promise<void> {
+    if (!options.isEink) {
+      await options.swap();
+      return;
+    }
+
+    if (options.countTurn === false) {
       await options.swap();
       return;
     }
@@ -78,10 +146,12 @@ export class RefreshController {
       this.turnsSinceFull += 1;
     }
 
+    // ARCHITECTURE.md §9.4: `need = settings.fullRefreshEvery != off && (...)`
     const need =
-      Boolean(options.userPressedRefresh) ||
-      (options.cadence > 0 &&
-        (this.turnsSinceFull >= options.cadence || Boolean(options.closedSheetCoveredHalfScreen)));
+      options.cadence !== 0 &&
+      (this.turnsSinceFull >= options.cadence ||
+        Boolean(options.closedSheetCoveredHalfScreen) ||
+        Boolean(options.userPressedRefresh));
 
     if (!need) {
       await options.swap();

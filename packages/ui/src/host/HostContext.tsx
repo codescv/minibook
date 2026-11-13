@@ -15,7 +15,7 @@ import {
   type PlatformHost,
   type SpeechPlayer,
 } from '@minibook/core';
-import { useRouteStore } from '../app/routes';
+import { registerOverlayTurnRunner, useRouteStore } from '../app/routes';
 import { RefreshController } from '../eink/RefreshController';
 import { translate, resolveLocale } from '../i18n';
 import {
@@ -132,6 +132,20 @@ export function HostProvider({
   useEffect(() => {
     applyDocumentTheme(settings, isEink);
   }, [settings, isEink]);
+
+  useEffect(() => {
+    return registerOverlayTurnRunner((req) =>
+      refreshController.runTurn({
+        isEink,
+        cadence: settings.fullRefreshEvery,
+        swap: req.swap,
+        ...(req.closedSheetCoveredHalfScreen !== undefined
+          ? { closedSheetCoveredHalfScreen: req.closedSheetCoveredHalfScreen }
+          : {}),
+        ...(req.countTurn !== undefined ? { countTurn: req.countTurn } : {}),
+      }),
+    );
+  }, [refreshController, isEink, settings.fullRefreshEvery]);
 
   // One-time auto E-Ink notice (`PRODUCT_DESIGN.md` §8.1)
   const hydrated = useSettingsStore((s) => s.hydrated);

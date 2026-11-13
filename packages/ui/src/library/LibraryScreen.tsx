@@ -186,7 +186,8 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
         {showSearch && (
           <div className="mb-library-search-wrap">
             <input
-              type="search"
+              type="text"
+              role="searchbox"
               className="mb-input"
               placeholder={t('searchBooks')}
               aria-label={t('searchBooks')}
@@ -225,14 +226,15 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
             columns={columns}
             estimatedItemHeight={235}
             fallbackPageSize={columns * 3}
+            resetKey={query.trim()}
             prevLabel={t('prevPage')}
             nextLabel={t('nextPage')}
             ariaLabel={t('library')}
-            onPageTurn={() => {
+            onPageTurn={(swap) => {
               void refreshController.runTurn({
                 isEink,
                 cadence: settings.fullRefreshEvery,
-                swap: () => {},
+                swap,
               });
             }}
             renderItems={(visible) => (
@@ -288,16 +290,9 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
         open={activeSheet === 'book-info' && infoBook !== null}
         label={t('bookInfo')}
         onClose={(coveredHalf) => {
-          setConfirmRemoveId(null);
-          useRouteStore.getState().closeSheet();
-          if (isEink) {
-            void refreshController.runTurn({
-              isEink,
-              cadence: settings.fullRefreshEvery,
-              closedSheetCoveredHalfScreen: coveredHalf,
-              swap: () => {},
-            });
-          }
+          useRouteStore.getState().closeSheetWithRefresh(coveredHalf, () => {
+            setConfirmRemoveId(null);
+          });
         }}
       >
         {infoBook && (
@@ -320,7 +315,7 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
               className="mb-list-row"
               onClick={() => {
                 void host.library.setFinished(infoBook.id, !infoBook.finished).then(() => {
-                  useRouteStore.getState().closeSheet();
+                  useRouteStore.getState().closeSheetWithRefresh();
                   void reloadBooks();
                 });
               }}
@@ -338,8 +333,9 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
                       readAloud.stop();
                     }
                     void host.library.remove(infoBook.id).then(() => {
-                      setConfirmRemoveId(null);
-                      useRouteStore.getState().closeSheet();
+                      useRouteStore.getState().closeSheetWithRefresh(undefined, () => {
+                        setConfirmRemoveId(null);
+                      });
                       void reloadBooks();
                     });
                   }}

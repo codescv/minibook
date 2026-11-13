@@ -112,13 +112,13 @@
   color: #FFFFFF;
 }
 
-/* R5 — Touch / Active Inversion Feedback */
-:root[data-eink="1"] button:active,
+/* R5 — Touch / Active Inversion Feedback (never invert disabled controls) */
+:root[data-eink="1"] button:not(:disabled):active,
 :root[data-eink="1"] [role="button"]:active,
 :root[data-eink="1"] [data-active="true"],
 :root[data-eink="1"] [aria-pressed="true"],
 :root[data-eink="1"] [aria-selected="true"],
-:root[data-eink="true"] button:active,
+:root[data-eink="true"] button:not(:disabled):active,
 :root[data-eink="true"] [role="button"]:active,
 :root[data-eink="true"] [data-active="true"],
 :root[data-eink="true"] [aria-pressed="true"],
@@ -128,14 +128,14 @@
   border-color: #000000 !important;
 }
 
-:root[data-eink="1"] button:active *,
+:root[data-eink="1"] button:not(:disabled):active *,
 :root[data-eink="1"] [data-active="true"] *,
 :root[data-eink="1"] [aria-pressed="true"] *,
 :root[data-eink="1"] [aria-selected="true"] * {
   color: #FFFFFF !important;
 }
 
-:root[data-eink="1"] button:active svg,
+:root[data-eink="1"] button:not(:disabled):active svg,
 :root[data-eink="1"] [data-active="true"] svg,
 :root[data-eink="1"] [aria-pressed="true"] svg,
 :root[data-eink="1"] [aria-selected="true"] svg {
@@ -146,11 +146,38 @@
   fill: #FFFFFF !important;
 }
 
-/* Disabled controls in E-Ink mode: 1px crisp solid #000000 border, zero fill (zero dash-cap AA) */
-:root[data-eink="1"] button:disabled {
-  border: 1px solid #000000 !important;
+/* Disabled controls in E-Ink mode (PRODUCT_DESIGN.md §8.2 R1):
+   Solid box border is suppressed; IconButton and Stepper render a crisp 1-bit
+   `shape-rendering: crispEdges` SVG 1px dashed border (avoiding Skia CSS dash-cap AA). */
+:root[data-eink="1"] button:disabled,
+:root[data-eink="true"] button:disabled {
+  border-color: transparent !important;
   background-color: #FFFFFF !important;
   color: #000000 !important;
+}
+
+/* R1 — Strip native browser <input> spin buttons & search cancel decorations */
+:root[data-eink="1"] input,
+:root[data-eink="true"] input {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+}
+
+:root[data-eink="1"] input::-webkit-outer-spin-button,
+:root[data-eink="1"] input::-webkit-inner-spin-button,
+:root[data-eink="1"] input::-webkit-search-cancel-button,
+:root[data-eink="1"] input::-webkit-search-decoration,
+:root[data-eink="1"] input::-webkit-search-results-button,
+:root[data-eink="1"] input::-webkit-search-results-decoration,
+:root[data-eink="true"] input::-webkit-outer-spin-button,
+:root[data-eink="true"] input::-webkit-inner-spin-button,
+:root[data-eink="true"] input::-webkit-search-cancel-button,
+:root[data-eink="true"] input::-webkit-search-decoration,
+:root[data-eink="true"] input::-webkit-search-results-button,
+:root[data-eink="true"] input::-webkit-search-results-decoration {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  display: none !important;
 }
 
 /* E-Ink Book Content Stroke Boldness Compensation */

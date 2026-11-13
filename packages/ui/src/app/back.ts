@@ -53,7 +53,7 @@ export function installGlobalBackHandler(): () => void {
   const onPopState = (): void => {
     if (handler()) {
       try {
-        window.history.pushState({ minibook: true }, '');
+        window.history.pushState({ minibook: 'sentinel' }, '');
       } catch {
         // ignore in restricted browsing contexts
       }
@@ -61,7 +61,11 @@ export function installGlobalBackHandler(): () => void {
   };
 
   try {
-    window.history.replaceState({ minibook: true }, '');
+    const curState = window.history.state as { minibook?: string } | null;
+    if (!curState || curState.minibook !== 'sentinel') {
+      window.history.replaceState({ minibook: 'root' }, '');
+      window.history.pushState({ minibook: 'sentinel' }, '');
+    }
   } catch {
     // ignore
   }
@@ -70,7 +74,6 @@ export function installGlobalBackHandler(): () => void {
   window.addEventListener('popstate', onPopState);
 
   return () => {
-    interceptors.length = 0;
     if (window.__minibookHandleBack === handler) {
       delete window.__minibookHandleBack;
     }

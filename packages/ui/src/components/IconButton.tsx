@@ -21,6 +21,27 @@ export function IconButton({
       data-active={active ? 'true' : undefined}
       {...rest}
     >
+      {rest.disabled && (
+        <svg
+          className="mb-eink-disabled-dash"
+          width="100%"
+          height="100%"
+          shapeRendering="crispEdges"
+          aria-hidden="true"
+        >
+          <rect
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeDasharray="4 4"
+            shapeRendering="crispEdges"
+          />
+        </svg>
+      )}
       {children}
     </button>
   );

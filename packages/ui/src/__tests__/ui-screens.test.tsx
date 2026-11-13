@@ -200,7 +200,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
         }),
       ).toBe(true);
 
-      // Contents PagedList sheet in E-Ink -> true
+      // Contents / Voice / Settings-Voice PagedList sheets in E-Ink -> true
       expect(
         computeKeyPolicyVolumePaging(einkSettings, androidHost, {
           screen: 'reader',
@@ -212,11 +212,33 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
         }),
       ).toBe(true);
 
-      // Non-list Appearance sheet -> false!
+      expect(
+        computeKeyPolicyVolumePaging(einkSettings, androidHost, {
+          screen: 'settings',
+          activeSheet: 'settings-voice',
+          imagePreviewUrl: null,
+          goToPercentOpen: false,
+          textInputFocused: false,
+          appVisible: true,
+        }),
+      ).toBe(true);
+
+      // Non-list Appearance & Custom-Server sheets -> false!
       expect(
         computeKeyPolicyVolumePaging(einkSettings, androidHost, {
           screen: 'reader',
           activeSheet: 'appearance',
+          imagePreviewUrl: null,
+          goToPercentOpen: false,
+          textInputFocused: false,
+          appVisible: true,
+        }),
+      ).toBe(false);
+
+      expect(
+        computeKeyPolicyVolumePaging(einkSettings, androidHost, {
+          screen: 'settings',
+          activeSheet: 'custom-server',
           imagePreviewUrl: null,
           goToPercentOpen: false,
           textInputFocused: false,

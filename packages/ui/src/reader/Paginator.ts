@@ -393,7 +393,37 @@ export class Paginator {
     return Math.max(0, Math.min(this.screenCount - 1, page));
   }
 
-  locatorAtPoint(x: number, y: number): Locator | null {
+  private pointHitsLocalOffset(x: number, y: number, localOffset: number): boolean {
+    if (this.textMap.length === 0) return false;
+    const candidates = [
+      Math.max(0, Math.min(this.textMap.length - 1, localOffset)),
+      Math.max(0, Math.min(this.textMap.length - 1, localOffset - 1)),
+    ];
+    for (const idx of candidates) {
+      const r = this.textMap.charRangeAt(idx);
+      if (!r) continue;
+      const rects = r.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i]!;
+        if (rect.width <= 0 && rect.height <= 0) continue;
+        if (
+          x >= rect.left - 8 &&
+          x <= rect.right + 8 &&
+          y >= rect.top - 6 &&
+          y <= rect.bottom + 6
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  locatorAtPoint(
+    x: number,
+    y: number,
+    options?: { readonly strictHitRect?: boolean },
+  ): Locator | null {
     const doc = this.frameDoc as Document & {
       caretPositionFromPoint?: (px: number, py: number) => { offsetNode: Node; offset: number } | null;
       caretRangeFromPoint?: (px: number, py: number) => Range | null;
@@ -404,6 +434,9 @@ export class Paginator {
       if (pos) {
         const local = this.textMap.offsetFromPointOrRangeNode(pos.offsetNode, pos.offset);
         if (local !== null) {
+          if (options?.strictHitRect && !this.pointHitsLocalOffset(x, y, local)) {
+            return null;
+          }
           return { section: this.sectionDoc.index, offset: this.sectionDoc.unit.start + local };
         }
       }
@@ -412,7 +445,16 @@ export class Paginator {
     if (typeof doc.caretRangeFromPoint === 'function') {
       const range = doc.caretRangeFromPoint(x, y);
       if (range) {
-        return this.locatorFromRange(range);
+        const local = this.textMap.offsetFromPointOrRangeNode(
+          range.startContainer,
+          range.startOffset,
+        );
+        if (local !== null) {
+          if (options?.strictHitRect && !this.pointHitsLocalOffset(x, y, local)) {
+            return null;
+          }
+          return { section: this.sectionDoc.index, offset: this.sectionDoc.unit.start + local };
+        }
       }
     }
 
