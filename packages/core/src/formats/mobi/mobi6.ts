@@ -1,9 +1,11 @@
+import { cleanTocHeading, fastCountMarkupChars, scanSanitizedBody } from '../../book/heading.js';
 import { sanitizeDocument } from '../../book/sanitize.js';
 import { type BuiltSectionUnits, buildSectionRenderUnits } from '../../book/text-model.js';
 import { MiniBookError } from '../../errors.js';
 import { concatBytes } from '../../io/binary.js';
 import { decodeBytesWithEncoding } from '../../io/encoding.js';
 import { parseHtmlDocument } from '../../markup/html.js';
+import { findFirst, localName, textContent } from '../../markup/mnode.js';
 import type {
   BookMeta,
   BookOpenHint,
@@ -118,42 +120,98 @@ export async function buildMobi6IndexFromStream(params: {
     sections[i] = { ...sections[i]!, anchors: sorted };
   }
 
-  const spine: SectionRef[] = sections.map((sec) => ({
-    index: sec.index,
-    linear: true,
-    sizeHint: Math.max(64, Math.floor((sec.byteEnd - sec.byteStart) * 0.7)),
-  }));
+  // Scan sections in memory (`textStream` is already loaded -> 0 extra reads!) for exact `charLength`,
+  // exact `mb-fp-<filepos>` anchor offsets, and clean sparse-TOC headings (`[P1-F1]`, `[P1-C2]`, `[P2]`).
+  const scannedMobi6 = new Map<
+    number,
+    { anchors: Map<string, number>; heading: string | null; countedChars: number }
+  >();
+  for (const sec of sections) {
+    try {
+      const byteLen = sec.byteEnd - sec.byteStart;
+      const rawSlice = textStream.subarray(sec.byteStart, sec.byteEnd);
+      if (byteLen <= 512 * 1024) {
+        const anchored = injectMobi6FileposAnchors(rawSlice, sec.byteStart, sec.anchors, header.encoding);
+        const htmlStr = decodeBytesWithEncoding(anchored, header.encoding);
+        const parsed = parseHtmlDocument(htmlStr);
+        const headTitleEl = findFirst(parsed, (n) => localName(n.tag).toLowerCase() === 'title');
+        const rawHeadTitle = headTitleEl ? textContent(headTitleEl) : '';
+        const sanitized = await sanitizeDocument(parsed, {
+          sectionPath: `section-${sec.index}.html`,
+          defaultLang: header.exth.language ?? header.localeLang,
+          defaultDir: header.exth.direction ?? 'ltr',
+        });
+        const info = scanSanitizedBody(sanitized.bodyChildren, rawHeadTitle, header.title);
+        scannedMobi6.set(sec.index, info);
+      } else {
+        // Oversized (> 512 KiB, e.g. 20 MiB single-section stream): parse first 8 KiB for heading
+        // and use O(N) `fastCountMarkupChars` (~15 ms for 20 MiB) for `countedChars`!
+        const headSlice = decodeBytesWithEncoding(rawSlice.subarray(0, 8192), header.encoding);
+        const parsedHead = parseHtmlDocument(headSlice);
+        const headTitleEl = findFirst(parsedHead, (n) => localName(n.tag).toLowerCase() === 'title');
+        const rawHeadTitle = headTitleEl ? textContent(headTitleEl) : '';
+        const sanitizedHead = await sanitizeDocument(parsedHead, {
+          sectionPath: `section-${sec.index}.html`,
+          defaultLang: header.exth.language ?? header.localeLang,
+          defaultDir: header.exth.direction ?? 'ltr',
+        });
+        const headInfo = scanSanitizedBody(sanitizedHead.bodyChildren, rawHeadTitle, header.title);
+        const fullHtml = decodeBytesWithEncoding(rawSlice, header.encoding);
+        const anchors = new Map<string, number>();
+        for (const fp of sec.anchors) {
+          if (fp > sec.byteStart && fp <= sec.byteEnd) {
+            const prefixHtml = decodeBytesWithEncoding(
+              textStream.subarray(sec.byteStart, fp),
+              header.encoding,
+            );
+            anchors.set(`mb-fp-${fp}`, fastCountMarkupChars(prefixHtml));
+          } else {
+            anchors.set(`mb-fp-${fp}`, 0);
+          }
+        }
+        scannedMobi6.set(sec.index, {
+          anchors,
+          heading: headInfo.heading,
+          countedChars: fastCountMarkupChars(fullHtml),
+        });
+      }
+    } catch {
+      // Fallback if malformed
+    }
+  }
+
+  const spine: SectionRef[] = sections.map((sec) => {
+    const sc = scannedMobi6.get(sec.index);
+    const estChars = sc ? sc.countedChars : Math.max(64, Math.floor((sec.byteEnd - sec.byteStart) * 0.7));
+    return {
+      index: sec.index,
+      linear: true,
+      sizeHint: Math.max(1, estChars),
+      ...(sc ? { charLength: sc.countedChars } : {}),
+    };
+  });
 
   let toc: TocItem[] = rawTocItems.map((t) => {
     const secIdx = findMobi6SectionForByteOffset(sections, t.filepos);
-    const sec = sections[secIdx]!;
-    // Compute tag-stripped character offset within `sec` when a section contains sub-anchors
-    let approxOff = 0;
-    if (t.filepos > sec.byteStart) {
-      const prefixStr = decodeBytesWithEncoding(
-        textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, t.filepos)),
-        header.encoding,
-      );
-      approxOff = prefixStr.replace(/<[^>]+>/g, '').length;
+    const exactOff = scannedMobi6.get(secIdx)?.anchors.get(`mb-fp-${t.filepos}`);
+    let approxOff = exactOff ?? 0;
+    if (exactOff === undefined) {
+      const sec = sections[secIdx]!;
+      if (t.filepos > sec.byteStart) {
+        const prefixStr = decodeBytesWithEncoding(
+          textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, t.filepos)),
+          header.encoding,
+        );
+        approxOff = prefixStr.replace(/<[^>]+>/g, '').length;
+      }
     }
     return {
-      title: t.title,
+      title: cleanTocHeading(t.title) ?? t.title,
       locator: { section: secIdx, offset: approxOff },
       href: `${secIdx}#mb-fp-${t.filepos}`,
       children: [],
     };
   });
-
-  const extractHeadingForMobi6Section = (sec: Mobi6SectionIndex): string => {
-    const sliceStr = decodeBytesWithEncoding(
-      textStream.subarray(sec.byteStart, Math.min(sec.byteEnd, sec.byteStart + 3072)),
-      header.encoding,
-    );
-    const hMatch = /<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]>/i.exec(sliceStr);
-    return hMatch?.[1]
-      ? hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-      : '';
-  };
 
   const coveredMobi6 = new Set(toc.map((t) => t.locator.section));
   if (toc.length === 0 || (sections.length >= 2 && coveredMobi6.size < sections.length * 0.5)) {
@@ -171,7 +229,11 @@ export async function buildMobi6IndexFromStream(params: {
         rebuilt.push(...existing);
         continue;
       }
-      const cleanTitle = extractHeadingForMobi6Section(sec) || `Section ${idx + 1}`;
+      const sc = scannedMobi6.get(sec.index);
+      if (sc && sc.countedChars === 0 && !sc.heading && sections.length > 1) {
+        continue;
+      }
+      const cleanTitle = sc?.heading || `Section ${idx + 1}`;
       spine[sec.index] = { ...spine[sec.index]!, title: cleanTitle };
       rebuilt.push({
         title: cleanTitle,
@@ -179,7 +241,7 @@ export async function buildMobi6IndexFromStream(params: {
         children: [],
       });
     }
-    toc = rebuilt;
+    if (rebuilt.length > 0) toc = rebuilt;
   }
 
   for (const item of toc) {

@@ -1,9 +1,10 @@
+import { cleanTocHeading, scanSanitizedBody } from '../../book/heading.js';
 import { sanitizeDocument } from '../../book/sanitize.js';
 import { type BuiltSectionUnits, buildSectionRenderUnits } from '../../book/text-model.js';
 import { MiniBookError } from '../../errors.js';
 import { MAX_ENTRY_BYTES_MARKUP, ZipArchive } from '../../io/zip.js';
 import { parseXhtmlOrHtml } from '../../markup/html.js';
-import { findFirst, getAttr, localName, type MNode, textContent } from '../../markup/mnode.js';
+import { findFirst, getAttr, localName, textContent } from '../../markup/mnode.js';
 import type {
   BookResource,
   BookSession,
@@ -86,17 +87,10 @@ interface ScannedSectionMeta {
   readonly countedChars: number;
 }
 
-function pickUsefulHeadTitle(headTitle: string, bookTitle: string): string | null {
-  if (!headTitle) return null;
-  if (headTitle.toLowerCase() === bookTitle.trim().toLowerCase()) return null;
-  if (/project gutenberg ebook/i.test(headTitle)) return null;
-  return headTitle;
-}
-
 /**
  * Parses and sanitizes an XHTML spine entry (without loading external CSS, since CSS never
  * alters `SectionText.text` or `[data-mb-skip]`) to extract exact `id -> countedCharOffset`
- * mappings and the section's first heading (`[P1-C2]` & `[P2]`).
+ * mappings, exact `countedChars`, and the section's clean heading (`[P1-C2]`, `[P1-F1]`, `[P2]`).
  */
 async function scanSectionAnchorsAndHeading(
   zip: ZipArchive,
@@ -111,7 +105,7 @@ async function scanSectionAnchorsAndHeading(
     const rawXhtml = await zip.readText(entry, MAX_ENTRY_BYTES_MARKUP);
     const docTree = parseXhtmlOrHtml(rawXhtml, false);
     const headTitleEl = findFirst(docTree, (n) => localName(n.tag).toLowerCase() === 'title');
-    const rawHeadTitle = headTitleEl ? textContent(headTitleEl).replace(/\s+/g, ' ').trim() : '';
+    const rawHeadTitle = headTitleEl ? textContent(headTitleEl) : '';
 
     const sanitized = await sanitizeDocument(docTree, {
       sectionPath: href,
@@ -119,41 +113,11 @@ async function scanSectionAnchorsAndHeading(
       defaultDir,
     });
 
-    const anchors = new Map<string, number>();
-    let firstHeading: string | null = null;
-    let firstShortBlock: string | null = null;
-    let cursor = 0;
-
-    const walk = (nodes: readonly MNode[]) => {
-      for (const n of nodes) {
-        if (n.type === 'text') {
-          cursor += n.value.length;
-          continue;
-        }
-        const idVal = n.attrs['id'];
-        if (idVal && !anchors.has(idVal)) {
-          anchors.set(idVal, cursor);
-        }
-        if ('data-mb-skip' in n.attrs) continue;
-        if (!firstHeading && n.ns === 'xhtml' && /^h[1-6]$/.test(n.tag)) {
-          const hText = textContent(n).replace(/\s+/g, ' ').trim();
-          if (hText) firstHeading = hText;
-        } else if (!firstShortBlock && n.ns === 'xhtml' && (n.tag === 'p' || n.tag === 'div')) {
-          const bText = textContent(n).replace(/\s+/g, ' ').trim();
-          if (bText && bText.length <= 60 && !/[。！？.!?]$/.test(bText)) {
-            firstShortBlock = bText;
-          }
-        }
-        walk(n.children);
-      }
-    };
-    walk(sanitized.bodyChildren);
-
+    const bodyInfo = scanSanitizedBody(sanitized.bodyChildren, rawHeadTitle, bookTitle);
     return {
-      anchors,
-      firstHeading:
-        firstHeading ?? pickUsefulHeadTitle(rawHeadTitle, bookTitle) ?? firstShortBlock ?? null,
-      countedChars: cursor,
+      anchors: bodyInfo.anchors,
+      firstHeading: bodyInfo.heading,
+      countedChars: bodyInfo.countedChars,
     };
   } catch {
     return null;
@@ -351,8 +315,17 @@ export async function buildEpubIndex(
     return scanned;
   };
 
-  // 1. Sparse TOC check (`[P2]`: e.g. Gutenberg zh EPUBs with 1 license TOC entry for 13 chapters)
+  // 1. Pre-scan all spine sections at `inspectBook` time (or on `<= 1.75 MiB` archives within `<= 4` coalesced reads)
+  // so `SectionRef.charLength` & `sizeHint` are exact counted character lengths (`[P1-F1]`)!
   const linearSpine = spineWithTitles.filter((s) => s.linear);
+  if (isInspect || src.size <= 1792 * 1024) {
+    await prewarmSectionsForScan(spineWithTitles.map((s) => s.index));
+    for (const s of spineWithTitles) {
+      await ensureScannedSection(s.index);
+    }
+  }
+
+  // 2. Sparse TOC check (`[P2]`: e.g. Gutenberg zh EPUBs with 1 license TOC entry for 13 chapters)
   const coveredSections = collectCoveredSections(toc);
   const isSparseToc =
     toc.length === 0 || (linearSpine.length >= 2 && coveredSections.size < linearSpine.length * 0.5);
@@ -371,7 +344,12 @@ export async function buildEpubIndex(
       const s = linearSpine[idx]!;
       const existingItems = existingBySection.get(s.index);
       if (existingItems && existingItems.length > 0) {
-        rebuiltToc.push(...existingItems);
+        rebuiltToc.push(
+          ...existingItems.map((it) => ({
+            ...it,
+            title: cleanTocHeading(it.title) ?? it.title,
+          })),
+        );
         continue;
       }
       const scanned = await ensureScannedSection(s.index);
@@ -379,8 +357,9 @@ export async function buildEpubIndex(
       if (scanned && scanned.countedChars === 0 && !scanned.firstHeading && linearSpine.length > 1) {
         continue;
       }
-      const heading = scanned?.firstHeading ?? s.title ?? `Section ${idx + 1}`;
-      spineWithTitles[s.index] = { ...s, title: heading };
+      const heading =
+        scanned?.firstHeading ?? cleanTocHeading(s.title) ?? `Section ${idx + 1}`;
+      spineWithTitles[s.index] = { ...spineWithTitles[s.index]!, title: heading };
       rebuiltToc.push({
         title: heading,
         locator: { section: s.index, offset: 0 },
@@ -391,7 +370,7 @@ export async function buildEpubIndex(
     toc = rebuiltToc.length > 0 ? rebuiltToc : buildFallbackSpineToc(spineWithTitles);
   }
 
-  // 2. Resolve exact `#fragment` character offsets for TOC entries (`[P1-C2]`)
+  // 3. Resolve exact `#fragment` character offsets for TOC entries (`[P1-C2]`)
   const fragSections = collectFragmentSections(toc);
   if (fragSections.size > 0) {
     await prewarmSectionsForScan(fragSections);
@@ -400,6 +379,22 @@ export async function buildEpubIndex(
     }
     if (scannedMeta.size > 0) {
       toc = applyResolvedTocFragmentOffsets(toc, scannedMeta);
+    }
+  }
+
+  // 4. Populate `charLength` on every scanned spine item; if all linear sections were scanned,
+  // also set `sizeHint` to counted character length so inter-section weights are 100% char-based (`[P1-F1]`)!
+  const allLinearScanned =
+    linearSpine.length > 0 && linearSpine.every((s) => scannedMeta.has(s.index));
+  for (let i = 0; i < spineWithTitles.length; i++) {
+    const sc = scannedMeta.get(i);
+    if (sc !== undefined) {
+      const cur = spineWithTitles[i]!;
+      spineWithTitles[i] = {
+        ...cur,
+        charLength: sc.countedChars,
+        ...(allLinearScanned ? { sizeHint: Math.max(1, sc.countedChars) } : {}),
+      };
     }
   }
 
@@ -455,6 +450,7 @@ export async function inspectEpub(src: ByteSource, existingZip?: ZipArchive): Pr
 
 export function createEpubSession(src: ByteSource, index: EpubBookIndex, preOpenedZip?: ZipArchive): BookSession {
   const zip = preOpenedZip ?? new ZipArchive(src, index.entries);
+  const spineRefs: SectionRef[] = index.spine.map((s) => ({ ...s }));
   const sheetCache = new LruCache<string, string>(16);
   const sectionCache = new LruCache<number, BuiltSectionUnits>(4);
   const anchorOffsetCache = new Map<number, Map<string, number>>();
@@ -565,6 +561,13 @@ export function createEpubSession(src: ByteSource, index: EpubBookIndex, preOpen
       isCoverLike: sanitized.isCoverLike,
     });
 
+    if (spineRefs[sectionIndex] && spineRefs[sectionIndex]!.charLength === undefined) {
+      spineRefs[sectionIndex] = {
+        ...spineRefs[sectionIndex]!,
+        charLength: built.fullText.text.length,
+      };
+    }
+
     sectionCache.set(sectionIndex, built);
     return built;
   };
@@ -572,7 +575,7 @@ export function createEpubSession(src: ByteSource, index: EpubBookIndex, preOpen
   return {
     meta: index.meta,
     toc: index.toc as TocItem[],
-    spine: index.spine,
+    spine: spineRefs,
 
     async loadSection(sectionIndex: number, unitIndex = 0): Promise<SectionDoc> {
       const built = await buildUnitsForSection(sectionIndex);

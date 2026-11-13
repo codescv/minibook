@@ -122,8 +122,10 @@ export interface SectionRef {
   readonly href?: string;
   readonly title?: string;
   readonly linear: boolean;
-  /** Bytes/chars weight of counted text; used for whole-book `%` (`fraction`) math. */
+  /** Section weight used for whole-book `%` (`fraction`) math (exact chars when all sections are known, else bytes). */
   readonly sizeHint: number;
+  /** Exact counted character length (`SectionText.text.length`) when known; persisted in `BookIndex` and populated on load. */
+  readonly charLength?: number;
 }
 
 export type TextBlockKind = 'p' | 'h' | 'li' | 'cell' | 'quote' | 'pre' | 'other';
