@@ -3,8 +3,8 @@
 **Books** (`codescv/minibook`) is a calm, Apple Books-inspired minimalist cross-platform ebook reader with **Read Aloud (TTS)** and **Android E-Ink Mode (`墨水屏模式`)**. It ships as a **standalone Android APK (`dev.minibook.app`)**, a **cross-platform PC Web App (`minibook`)** for macOS, Linux, and Windows, and a **native iOS Capacitor 8 host** — built on a **100% pure TypeScript core** with **zero native `.node` C++/Rust addons**, **zero accounts**, and **zero cloud lock-in**.
 
 - **GitHub Repository**: <https://github.com/codescv/minibook>
-- **Latest Release (`v0.1.0`)**: <https://github.com/codescv/minibook/releases/tag/v0.1.0>
-  - **Android APK (`dev.minibook.app`, `application-label: 'Books'`, `minSdk 26` / `targetSdk 36`)**: [`minibook-v0.1.0.apk`](https://github.com/codescv/minibook/releases/download/v0.1.0/minibook-v0.1.0.apk)
+- **Latest Release (`v0.2.0`)**: <https://github.com/codescv/minibook/releases/tag/v0.2.0>
+  - **Android APK (`dev.minibook.app`, `application-label: 'Books'`, `minSdk 26` / `targetSdk 36`, `versionCode 2`)**: [`minibook-v0.2.0.apk`](https://github.com/codescv/minibook/releases/download/v0.2.0/minibook-v0.2.0.apk)
 
 ---
 
@@ -20,7 +20,21 @@
   - Bundled variable **Literata** serif + CJK serif/sans stacks, integer CSS multicol geometry (`Cw <= 34em`, even gutter `G`, exact `n * (Cw + G) == Vw`), responsive **2-column desktop spread** at `>= 1100px`, constant-geometry 1-tap chrome (zero text reflow when opening toolbars), virtual render units for `> 40,000`-char chapters, and sticky character re-anchoring across font/margin/rotation changes.
   - **4-Layer Isolation**: DOM-free allowlist XHTML/SVG/CSS sanitizer (decoding CSS hex escapes & blocking `image-set` remote URLs) -> app CSP -> per-frame `script-src 'none'; connect-src 'none'` CSP -> sandboxed `about:blank` `SectionFrame` iframes without native bridge objects.
 
-### 2. Three-Tier Read Aloud (TTS) Architecture
+### 2. Multi-Tier Read Aloud (TTS) Architecture (On-Device Neural, Local GPU, Edge & System)
+- **Built-In On-Device Neural Voice (`Kokoro-82M v1.1-zh`, Offline, 103 Voices)**:
+  - **Pure-TS Multilingual G2P**: Zero-dependency Chinese & English grapheme-to-phoneme engine (`@minibook/core` `createKokoroG2P`: `jieba` + `pypinyin` + `cn2an` + `ToneSandhi` + US English lexicon/LTS) with bundled `.gz` dictionaries, WordMark timing spans, and `<= 400`-token chunking.
+  - **Cross-Platform Local Neural Runtimes**:
+    - **Mac / PC Web App (`@minibook/host-node`)**: `onnxruntime-web` in a Web Worker (`kokoro.worker.ts`) trying WebGPU first and falling back to multi-threaded WASM SIMD (`model.onnx` fp32), served with COOP/COEP/CORP isolation and `'wasm-unsafe-eval'` CSP.
+    - **Android (`@minibook/host-android`)**: `com.microsoft.onnxruntime:onnxruntime-android:1.32.0` (`KokoroOnnxBackend` + `KokoroSynthQueue` on a dedicated `HandlerThread` inside `ReadAloudService` over `model_quantized.onnx`) with a 45 s / 12-utterance lookahead queue.
+    - **iOS (`//experimental/users/chii/ios/minibook`)**: 7-stage `FluidInference/kokoro-82m-coreml` (`ANE-zh`) Core ML pipeline on a serial background `DispatchQueue` with 16 KB page-padded `MLMultiArray` buffers.
+  - **CN-Resilient Resumable Model Downloader**: Automatic `huggingface.co` <-> `hf-mirror.com` (plus custom mirror) fallback, strict redirect host-suffix allowlist (`huggingface.co`, `hf-mirror.com`, `*.hf.co`, `*.huggingface.co`, `*.hf-mirror.com`), HTTP 206 `Range` `.part` pause/resume/cancel, and streaming SHA-256 verification against `kokoro-manifest.json`.
+- **Local / LAN GPU Server (`QwenSpeechProvider` — `Qwen3-TTS` & `mlx-audio`)**:
+  - Connects to local or LAN GPU speech servers across `mlx-audio` (`/v1/audio/speech`), `vllm-omni`, and `qwen-native` (`/synthesize` with `>30s` sentence splitting and WAV concatenation), with 1-tap `Test` and optional `qwen-api-key` host secret storage.
+  - Apple Silicon Macs can start a LAN Metal GPU server in one command:
+    ```bash
+    bash scripts/mac-gpu-tts-server.sh [qwen-0.6b|qwen-1.7b|kokoro]
+    ```
+    (automatically sets `HF_ENDPOINT=https://hf-mirror.com` if `huggingface.co` is unreachable).
 - **Tier 0 — System Voices (Default, Offline, Zero Setup)**:
   - Browser `speechSynthesis` on Desktop, `AVSpeechSynthesizer` on iOS, and native Android `TextToSpeech` enumerating **all installed TTS engines** — including Google TTS, **MultiTTS**, and **sherpa-onnx** (Kokoro / Piper / Matcha / VITS local neural voices), respecting engine `getMaxSpeechInputLength()`.
 - **Tier 1 — Edge Neural Voices (Opt-In)**:
@@ -52,7 +66,8 @@ minibook/
 ├── e2e/                     # Playwright Chromium E2E suite (multicol geometry, 4-layer CSP, 2-colour E-Ink histogram)
 ├── scripts/
 │   ├── check-native-deps.mjs # Verifies 0 native .node / node-gyp addons in runtime dependency tree
-│   └── bump-version.mjs      # Synchronizes package versions + Android versionCode/versionName
+│   ├── bump-version.mjs      # Synchronizes package versions + Android versionCode/versionName
+│   └── mac-gpu-tts-server.sh # One-command Apple Silicon Metal GPU mlx-audio TTS server launcher
 └── packages/
     ├── core/                # @minibook/core — Pure TypeScript (0 DOM / Node / platform globals):
     │                        #   EPUB/KF8/MOBI/FB2/TXT/MD parsers, sanitizer, locator math, segmenter & TTS providers
@@ -126,7 +141,7 @@ Output APK:
 packages/host-android/android/app/build/outputs/apk/release/app-release.apk
 ```
 
-Run Android JVM unit tests (`KeyPolicyTest`, `EinkDetectorTest`, `BoundedReadTest`, `ReadAloudQueueTest`):
+Run Android JVM unit tests (`KeyPolicyTest`, `EinkDetectorTest`, `BoundedReadTest`, `ReadAloudQueueTest`, `ModelDownloadManagerTest`, `KokoroVoicePackTest`, `KokoroSynthQueueTest`):
 ```bash
 cd packages/host-android/android && ./gradlew testDebugUnitTest
 ```
