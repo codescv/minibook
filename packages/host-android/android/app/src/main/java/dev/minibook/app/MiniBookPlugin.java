@@ -175,19 +175,12 @@ public class MiniBookPlugin extends Plugin {
                     arr.put(toJSObject(f));
                 }
                 ev.put("files", arr);
-                live.notifyListeners("incoming-file", ev, true);
+                live.notifyListeners("incoming-file", ev, false);
             } else {
+                // Queue exclusively in PENDING_INCOMING_FILES (drained once by importConsumePending)
+                // without retained notifyListeners so cold-launch Open-With never imports twice.
                 synchronized (PENDING_INCOMING_FILES) {
                     PENDING_INCOMING_FILES.addAll(copied);
-                }
-                if (live != null) {
-                    JSObject ev = new JSObject();
-                    JSArray arr = new JSArray();
-                    for (JSONObject f : copied) {
-                        arr.put(toJSObject(f));
-                    }
-                    ev.put("files", arr);
-                    live.notifyListeners("incoming-file", ev, true);
                 }
             }
         });
@@ -569,7 +562,10 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
-                Map<String, String> headers = substituteSecretHeaders(jsonObjectToMap(rawHeaders));
+                Map<String, String> headers = substituteSecretHeaders(
+                    jsonObjectToMap(rawHeaders),
+                    parsedUrl
+                );
                 OkHttpClient client = okHttp.newBuilder()
                     .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                     .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
@@ -658,7 +654,6 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
-                Map<String, String> headers = substituteSecretHeaders(jsonObjectToMap(rawHeaders));
                 String httpEquiv = rawUrl
                     .replaceFirst("(?i)^wss://", "https://")
                     .replaceFirst("(?i)^ws://", "http://");
@@ -667,6 +662,10 @@ public class MiniBookPlugin extends Plugin {
                     call.reject("Invalid WebSocket URL: " + rawUrl, "invalid-argument");
                     return;
                 }
+                Map<String, String> headers = substituteSecretHeaders(
+                    jsonObjectToMap(rawHeaders),
+                    parsed
+                );
 
                 Request.Builder rb = new Request.Builder().url(rawUrl);
                 for (Map.Entry<String, String> entry : headers.entrySet()) {
@@ -1245,9 +1244,35 @@ public class MiniBookPlugin extends Plugin {
         }
     }
 
-    private Map<String, String> substituteSecretHeaders(Map<String, String> raw)
-        throws MissingSecretException {
+    private Map<String, String> substituteSecretHeaders(
+        Map<String, String> raw,
+        HttpUrl targetUrl
+    ) throws MissingSecretException {
         if (raw.isEmpty()) return raw;
+
+        boolean hasSecretPlaceholder = false;
+        for (String val : raw.values()) {
+            if (SECRET_PATTERN.matcher(val).find()) {
+                hasSecretPlaceholder = true;
+                break;
+            }
+        }
+        if (!hasSecretPlaceholder) {
+            return raw;
+        }
+
+        // Restrict {{secret:*}} substitution strictly to the configured customSpeechServer origin
+        HttpUrl allowedOrigin = readConfiguredCustomSpeechOrigin();
+        if (allowedOrigin == null
+            || !targetUrl.scheme().equalsIgnoreCase(allowedOrigin.scheme())
+            || !targetUrl.host().equalsIgnoreCase(allowedOrigin.host())
+            || targetUrl.port() != allowedOrigin.port()) {
+            throw new MissingSecretException(
+                "Secret header substitution denied for unconfigured origin: "
+                    + targetUrl.scheme() + "://" + targetUrl.host()
+            );
+        }
+
         SharedPreferences prefs = getSecretsPrefs();
         Map<String, String> out = new HashMap<>(raw.size());
         for (Map.Entry<String, String> e : raw.entrySet()) {
@@ -1266,6 +1291,27 @@ public class MiniBookPlugin extends Plugin {
             out.put(e.getKey(), sb.toString());
         }
         return out;
+    }
+
+    @Nullable
+    private HttpUrl readConfiguredCustomSpeechOrigin() {
+        try {
+            File settingsFile = AtomicFiles.resolveInJail(
+                getMiniBookDataRoot(),
+                "settings.json",
+                false
+            );
+            if (!settingsFile.exists() || !settingsFile.isFile()) return null;
+            byte[] raw = java.nio.file.Files.readAllBytes(settingsFile.toPath());
+            JSONObject obj = new JSONObject(new String(raw, StandardCharsets.UTF_8));
+            JSONObject custom = obj.optJSONObject("customSpeechServer");
+            if (custom == null) return null;
+            String baseUrl = custom.optString("baseUrl", "").trim();
+            if (baseUrl.isEmpty()) return null;
+            return HttpUrl.parse(baseUrl);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static JSObject toJSObject(JSONObject obj) {

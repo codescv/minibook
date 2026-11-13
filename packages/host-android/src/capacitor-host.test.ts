@@ -22,6 +22,7 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
   readonly pendingImports: NativePickedFile[] = [];
   readonly pickedFiles: NativePickedFile[] = [];
   readonly fsReadCalls: Array<{ path: string; offset: number; length: number }> = [];
+  readonly speechLog: string[] = [];
   keepScreenOnCalls: boolean[] = [];
   immersiveCalls: boolean[] = [];
   keyPolicyCalls: boolean[] = [];
@@ -237,16 +238,36 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
     };
   }
 
-  async speechLoad() {}
-  async speechEnqueue() {}
-  async speechAttachAudio() {}
-  async speechPlay() {}
-  async speechPause() {}
-  async speechStop() {}
-  async speechSeekTo() {}
-  async speechSetRate() {}
-  async speechSetVoice() {}
-  async speechSetSleepTimer() {}
+  async speechLoad() {
+    this.speechLog.push('load');
+  }
+  async speechEnqueue() {
+    this.speechLog.push('enqueue');
+  }
+  async speechAttachAudio(opts: { id: string }) {
+    this.speechLog.push(`attachAudio:${opts.id}`);
+  }
+  async speechPlay() {
+    this.speechLog.push('play');
+  }
+  async speechPause() {
+    this.speechLog.push('pause');
+  }
+  async speechStop() {
+    this.speechLog.push('stop');
+  }
+  async speechSeekTo(opts: { id: string }) {
+    this.speechLog.push(`seekTo:${opts.id}`);
+  }
+  async speechSetRate(opts: { rate: number }) {
+    this.speechLog.push(`setRate:${opts.rate}`);
+  }
+  async speechSetVoice() {
+    this.speechLog.push('setVoice');
+  }
+  async speechSetSleepTimer() {
+    this.speechLog.push('setSleepTimer');
+  }
   async speechGetState() {
     return {
       status: 'idle' as const,
@@ -519,5 +540,109 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
       { type: 'speech-fallback', reason: 'network timeout', utteranceId: '0:20-40' },
     ]);
     unsub();
+  });
+
+  it('preserves strict FIFO command order in NativeSpeechPlayer, dedupes incoming-file, and persists speech cache index', async () => {
+    const bridge = new InMemoryNativeBridge();
+    bridge.pendingImports.push({
+      tempPath: 'tmp/incoming_cold_1.epub',
+      name: 'ColdLaunch.epub',
+      size: 4096,
+    });
+    const plugin = wrapNativeBridge(bridge);
+
+    // 1. Cold NativeSpeechPlayer (before listeners attached): synchronous burst must NOT reorder!
+    const player = new NativeSpeechPlayer(plugin);
+    player.enqueue([
+      {
+        id: '0:0-12',
+        section: 0,
+        start: 0,
+        end: 12,
+        blockIndex: 0,
+        text: 'Hello world.',
+        lang: 'en',
+        pauseAfterMs: 200,
+      },
+    ]);
+    player.seekTo('0:0-12');
+    player.play();
+    player.pause();
+    await player.getState();
+
+    expect(bridge.speechLog).toEqual(['enqueue', 'seekTo:0:0-12', 'play', 'pause']);
+
+    // 2. Cold-launch incoming-file deduplication + cold byteSource not-found guard
+    let synthCalls = 0;
+    const host1 = createCapacitorPlatformHost({
+      plugin,
+      platform: 'android',
+      fetchImpl: null,
+      edgeProvider: {
+        async synthesize() {
+          synthCalls += 1;
+          return {
+            audio: new Uint8Array([1, 2, 3, 4]),
+            mime: 'audio/mpeg',
+            durationMs: 900,
+            marks: [{ start: 0, end: 5, timeMs: 0 }],
+          };
+        },
+        async listVoices() {
+          return [];
+        },
+      },
+    });
+
+    expect(() => host1.files.byteSource('b_cold_unloaded')).toThrow(/not loaded/);
+
+    const incomingSeen: Array<readonly { tempPath?: string; name: string; size: number }[]> = [];
+    const unsubHost = host1.subscribe((ev) => {
+      if (ev.type === 'incoming-file') {
+        incomingSeen.push([...ev.files]);
+      }
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    // Re-emitting the same tempPath is deduplicated so it is never imported twice!
+    bridge.emitEvent('incoming-file', {
+      files: [{ tempPath: 'tmp/incoming_cold_1.epub', name: 'ColdLaunch.epub', size: 4096 }],
+    });
+    expect(incomingSeen.length).toBe(1);
+    expect(incomingSeen[0]?.length).toBe(1);
+    unsubHost();
+
+    // 3. Persistent speech-cache-index.json survives relaunch (new host instance)
+    const r1 = await host1.speech.synthesize({
+      engine: 'edge',
+      voiceId: 'en-US-AvaMultilingualNeural',
+      text: 'Persistent sentence.',
+      lang: 'en',
+    });
+    expect(r1.cached).toBe(false);
+    expect(synthCalls).toBe(1);
+
+    const host2 = createCapacitorPlatformHost({
+      plugin,
+      platform: 'android',
+      fetchImpl: null,
+      edgeProvider: {
+        async synthesize() {
+          synthCalls += 1;
+          throw new Error('Should not re-synthesize on cache hit');
+        },
+        async listVoices() {
+          return [];
+        },
+      },
+    });
+    const r2 = await host2.speech.synthesize({
+      engine: 'edge',
+      voiceId: 'en-US-AvaMultilingualNeural',
+      text: 'Persistent sentence.',
+      lang: 'en',
+    });
+    expect(r2.cached).toBe(true);
+    expect(r2.ref).toBe(r1.ref);
+    expect(synthCalls).toBe(1);
   });
 });

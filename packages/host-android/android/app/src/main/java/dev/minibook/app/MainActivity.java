@@ -112,7 +112,9 @@ public class MainActivity extends BridgeActivity {
 
                 safeTopDp = bars.top / density;
                 safeRightDp = bars.right / density;
-                safeBottomDp = (kbVisible ? 0f : bars.bottom / density);
+                // Keep --m-safe-bottom constant even when soft keyboard (IME) opens in Search sheet,
+                // preventing reader pagination reflow (`UI_SPEC.md` §3.3).
+                safeBottomDp = bars.bottom / density;
                 safeLeftDp = bars.left / density;
 
                 int imePadBottom = kbVisible && ime.bottom > bars.bottom ? ime.bottom : 0;

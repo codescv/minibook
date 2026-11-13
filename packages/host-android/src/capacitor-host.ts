@@ -46,9 +46,12 @@ import {
 } from './speech/plugin-transports.js';
 import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
-import { bytesToBase64 } from './storage/base64.js';
+import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
 export const CAPACITOR_HOST_VERSION = '0.1.0';
+
+const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
+const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
 
 const SECRET_CANDIDATES = [
   'custom-speech-key',
@@ -104,6 +107,7 @@ interface CachedAudioMeta {
   readonly bytes: number;
   readonly durationMs?: number;
   readonly marks?: readonly WordMark[];
+  readonly lastUsed: number;
 }
 
 function detectCapacitorPlatform(explicit?: 'android' | 'ios'): HostPlatform {
@@ -121,7 +125,6 @@ async function computeFallbackSha1BookId(src: ByteSource): Promise<BookId> {
   try {
     return await computeBookId(src);
   } catch {
-    // Fallback on main scaffold where computeBookId is a stub
     const sample = 256 * 1024;
     const headLen = Math.min(src.size, sample);
     const tailStart = Math.max(0, src.size - sample);
@@ -173,8 +176,10 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
 
   const listeners = new Set<(event: HostEvent) => void>();
   const tickets = new Map<string, InternalTicket>();
-  const audioMemCache = new Map<string, CachedAudioMeta>();
+  const audioCacheIndex = new Map<string, CachedAudioMeta>();
   const synthFlights = new Map<string, Promise<SynthResult>>();
+  const seenIncomingTempPaths = new Set<string>();
+  let cacheIndexLoaded: Promise<void> | null = null;
   let ticketCounter = 0;
   let lastSecretName: string | null = null;
   let nativeListenersAttached = false;
@@ -194,6 +199,80 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         // isolate subscriber errors
       }
     }
+  }
+
+  function emitDedupedIncomingFiles(files: readonly NativePickedFile[]): void {
+    const fresh: NativePickedFile[] = [];
+    for (const f of files) {
+      if (!f.tempPath) continue;
+      if (seenIncomingTempPaths.has(f.tempPath)) continue;
+      seenIncomingTempPaths.add(f.tempPath);
+      fresh.push(f);
+    }
+    if (fresh.length > 0) {
+      emit({ type: 'incoming-file', files: fresh });
+    }
+  }
+
+  async function ensureSpeechCacheIndexLoaded(): Promise<void> {
+    if (cacheIndexLoaded) return cacheIndexLoaded;
+    cacheIndexLoaded = (async () => {
+      try {
+        const diskBytes = await plugin.speech.cacheSize();
+        if (diskBytes <= 0) {
+          // OS purged <caches>/speech/ or cache is empty -> reset sidecar
+          await plugin.fs.remove({ path: SPEECH_CACHE_INDEX_PATH }).catch(() => undefined);
+          return;
+        }
+        const st = await plugin.fs.stat({ path: SPEECH_CACHE_INDEX_PATH });
+        if (!st.exists || !st.size || st.size <= 0 || st.size > 1024 * 1024) return;
+        const res = await plugin.fs.read({
+          path: SPEECH_CACHE_INDEX_PATH,
+          offset: 0,
+          length: st.size,
+        });
+        const parsed = JSON.parse(
+          new TextDecoder().decode(base64ToBytes(res.base64)),
+        ) as Record<string, CachedAudioMeta>;
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (v && typeof v.path === 'string' && typeof v.bytes === 'number') {
+              audioCacheIndex.set(k, v);
+            }
+          }
+        }
+      } catch {
+        // ignore missing or corrupt cache index sidecar
+      }
+    })();
+    return cacheIndexLoaded;
+  }
+
+  async function persistSpeechCacheIndex(): Promise<void> {
+    let total = 0;
+    for (const entry of audioCacheIndex.values()) {
+      total += entry.bytes;
+    }
+    if (total > SPEECH_CACHE_SOFT_CAP_BYTES) {
+      const sorted = [...audioCacheIndex.entries()].sort(
+        (a, b) => a[1].lastUsed - b[1].lastUsed,
+      );
+      for (const [k, v] of sorted) {
+        if (total <= SPEECH_CACHE_SOFT_CAP_BYTES) break;
+        audioCacheIndex.delete(k);
+        total -= v.bytes;
+      }
+    }
+    const obj: Record<string, CachedAudioMeta> = {};
+    for (const [k, v] of audioCacheIndex.entries()) {
+      obj[k] = v;
+    }
+    await plugin.fs
+      .writeAtomic({
+        path: SPEECH_CACHE_INDEX_PATH,
+        text: JSON.stringify(obj),
+      })
+      .catch(() => undefined);
   }
 
   // Probe native device info asynchronously at startup (`EinkDetector` on Android)
@@ -226,14 +305,13 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       nativeHandles.push(
         await plugin.addListener('incoming-file', (ev) => {
           if (ev.files && ev.files.length > 0) {
-            emit({ type: 'incoming-file', files: ev.files });
+            emitDedupedIncomingFiles(ev.files);
           }
         }),
       );
-      // Drain any cold-launch Open-With / Share files queued before JS mounted
       const pending = await plugin.import.consumePending().catch(() => []);
       if (pending.length > 0) {
-        emit({ type: 'incoming-file', files: pending });
+        emitDedupedIncomingFiles(pending);
       }
     } catch {
       nativeListenersAttached = false;
@@ -304,7 +382,6 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         let tempPath = src.sourceRef;
 
         if (!tempPath) {
-          // Stage in-memory or non-SAF ByteSource into MiniBookData/tmp/
           tempPath = `tmp/stage_${ticketId}.bin`;
           let pos = 0;
           while (pos < src.size) {
@@ -356,14 +433,16 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
         tickets.delete(ticket.ticketId);
 
         const book = await store.commitImport({
-          bookId: internal.bookId ?? (await computeFallbackSha1BookId(
-            new PluginByteSource({
-              plugin,
-              path: internal.tempPath,
-              size: 0,
-              ...(options?.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
-            }),
-          )),
+          bookId:
+            internal.bookId ??
+            (await computeFallbackSha1BookId(
+              new PluginByteSource({
+                plugin,
+                path: internal.tempPath,
+                size: 0,
+                ...(options?.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+              }),
+            )),
           tempPath: internal.tempPath,
           fileName: internal.fileName,
           stagedDerivedPath: internal.derivedBytes > 0 ? internal.stagedDerivedPath : null,
@@ -402,11 +481,14 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
 
       byteSource(bookId: BookId, part: 'book' | 'text' = 'book'): ByteSource {
         const cached = store.getCachedPaths(bookId);
-        const path =
-          part === 'text'
-            ? (cached?.derivedPath ?? `books/${bookId}/text.bin`)
-            : (cached?.bookPath ?? `books/${bookId}/book.epub`);
-        const size = part === 'text' ? (cached?.derivedSize ?? 0) : (cached?.size ?? 0);
+        if (!cached) {
+          throw new MiniBookError(
+            'not-found',
+            `Book paths not loaded for ${bookId} (call library.get or library.list first)`,
+          );
+        }
+        const path = part === 'text' ? cached.derivedPath : cached.bookPath;
+        const size = part === 'text' ? cached.derivedSize : cached.size;
         return new PluginByteSource({
           plugin,
           path,
@@ -477,6 +559,7 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
 
     speech: {
       async synthesize(req: SynthRequest, signal?: AbortSignal): Promise<SynthResult> {
+        await ensureSpeechCacheIndexLoaded();
         const settings = await store.getSettings();
         const effectiveModel =
           req.engine === 'openai'
@@ -489,15 +572,16 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           text: req.text,
         });
 
-        const memHit = audioMemCache.get(key);
-        if (memHit) {
+        const hit = audioCacheIndex.get(key);
+        if (hit && (await plugin.speech.cacheSize()) > 0) {
+          audioCacheIndex.set(key, { ...hit, lastUsed: Date.now() });
           return {
-            ref: memHit.path,
-            mime: memHit.mime,
-            ...(memHit.durationMs !== undefined ? { durationMs: memHit.durationMs } : {}),
-            ...(memHit.marks !== undefined ? { marks: memHit.marks } : {}),
+            ref: hit.path,
+            mime: hit.mime,
+            ...(hit.durationMs !== undefined ? { durationMs: hit.durationMs } : {}),
+            ...(hit.marks !== undefined ? { marks: hit.marks } : {}),
             synthMs: 0,
-            bytes: memHit.bytes,
+            bytes: hit.bytes,
             cached: true,
           };
         }
@@ -530,8 +614,10 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
               bytes: saved.bytes,
               ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
               marks: out.marks,
+              lastUsed: Date.now(),
             };
-            audioMemCache.set(key, entry);
+            audioCacheIndex.set(key, entry);
+            await persistSpeechCacheIndex();
             return {
               ref: saved.path,
               mime: out.mime,
@@ -574,8 +660,10 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
             mime: out.mime,
             bytes: saved.bytes,
             ...(out.durationMs !== undefined ? { durationMs: out.durationMs } : {}),
+            lastUsed: Date.now(),
           };
-          audioMemCache.set(key, entry);
+          audioCacheIndex.set(key, entry);
+          await persistSpeechCacheIndex();
           return {
             ref: saved.path,
             mime: out.mime,
@@ -607,8 +695,11 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       },
 
       async clearCache(): Promise<void> {
-        audioMemCache.clear();
-        await plugin.speech.cacheClear();
+        audioCacheIndex.clear();
+        await Promise.all([
+          plugin.speech.cacheClear(),
+          plugin.fs.remove({ path: SPEECH_CACHE_INDEX_PATH }).catch(() => undefined),
+        ]);
       },
 
       cacheSize(): Promise<number> {
@@ -622,7 +713,6 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       },
 
       setKeepScreenOn(enabled: boolean): Promise<void> {
-        // Never set KEEP_SCREEN_ON on E-Ink displays (`ARCHITECTURE.md` §10)
         const effective = deviceInfo.eink ? false : enabled;
         return plugin.device.setKeepScreenOn({ enabled: effective });
       },

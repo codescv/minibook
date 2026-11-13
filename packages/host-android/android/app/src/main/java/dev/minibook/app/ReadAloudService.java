@@ -380,8 +380,16 @@ public class ReadAloudService extends MediaSessionService {
             .setOnAudioFocusChangeListener(focusListener, MAIN_HANDLER)
             .build();
         int res = audioManager.requestAudioFocus(audioFocusRequest);
-        hasAudioFocus = (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
-        return hasAudioFocus;
+        if (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            hasAudioFocus = true;
+            return true;
+        }
+        if (res == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
+            // Will auto-start in focusListener on AUDIOFOCUS_GAIN
+            resumeOnFocusGain = true;
+            promoteBootstrapForeground();
+        }
+        return false;
     }
 
     private void abandonAudioFocus() {

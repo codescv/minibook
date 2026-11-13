@@ -345,4 +345,53 @@ public class ReadAloudQueueTest {
             )
         );
     }
+
+    @Test
+    public void autoContinuesFromEndedOfBufferOnEnqueueAndAdvancesWhenPausedInSilence() throws Exception {
+        ReadAloudQueueEngine.SessionSpec session = new ReadAloudQueueEngine.SessionSpec(
+            "b_cont",
+            "Book",
+            "Author",
+            "Ch 1",
+            null,
+            new ReadAloudQueueEngine.VoiceSpec("system", null, null, null),
+            null,
+            1.0f
+        );
+        engine.load(session);
+
+        ReadAloudQueueEngine.UtteranceItem u1 =
+            new ReadAloudQueueEngine.UtteranceItem("0:0-10", 0, 0, 10, 0, "One.", "en", 300L);
+        engine.enqueue(Collections.singletonList(u1), null);
+        engine.play();
+        assertEquals(Collections.singletonList("0:0-10"), ttsBackend.spokenIds);
+
+        // u1 finishes with no next item -> ended-of-buffer
+        ttsBackend.finishCurrent();
+        assertEquals("ended-of-buffer", engine.getStatus());
+
+        // Late top-up from awake JS -> automatically advances to u2 and continues speaking!
+        ReadAloudQueueEngine.UtteranceItem u2 =
+            new ReadAloudQueueEngine.UtteranceItem("0:11-20", 0, 11, 20, 0, "Two.", "en", 300L);
+        ReadAloudQueueEngine.UtteranceItem u3 =
+            new ReadAloudQueueEngine.UtteranceItem("0:21-30", 0, 21, 30, 0, "Three.", "en", 300L);
+        engine.enqueue(Arrays.asList(u2, u3), null);
+        assertEquals("playing", engine.getStatus());
+        assertEquals(Arrays.asList("0:0-10", "0:11-20"), ttsBackend.spokenIds);
+
+        // u2 finishes and enters inter-utterance silence; pausing during silence advances to u3
+        // so resume speaks u3 rather than repeating u2!
+        ttsBackend.finishCurrent();
+        assertEquals("playing", engine.getStatus());
+        engine.pause();
+        assertEquals("paused", engine.getStatus());
+        assertEquals("0:21-30", engine.buildStateJson().getString("currentUtteranceId"));
+
+        engine.play();
+        assertEquals(Arrays.asList("0:0-10", "0:11-20", "0:21-30"), ttsBackend.spokenIds);
+
+        // Verify queue-low emitted once per threshold crossing, not spammed on every utterance
+        long queueLowCount = emittedEvents.stream().filter(e -> e.startsWith("queue-low:")).count();
+        assertTrue("Expected bounded queue-low emissions, got " + queueLowCount, queueLowCount <= 2);
+    }
 }

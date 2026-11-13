@@ -2,6 +2,10 @@
  * Native `SpeechPlayer` implementation bridged to Android `ReadAloudService` (Media3)
  * and iOS `MiniBookSpeechEngine` (`AVSpeechSynthesizer` + `AVQueuePlayer`) via `MiniBookPlugin`
  * (`ARCHITECTURE.md` §8.3, §8.5, §8.6).
+ *
+ * Every bridge command runs through a single serialized promise chain (`cmdChain`) after
+ * ensuring native event listeners are attached, preventing microtask reordering between
+ * `enqueue`/`play` and `seekTo`/`pause`/`stop`/`attachAudio`.
  */
 import {
   MiniBookError,
@@ -30,9 +34,21 @@ export class NativeSpeechPlayer implements SpeechPlayer {
   private nativeHandles: PluginListenerHandle[] = [];
   private attached = false;
   private attaching: Promise<void> | null = null;
+  private cmdChain: Promise<void> = Promise.resolve();
 
   constructor(plugin?: MiniBookPlugin) {
     this.plugin = plugin ?? createDefaultMiniBookPlugin();
+  }
+
+  private runSerialized(op: () => Promise<void>): Promise<void> {
+    const next = this.cmdChain
+      .catch(() => undefined)
+      .then(() => this.ensureListenersAttached())
+      .then(op);
+    this.cmdChain = next.catch((err) => {
+      this.emitError(err);
+    });
+    return next;
   }
 
   async listVoices(): Promise<Voice[]> {
@@ -41,63 +57,59 @@ export class NativeSpeechPlayer implements SpeechPlayer {
   }
 
   async load(session: SpeechSession): Promise<void> {
-    await this.ensureListenersAttached();
-    await this.plugin.speech.load(session);
+    await this.runSerialized(() => this.plugin.speech.load(session));
   }
 
   enqueue(items: readonly Utterance[], opts?: { readonly replaceFromId?: string }): void {
-    void this.ensureListenersAttached()
-      .then(() =>
-        this.plugin.speech.enqueue({
-          items,
-          ...(opts?.replaceFromId !== undefined ? { replaceFromId: opts.replaceFromId } : {}),
-        }),
-      )
-      .catch((err) => this.emitError(err));
+    void this.runSerialized(() =>
+      this.plugin.speech.enqueue({
+        items,
+        ...(opts?.replaceFromId !== undefined ? { replaceFromId: opts.replaceFromId } : {}),
+      }),
+    ).catch(() => undefined);
   }
 
   attachAudio(id: string, audio: AttachedAudio): void {
-    void this.plugin.speech
-      .attachAudio({
+    void this.runSerialized(() =>
+      this.plugin.speech.attachAudio({
         id,
         path: audio.ref,
         ...(audio.durationMs !== undefined ? { durationMs: audio.durationMs } : {}),
         ...(audio.marks !== undefined ? { marks: audio.marks } : {}),
-      })
-      .catch((err) => this.emitError(err));
+      }),
+    ).catch(() => undefined);
   }
 
   play(): void {
-    void this.ensureListenersAttached()
-      .then(() => this.plugin.speech.play())
-      .catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.play()).catch(() => undefined);
   }
 
   pause(): void {
-    void this.plugin.speech.pause().catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.pause()).catch(() => undefined);
   }
 
   stop(): void {
-    void this.plugin.speech.stop().catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.stop()).catch(() => undefined);
   }
 
   seekTo(id: string): void {
-    void this.plugin.speech.seekTo({ id }).catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.seekTo({ id })).catch(() => undefined);
   }
 
   setRate(rate: number): void {
-    void this.plugin.speech.setRate({ rate }).catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.setRate({ rate })).catch(() => undefined);
   }
 
   setVoice(voice: VoiceRef): void {
-    void this.plugin.speech.setVoice({ voice }).catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.setVoice({ voice })).catch(() => undefined);
   }
 
   setSleepTimer(timer: SleepTimerConfig): void {
-    void this.plugin.speech.setSleepTimer(timer).catch((err) => this.emitError(err));
+    void this.runSerialized(() => this.plugin.speech.setSleepTimer(timer)).catch(() => undefined);
   }
 
-  getState(): Promise<SpeechState> {
+  async getState(): Promise<SpeechState> {
+    await this.cmdChain.catch(() => undefined);
     return this.plugin.speech.getState();
   }
 

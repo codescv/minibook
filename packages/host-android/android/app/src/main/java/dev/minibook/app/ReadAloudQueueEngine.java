@@ -256,6 +256,8 @@ public final class ReadAloudQueueEngine {
     private int stickyFallbackBlockIndex = -1;
     private int playbackGeneration = 0;
     private boolean inInterUtterancePause = false;
+    private boolean autoContinueOnBufferTopUp = false;
+    private boolean queueLowEmitted = false;
 
     @Nullable private CancelToken fallbackTimer;
     @Nullable private CancelToken sleepTickTimer;
@@ -311,10 +313,13 @@ public final class ReadAloudQueueEngine {
         this.status = "paused";
         this.usingFallback = false;
         this.stickyFallbackActive = false;
+        this.autoContinueOnBufferTopUp = false;
+        this.queueLowEmitted = false;
         emitState();
     }
 
     public void enqueue(List<UtteranceItem> items, @Nullable String replaceFromId) {
+        int prevSize = queue.size();
         if (replaceFromId != null && !replaceFromId.isEmpty()) {
             int replaceIdx = findIndexById(replaceFromId);
             if (replaceIdx >= 0) {
@@ -338,13 +343,31 @@ public final class ReadAloudQueueEngine {
             }
         }
 
+        if (queue.size() > prevSize) {
+            int remaining = Math.max(0, queue.size() - Math.max(0, currentIndex));
+            if (remaining > QUEUE_LOW_THRESHOLD) {
+                queueLowEmitted = false;
+            }
+        }
+
         if (currentIndex < 0 && !queue.isEmpty()) {
             currentIndex = 0;
         }
 
-        if ("ended-of-buffer".equals(status) && currentIndex >= 0 && currentIndex < queue.size()) {
-            // Queue was topped up after exhaustion; remain ready for play()
-            emitState();
+        if ("buffering".equals(status) && currentIndex >= 0 && currentIndex < queue.size()
+            && playbackGeneration == 0) {
+            startCurrentUtterance();
+            return;
+        }
+
+        if ("ended-of-buffer".equals(status) && currentIndex + 1 < queue.size()) {
+            currentIndex += 1;
+            if (autoContinueOnBufferTopUp) {
+                autoContinueOnBufferTopUp = false;
+                startCurrentUtterance();
+            } else {
+                emitState();
+            }
         }
     }
 
@@ -373,7 +396,14 @@ public final class ReadAloudQueueEngine {
             emitQueueLowIfNeeded();
             return;
         }
-        if (currentIndex < 0 || currentIndex >= queue.size()) {
+        if ("ended-of-buffer".equals(status)) {
+            autoContinueOnBufferTopUp = false;
+            if (currentIndex + 1 < queue.size()) {
+                currentIndex += 1;
+            } else {
+                currentIndex = 0;
+            }
+        } else if (currentIndex < 0 || currentIndex >= queue.size()) {
             currentIndex = 0;
         }
         startCurrentUtterance();
@@ -382,7 +412,13 @@ public final class ReadAloudQueueEngine {
     public void pause() {
         if ("idle".equals(status) || "paused".equals(status)) return;
         playbackGeneration++;
+        // If paused during inter-sentence silence, currentIndex already finished speaking:
+        // advance to the next sentence so resume does not repeat the finished sentence.
+        if (inInterUtterancePause && currentIndex + 1 < queue.size()) {
+            currentIndex += 1;
+        }
         inInterUtterancePause = false;
+        autoContinueOnBufferTopUp = false;
         cancelFallbackTimer();
         ttsBackend.stop();
         fileBackend.stop();
@@ -396,6 +432,8 @@ public final class ReadAloudQueueEngine {
     private void stopInternal(boolean emitStoppedEvent) {
         playbackGeneration++;
         inInterUtterancePause = false;
+        autoContinueOnBufferTopUp = false;
+        queueLowEmitted = false;
         cancelFallbackTimer();
         cancelSleepTimer();
         ttsBackend.stop();
@@ -421,11 +459,16 @@ public final class ReadAloudQueueEngine {
         boolean shouldKeepPlaying = isAudible();
         playbackGeneration++;
         inInterUtterancePause = false;
+        autoContinueOnBufferTopUp = false;
         cancelFallbackTimer();
         ttsBackend.stop();
         fileBackend.stop();
         currentIndex = idx;
         stickyFallbackActive = false;
+        int remaining = Math.max(0, queue.size() - currentIndex);
+        if (remaining > QUEUE_LOW_THRESHOLD) {
+            queueLowEmitted = false;
+        }
         if (shouldKeepPlaying) {
             startCurrentUtterance();
         } else {
@@ -744,6 +787,9 @@ public final class ReadAloudQueueEngine {
 
         if (!hasNext) {
             inInterUtterancePause = false;
+            autoContinueOnBufferTopUp = true;
+            queueLowEmitted = false;
+            emitQueueLowIfNeeded();
             setStatus("ended-of-buffer");
             JSONObject endedEv = new JSONObject();
             putJson(endedEv, "reason", "end-of-buffer");
@@ -782,9 +828,14 @@ public final class ReadAloudQueueEngine {
     private void emitQueueLowIfNeeded() {
         int remaining = Math.max(0, queue.size() - Math.max(0, currentIndex));
         if (remaining <= QUEUE_LOW_THRESHOLD) {
-            JSONObject low = new JSONObject();
-            putJson(low, "remaining", remaining);
-            listener.onEvent("queue-low", low);
+            if (!queueLowEmitted) {
+                queueLowEmitted = true;
+                JSONObject low = new JSONObject();
+                putJson(low, "remaining", remaining);
+                listener.onEvent("queue-low", low);
+            }
+        } else {
+            queueLowEmitted = false;
         }
     }
 
