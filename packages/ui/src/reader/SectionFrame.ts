@@ -85,8 +85,12 @@ function stripExecutableNodes(root: ParentNode): void {
       ) {
         el.removeAttribute(attr.name);
       } else if (
-        (name === 'src' || name === 'xlink:href') &&
+        (name === 'src' ||
+          name === 'xlink:href' ||
+          (name === 'href' &&
+            (el.localName === 'image' || el.localName === 'use' || el.localName === 'feImage'))) &&
         val !== '' &&
+        !val.startsWith('#') &&
         !val.startsWith('mb-res:') &&
         !val.startsWith('blob:') &&
         !/^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml);/i.test(val)
@@ -315,8 +319,10 @@ export class SectionFrameManager {
     });
     head.appendChild(userStyle);
 
+    // Rewrite all `mb-res:` placeholders (incl. XML-namespaced `<image xlink:href="mb-res:...">`)
+    // BEFORE attaching `adoptedRoot` to `frameDoc` so zero `mb-res:` URLs trigger CSP errors (`[P1-U6]`).
+    resources.applyToRoot(adoptedRoot);
     frameDoc.replaceChild(adoptedRoot, frameDoc.documentElement);
-    resources.applyToDocument(frameDoc);
     if (options.isEink) {
       freezeAnimatedImages(frameDoc);
     }
