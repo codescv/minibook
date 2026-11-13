@@ -1,9 +1,15 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import type {
-  EinkModeSetting,
-  FullRefreshCadence,
-  TextBoldnessStep,
-  Voice,
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+  KOKORO_CURATED_VOICES,
+  KOKORO_MODEL_ID,
+  KOKORO_VOICE_IDS,
+  kokoroVoiceLang,
+  type EinkModeSetting,
+  type FullRefreshCadence,
+  type ModelDownloadSource,
+  type QwenProtocol,
+  type TextBoldnessStep,
+  type Voice,
 } from '@minibook/core';
 import { useRouteStore } from '../app/routes';
 import { IconButton } from '../components/IconButton';
@@ -14,7 +20,15 @@ import { Toggle } from '../components/Toggle';
 import { ChevronLeftIcon } from '../components/icons';
 import { PagedList } from '../eink/PagedList';
 import { useHostContext } from '../host/HostContext';
-import { useT } from '../i18n';
+import { resolveLocale, useT } from '../i18n';
+import {
+  formatKokoroVoiceLabel,
+  formatModelBackendBadge,
+  formatModelErrorInfo,
+  formatSteppedEinkPct,
+  getSpeechModelsApi,
+  useSpeechModelStatus,
+} from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
 
 type SettingsItem =
@@ -24,30 +38,119 @@ type SettingsItem =
 const REFRESH_CADENCES: readonly FullRefreshCadence[] = [0, 5, 10, 20];
 const BOLDNESS_STEPS: readonly TextBoldnessStep[] = [0, 1, 2, 3];
 
+export interface QwenPresetItem {
+  readonly label: string;
+  readonly protocol: QwenProtocol;
+  readonly model: string;
+  readonly voice: string;
+  readonly defaultUrl: string;
+}
+
+export const QWEN_PRESETS: readonly QwenPresetItem[] = [
+  {
+    label: 'Mac · mlx-audio · Qwen3-TTS 0.6B',
+    protocol: 'mlx-audio',
+    model: 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit',
+    voice: 'Vivian',
+    defaultUrl: 'http://127.0.0.1:8000',
+  },
+  {
+    label: 'Mac · mlx-audio · Qwen3-TTS 1.7B',
+    protocol: 'mlx-audio',
+    model: 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit',
+    voice: 'Vivian',
+    defaultUrl: 'http://127.0.0.1:8000',
+  },
+  {
+    label: 'Mac · mlx-audio · Kokoro-82M',
+    protocol: 'mlx-audio',
+    model: 'mlx-community/Kokoro-82M-bf16',
+    voice: 'zf_001',
+    defaultUrl: 'http://127.0.0.1:8000',
+  },
+  {
+    label: 'vLLM-Omni · Qwen3-TTS',
+    protocol: 'vllm-omni',
+    model: 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice',
+    voice: 'Vivian',
+    defaultUrl: 'http://127.0.0.1:8091',
+  },
+  {
+    label: 'qwen-tts · /synthesize',
+    protocol: 'qwen-native',
+    model: 'Qwen3-TTS',
+    voice: 'Vivian',
+    defaultUrl: 'http://127.0.0.1:8000',
+  },
+];
+
 function formatBytesMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
- * Settings Screen (`PRODUCT_DESIGN.md` §4.7 & Stage-2 `#13` P2 #2):
- * Strictly 11 defined rows across `READING` (5), `READ ALOUD` (4), and `ABOUT` (2).
+ * Settings Screen (`PRODUCT_DESIGN.md` §4.7 & `TTS_V2_SPEC.md` §7):
+ * Strictly <= 13 honest rows across `READING` (up to 5), `READ ALOUD` (up to 6), and `ABOUT` (2).
  * Rows inapplicable to the platform or mode are hidden, never disabled.
  * Backed by `PagedList` so E-Ink mode stays strictly zero-scroll.
  */
 export function SettingsScreen(): ReactElement {
   const t = useT();
+  const locale = useMemo(() => resolveLocale(), []);
   const { host, speechPlayer, settings, isEink, refreshController, updateSettings } =
     useHostContext();
   const activeSheet = useRouteStore((s) => s.activeSheet);
+
+  const modelsApi = getSpeechModelsApi(host);
+  const { status: modelStatus, displayPct } = useSpeechModelStatus(host, isEink);
 
   const [storageMb, setStorageMb] = useState<string>('0.0 MB');
   const [cacheBytes, setCacheBytes] = useState<number>(0);
   const [voices, setVoices] = useState<Voice[]>([]);
 
+  // Custom OpenAI-compatible Speech Server state
   const [srvUrl, setSrvUrl] = useState(settings.customSpeechServer?.baseUrl ?? '');
   const [srvModel, setSrvModel] = useState(settings.customSpeechServer?.model ?? 'tts-1');
   const [srvVoice, setSrvVoice] = useState(settings.customSpeechServer?.voice ?? 'alloy');
   const [srvApiKey, setSrvApiKey] = useState('');
+
+  // Local GPU Server (Qwen3-TTS / mlx-audio / vllm-omni) state
+  const [qwenPresetIdx, setQwenPresetIdx] = useState<number>(0);
+  const [qwenUrl, setQwenUrl] = useState(settings.qwenServer?.baseUrl ?? '');
+  const [qwenProtocol, setQwenProtocol] = useState<QwenProtocol>(
+    settings.qwenServer?.protocol ?? 'mlx-audio',
+  );
+  const [qwenModel, setQwenModel] = useState(
+    settings.qwenServer?.model ?? QWEN_PRESETS[0]!.model,
+  );
+  const [qwenVoice, setQwenVoice] = useState(
+    settings.qwenServer?.voice ?? QWEN_PRESETS[0]!.voice,
+  );
+  const [qwenInstruct, setQwenInstruct] = useState(settings.qwenServer?.instruct ?? '');
+  const [qwenRefAudio, setQwenRefAudio] = useState(settings.qwenServer?.refAudio ?? '');
+  const [qwenRefText, setQwenRefText] = useState(settings.qwenServer?.refText ?? '');
+  const [qwenTestStatus, setQwenTestStatus] = useState<string | null>(null);
+
+  // Kokoro custom mirror input & 2-tap delete confirmation
+  const [customMirrorUrl, setCustomMirrorUrl] = useState(settings.modelMirrorBaseUrl ?? '');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (deleteTimerRef.current !== null) {
+        clearTimeout(deleteTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setConfirmingDelete(false);
+    if (deleteTimerRef.current !== null) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
+  }, [modelStatus?.state, activeSheet]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,13 +159,15 @@ export function SettingsScreen(): ReactElement {
         if (host.settings.storageUsage) {
           const u = await host.settings.storageUsage();
           if (!cancelled) {
-            setStorageMb(formatBytesMb(u.booksBytes + u.speechCacheBytes));
+            const modelsBytes = u.modelsBytes ?? modelStatus?.installedBytes ?? 0;
+            setStorageMb(formatBytesMb(u.booksBytes + u.speechCacheBytes + modelsBytes));
             setCacheBytes(u.speechCacheBytes);
           }
         } else {
           const sz = await host.speech.cacheSize();
           if (!cancelled) {
-            setStorageMb(formatBytesMb(sz));
+            const modelsBytes = modelStatus?.installedBytes ?? 0;
+            setStorageMb(formatBytesMb(sz + modelsBytes));
             setCacheBytes(sz);
           }
         }
@@ -80,7 +185,7 @@ export function SettingsScreen(): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [host, speechPlayer]);
+  }, [host, speechPlayer, modelStatus?.installedBytes]);
 
   const effectiveVolumePaging = computeEffectiveVolumeKeyPaging(
     settings,
@@ -101,10 +206,40 @@ export function SettingsScreen(): ReactElement {
       const match = voices.find((v) => v.id === currentDefaultVoice.voiceId);
       return match ? `${t('systemDefault')} · ${match.name}` : t('systemDefault');
     }
+    if (currentDefaultVoice.kind === 'kokoro' && currentDefaultVoice.voiceId) {
+      return formatKokoroVoiceLabel(currentDefaultVoice.voiceId, locale);
+    }
     return currentDefaultVoice.voiceId;
-  }, [currentDefaultVoice, voices, t]);
+  }, [currentDefaultVoice, voices, locale, t]);
 
-  // Exact 11 rows (capability-gated and E-Ink-gated per PRODUCT_DESIGN.md §4.7)
+  const backendBadge = formatModelBackendBadge(
+    modelStatus,
+    host.info.platform,
+    t('onDevice'),
+  );
+
+  const onDeviceRowMeta = useMemo(() => {
+    const state = modelStatus?.state ?? 'absent';
+    if (state === 'absent') return t('notSet');
+    if (state === 'downloading') {
+      return isEink ? formatSteppedEinkPct(displayPct) : `${displayPct}%`;
+    }
+    if (state === 'paused') {
+      return isEink
+        ? formatSteppedEinkPct(displayPct)
+        : t('pausedPct', { pct: displayPct });
+    }
+    if (state === 'verifying') return t('checking');
+    if (state === 'ready') {
+      const mb = Math.max(
+        1,
+        Math.round(((modelStatus?.installedBytes || modelStatus?.bytesTotal || 129_967_797) / (1024 * 1024))),
+      );
+      return `${t('readySize', { mb })} · ${backendBadge}`;
+    }
+    return t('needsAttention');
+  }, [modelStatus, displayPct, isEink, backendBadge, t]);
+
   const items = useMemo<SettingsItem[]>(() => {
     const list: SettingsItem[] = [];
 
@@ -238,7 +373,7 @@ export function SettingsScreen(): ReactElement {
       });
     }
 
-    // --- Section 2: READ ALOUD (4 rows) ---
+    // --- Section 2: READ ALOUD (up to 6 rows) ---
     list.push({ key: 'hdr-read-aloud', kind: 'header', title: t('sectionReadAloud') });
 
     // Row 6: Voice
@@ -258,7 +393,31 @@ export function SettingsScreen(): ReactElement {
       ),
     });
 
-    // Row 7: Edge neural voices
+    // Row 7: On-device neural voice (Kokoro-82M; hidden when host.speech.models is absent)
+    if (modelsApi) {
+      list.push({
+        key: 'row-on-device-neural-voice',
+        kind: 'row',
+        render: () => (
+          <button
+            type="button"
+            className="mb-list-row"
+            data-setting-row="on-device-neural-voice"
+            onClick={() => {
+              setCustomMirrorUrl(settings.modelMirrorBaseUrl ?? '');
+              useRouteStore.getState().openSheet('kokoro-model');
+            }}
+          >
+            <span>{t('onDeviceNeuralVoice')}</span>
+            <span className="mb-list-row-meta" data-testid="settings-kokoro-meta">
+              {onDeviceRowMeta} ▸
+            </span>
+          </button>
+        ),
+      });
+    }
+
+    // Row 8: Edge neural voices
     list.push({
       key: 'row-edge-voices',
       kind: 'row',
@@ -279,7 +438,53 @@ export function SettingsScreen(): ReactElement {
       ),
     });
 
-    // Row 8: Custom speech server
+    // Row 9: Local GPU server (mlx-audio / Qwen3-TTS / vllm-omni)
+    list.push({
+      key: 'row-local-gpu-server',
+      kind: 'row',
+      render: () => (
+        <button
+          type="button"
+          className="mb-list-row"
+          data-setting-row="local-gpu-server"
+          onClick={() => {
+            const q = settings.qwenServer;
+            if (q) {
+              const matchedIdx = QWEN_PRESETS.findIndex(
+                (p) => p.protocol === q.protocol && p.model === q.model,
+              );
+              setQwenPresetIdx(matchedIdx >= 0 ? matchedIdx : 0);
+              setQwenUrl(q.baseUrl);
+              setQwenProtocol(q.protocol);
+              setQwenModel(q.model);
+              setQwenVoice(q.voice);
+              setQwenInstruct(q.instruct ?? '');
+              setQwenRefAudio(q.refAudio ?? '');
+              setQwenRefText(q.refText ?? '');
+            } else {
+              const def = QWEN_PRESETS[0]!;
+              setQwenPresetIdx(0);
+              setQwenUrl('');
+              setQwenProtocol(def.protocol);
+              setQwenModel(def.model);
+              setQwenVoice(def.voice);
+              setQwenInstruct('');
+              setQwenRefAudio('');
+              setQwenRefText('');
+            }
+            setQwenTestStatus(null);
+            useRouteStore.getState().openSheet('qwen-server');
+          }}
+        >
+          <span>{t('localGpuServer')}</span>
+          <span className="mb-list-row-meta">
+            {settings.qwenServer ? settings.qwenServer.voice : t('notSet')} ▸
+          </span>
+        </button>
+      ),
+    });
+
+    // Row 10: Custom speech server
     list.push({
       key: 'row-custom-server',
       kind: 'row',
@@ -304,7 +509,7 @@ export function SettingsScreen(): ReactElement {
       ),
     });
 
-    // Row 9: Fall back to system voice
+    // Row 11: Fall back to system voice
     list.push({
       key: 'row-fallback-system',
       kind: 'row',
@@ -328,7 +533,7 @@ export function SettingsScreen(): ReactElement {
     // --- Section 3: ABOUT (2 rows) ---
     list.push({ key: 'hdr-about', kind: 'header', title: t('sectionAbout') });
 
-    // Row 10: Storage (books + speech cache Clear)
+    // Row 12: Storage (books + speech cache + models)
     list.push({
       key: 'row-storage',
       kind: 'row',
@@ -354,7 +559,7 @@ export function SettingsScreen(): ReactElement {
       ),
     });
 
-    // Row 11: Version 0.1.0 · Licenses
+    // Row 13: Version 0.2.0 · Licenses
     list.push({
       key: 'row-version',
       kind: 'row',
@@ -376,6 +581,8 @@ export function SettingsScreen(): ReactElement {
     t,
     settings,
     host,
+    modelsApi,
+    onDeviceRowMeta,
     isEink,
     effectiveVolumePaging,
     cadenceIdx,
@@ -436,9 +643,52 @@ export function SettingsScreen(): ReactElement {
     return opts;
   }, [t, voices, currentDefaultVoice, settings.preferredVoices, updateSettings]);
 
+  const allKokoroCatalogItems = useMemo(() => {
+    const preferZh = locale.toLowerCase().startsWith('zh');
+    const sortedIds = [...KOKORO_VOICE_IDS].sort((a, b) => {
+      const aZh = a.startsWith('z');
+      const bZh = b.startsWith('z');
+      if (aZh !== bZh) {
+        return preferZh ? (aZh ? -1 : 1) : (aZh ? 1 : -1);
+      }
+      return a.localeCompare(b);
+    });
+    const installedSet = new Set(modelStatus?.installedVoices ?? []);
+    return sortedIds.map((voiceId) => ({
+      voiceId,
+      label: formatKokoroVoiceLabel(voiceId, locale),
+      installed: installedSet.has(voiceId),
+      langKey: kokoroVoiceLang(voiceId).split('-')[0]?.toLowerCase() ?? 'en',
+    }));
+  }, [locale, modelStatus?.installedVoices]);
+
+  const applyQwenPreset = (nextIdx: number): void => {
+    const wrapped = (nextIdx + QWEN_PRESETS.length) % QWEN_PRESETS.length;
+    const preset = QWEN_PRESETS[wrapped]!;
+    setQwenPresetIdx(wrapped);
+    setQwenProtocol(preset.protocol);
+    setQwenModel(preset.model);
+    setQwenVoice(preset.voice);
+    if (!qwenUrl.trim() || qwenUrl.startsWith('http://127.0.0.1:')) {
+      setQwenUrl(preset.defaultUrl);
+    }
+    setQwenTestStatus(null);
+  };
+
   const handleCloseSheet = (coveredHalf: boolean): void => {
     useRouteStore.getState().closeSheetWithRefresh(coveredHalf);
   };
+
+  const modelState = modelStatus?.state ?? 'absent';
+  const totalModelMb = Math.max(
+    1,
+    Math.round(((modelStatus?.bytesTotal ?? 129_967_797) / (1024 * 1024))),
+  );
+  const installedModelMb = Math.max(
+    1,
+    Math.round(((modelStatus?.installedBytes || modelStatus?.bytesTotal || 129_967_797) / (1024 * 1024))),
+  );
+  const errorInfo = modelState === 'error' ? formatModelErrorInfo(modelStatus, t) : null;
 
   return (
     <main className="mb-settings" data-testid="settings-screen">
@@ -458,7 +708,7 @@ export function SettingsScreen(): ReactElement {
           isEink={isEink}
           layer="screen"
           estimatedItemHeight={48}
-          fallbackPageSize={14}
+          fallbackPageSize={16}
           prevLabel={t('prevPage')}
           nextLabel={t('nextPage')}
           ariaLabel={t('settings')}
@@ -529,6 +779,494 @@ export function SettingsScreen(): ReactElement {
             </div>
           )}
         />
+      </Sheet>
+
+      {/* On-Device Neural Voice (Kokoro-82M) Sheet (`activeSheet === 'kokoro-model'`) */}
+      {modelsApi && (
+        <Sheet
+          open={activeSheet === 'kokoro-model'}
+          label={t('onDeviceNeuralVoice')}
+          onClose={handleCloseSheet}
+        >
+          <div className="mb-sheet-row">
+            <div>
+              <div>
+                <span className="mb-sheet-label">{t('kokoroTitle')}</span>{' '}
+                {host.info.platform === 'ios' && (
+                  <span className="mb-badge">{t('beta')}</span>
+                )}
+              </div>
+              <div className="mb-list-row-meta">{t('kokoroCaption')}</div>
+            </div>
+            <span className="mb-badge" data-testid="kokoro-backend-badge">
+              {backendBadge}
+            </span>
+          </div>
+
+          <div className="mb-sheet-row" data-testid="kokoro-model-status-row">
+            {modelState === 'absent' && (
+              <>
+                <span data-testid="kokoro-status-text">
+                  {t('downloadSizeMb', { mb: totalModelMb })} · 5 voices
+                </span>
+                <button
+                  type="button"
+                  className="mb-primary-btn"
+                  data-testid="kokoro-download-btn"
+                  onClick={() => {
+                    void modelsApi.download(KOKORO_MODEL_ID);
+                  }}
+                >
+                  {t('download')}
+                </button>
+              </>
+            )}
+
+            {modelState === 'downloading' && (
+              <>
+                <span data-testid="kokoro-status-text">
+                  {isEink
+                    ? formatSteppedEinkPct(displayPct)
+                    : t('downloadingPct', { pct: displayPct })}
+                  {modelStatus?.source
+                    ? ` · ${t('viaSource', { source: modelStatus.source })}`
+                    : ''}
+                </span>
+                <button
+                  type="button"
+                  className="mb-icon-btn"
+                  data-testid="kokoro-pause-btn"
+                  onClick={() => {
+                    void modelsApi.pause(KOKORO_MODEL_ID);
+                  }}
+                >
+                  {t('pause')}
+                </button>
+              </>
+            )}
+
+            {modelState === 'paused' && (
+              <>
+                <span data-testid="kokoro-status-text">
+                  {isEink
+                    ? formatSteppedEinkPct(displayPct)
+                    : t('pausedPct', { pct: displayPct })}
+                </span>
+                <div className="mb-library-actions">
+                  <button
+                    type="button"
+                    className="mb-primary-btn"
+                    data-testid="kokoro-resume-btn"
+                    onClick={() => {
+                      void modelsApi.download(KOKORO_MODEL_ID);
+                    }}
+                  >
+                    {t('resume')}
+                  </button>
+                  <button
+                    type="button"
+                    className="mb-icon-btn"
+                    data-testid="kokoro-delete-paused-btn"
+                    onClick={() => {
+                      void modelsApi.remove(KOKORO_MODEL_ID);
+                    }}
+                  >
+                    {t('delete')}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {modelState === 'verifying' && (
+              <span data-testid="kokoro-status-text">{t('checking')}</span>
+            )}
+
+            {modelState === 'ready' && (
+              <>
+                <span data-testid="kokoro-status-text">
+                  {t('readySize', { mb: installedModelMb })} · {backendBadge}
+                  {modelStatus?.rtf
+                    ? ` · ${t('timesRealTime', {
+                        x: (1 / Math.max(0.05, modelStatus.rtf)).toFixed(1),
+                      })}`
+                    : ''}
+                </span>
+                <button
+                  type="button"
+                  className="mb-icon-btn mb-danger-text"
+                  data-testid="kokoro-delete-btn"
+                  onClick={() => {
+                    if (!confirmingDelete) {
+                      setConfirmingDelete(true);
+                      if (deleteTimerRef.current !== null) {
+                        clearTimeout(deleteTimerRef.current);
+                      }
+                      deleteTimerRef.current = setTimeout(() => {
+                        setConfirmingDelete(false);
+                        deleteTimerRef.current = null;
+                      }, 4000);
+                      return;
+                    }
+                    if (deleteTimerRef.current !== null) {
+                      clearTimeout(deleteTimerRef.current);
+                      deleteTimerRef.current = null;
+                    }
+                    setConfirmingDelete(false);
+                    void modelsApi.remove(KOKORO_MODEL_ID);
+                  }}
+                >
+                  {confirmingDelete ? t('deleteConfirm') : t('delete')}
+                </button>
+              </>
+            )}
+
+            {modelState === 'error' && errorInfo && (
+              <>
+                <span data-testid="kokoro-status-text">{errorInfo.message}</span>
+                {errorInfo.actionKind !== 'none' && (
+                  <button
+                    type="button"
+                    className="mb-primary-btn"
+                    data-testid="kokoro-retry-btn"
+                    onClick={() => {
+                      if (errorInfo.actionKind === 'try-again') {
+                        void modelsApi.remove(KOKORO_MODEL_ID).then(() => {
+                          void modelsApi.download(KOKORO_MODEL_ID);
+                        });
+                      } else {
+                        void modelsApi.download(KOKORO_MODEL_ID);
+                      }
+                    }}
+                  >
+                    {errorInfo.actionKind === 'try-again' ? t('tryAgain') : t('retry')}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {(modelState === 'downloading' || modelState === 'paused') && (
+            <div
+              className="mb-progress-track"
+              data-block="true"
+              data-testid="kokoro-progress-track"
+            >
+              <div
+                className="mb-progress-fill"
+                style={{ width: `${displayPct}%` }}
+              />
+            </div>
+          )}
+
+          <div className="mb-sheet-row">
+            <span className="mb-sheet-label">{t('downloadFrom')}</span>
+            <Segmented<Exclude<ModelDownloadSource, 'custom'>>
+              label={t('downloadFrom')}
+              value={
+                settings.modelDownloadSource === 'custom'
+                  ? 'hf-mirror'
+                  : settings.modelDownloadSource
+              }
+              options={[
+                { value: 'auto', label: t('sourceAuto') },
+                { value: 'huggingface', label: t('sourceHf') },
+                { value: 'hf-mirror', label: t('sourceMirror') },
+              ]}
+              onChange={(modelDownloadSource) => {
+                void updateSettings({ modelDownloadSource });
+              }}
+            />
+          </div>
+
+          <input
+            type="url"
+            className="mb-input"
+            placeholder="https://hf-mirror.com"
+            aria-label={t('customMirror')}
+            value={customMirrorUrl}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              setCustomMirrorUrl(nextVal);
+              const trimmed = nextVal.trim();
+              void updateSettings({
+                modelMirrorBaseUrl: trimmed ? trimmed : null,
+                modelDownloadSource: trimmed ? 'custom' : 'auto',
+              });
+            }}
+          />
+
+          {modelState === 'ready' && (
+            <div>
+              {KOKORO_CURATED_VOICES.map((voiceId) => {
+                const isInstalled = modelStatus?.installedVoices.includes(voiceId) ?? false;
+                const langKey = kokoroVoiceLang(voiceId).split('-')[0]?.toLowerCase() ?? 'en';
+                const activePref = settings.preferredVoices[langKey] ?? settings.preferredVoices.default;
+                const isSelected =
+                  activePref?.kind === 'kokoro' && activePref.voiceId === voiceId;
+
+                return (
+                  <div key={voiceId} className="mb-sheet-row">
+                    <span>{formatKokoroVoiceLabel(voiceId, locale)}</span>
+                    {isInstalled ? (
+                      <button
+                        type="button"
+                        className="mb-icon-btn"
+                        aria-pressed={isSelected}
+                        onClick={() => {
+                          void updateSettings({
+                            preferredVoices: {
+                              ...settings.preferredVoices,
+                              [langKey]: { kind: 'kokoro', voiceId },
+                              default: { kind: 'kokoro', voiceId },
+                            },
+                          });
+                        }}
+                      >
+                        {isSelected ? '✓' : t('voice')}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="mb-icon-btn"
+                        onClick={() => {
+                          void modelsApi.download(KOKORO_MODEL_ID, { voices: [voiceId] });
+                        }}
+                      >
+                        {t('get')}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              <button
+                type="button"
+                className="mb-list-row"
+                data-testid="kokoro-more-voices-btn"
+                onClick={() => useRouteStore.getState().openSheet('kokoro-voices')}
+              >
+                <span>{t('moreKokoroVoices', { n: KOKORO_VOICE_IDS.length })}</span>
+                <span className="mb-list-row-meta">▸</span>
+              </button>
+            </div>
+          )}
+        </Sheet>
+      )}
+
+      {/* Kokoro Full 103-Voice Catalog Sheet (`activeSheet === 'kokoro-voices'`, backed by PagedList) */}
+      {modelsApi && (
+        <Sheet
+          open={activeSheet === 'kokoro-voices'}
+          label={t('moreKokoroVoices', { n: KOKORO_VOICE_IDS.length })}
+          listSheet
+          onClose={handleCloseSheet}
+        >
+          <PagedList
+            items={allKokoroCatalogItems}
+            isEink={isEink}
+            layer="sheet"
+            estimatedItemHeight={48}
+            fallbackPageSize={6}
+            prevLabel={t('prevPage')}
+            nextLabel={t('nextPage')}
+            ariaLabel={t('moreKokoroVoices', { n: KOKORO_VOICE_IDS.length })}
+            onPageTurn={(swap) => {
+              void refreshController.runTurn({
+                isEink,
+                cadence: settings.fullRefreshEvery,
+                swap,
+              });
+            }}
+            renderItems={(visible) => (
+              <div role="listbox" aria-label={t('voice')}>
+                {visible.map((item) => (
+                  <button
+                    key={item.voiceId}
+                    type="button"
+                    role="option"
+                    aria-selected={item.installed}
+                    className="mb-list-row"
+                    onClick={() => {
+                      if (item.installed) {
+                        void updateSettings({
+                          preferredVoices: {
+                            ...settings.preferredVoices,
+                            [item.langKey]: { kind: 'kokoro', voiceId: item.voiceId },
+                            default: { kind: 'kokoro', voiceId: item.voiceId },
+                          },
+                        });
+                        useRouteStore.getState().closeSheetWithRefresh();
+                      } else {
+                        void modelsApi.download(KOKORO_MODEL_ID, { voices: [item.voiceId] });
+                      }
+                    }}
+                  >
+                    <span>{item.label}</span>
+                    <span className="mb-list-row-meta">
+                      {item.installed ? '✓' : t('get')}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          />
+        </Sheet>
+      )}
+
+      {/* Local GPU Server (`mlx-audio` / `Qwen3-TTS` / `vllm-omni`) Sheet (`activeSheet === 'qwen-server'`) */}
+      <Sheet
+        open={activeSheet === 'qwen-server'}
+        label={t('localGpuServer')}
+        onClose={handleCloseSheet}
+      >
+        <div className="mb-sheet-row">
+          <span className="mb-sheet-label">{t('preset')}</span>
+          <Stepper
+            valueLabel={QWEN_PRESETS[qwenPresetIdx]?.label ?? QWEN_PRESETS[0]!.label}
+            canDecrement={QWEN_PRESETS.length > 1}
+            canIncrement={QWEN_PRESETS.length > 1}
+            decrementLabel="Previous preset"
+            incrementLabel="Next preset"
+            onDecrement={() => applyQwenPreset(qwenPresetIdx - 1)}
+            onIncrement={() => applyQwenPreset(qwenPresetIdx + 1)}
+          />
+        </div>
+
+        <input
+          type="url"
+          className="mb-input"
+          placeholder="http://192.168.1.20:8000"
+          aria-label={t('serverUrl')}
+          value={qwenUrl}
+          onChange={(e) => setQwenUrl(e.target.value)}
+        />
+        <input
+          type="text"
+          className="mb-input"
+          placeholder="Vivian"
+          aria-label={t('voiceName')}
+          value={qwenVoice}
+          onChange={(e) => setQwenVoice(e.target.value)}
+        />
+        {qwenProtocol !== 'qwen-native' && (
+          <input
+            type="text"
+            className="mb-input"
+            placeholder={QWEN_PRESETS[qwenPresetIdx]?.model ?? 'Qwen3-TTS'}
+            aria-label={t('modelName')}
+            value={qwenModel}
+            onChange={(e) => setQwenModel(e.target.value)}
+          />
+        )}
+        <input
+          type="text"
+          className="mb-input"
+          placeholder={t('styleInstruction')}
+          aria-label={t('styleInstruction')}
+          value={qwenInstruct}
+          onChange={(e) => setQwenInstruct(e.target.value)}
+        />
+        {qwenProtocol === 'qwen-native' && (
+          <>
+            <input
+              type="text"
+              className="mb-input"
+              placeholder={t('referenceAudio')}
+              aria-label={t('referenceAudio')}
+              value={qwenRefAudio}
+              onChange={(e) => setQwenRefAudio(e.target.value)}
+            />
+            <input
+              type="text"
+              className="mb-input"
+              placeholder={t('referenceText')}
+              aria-label={t('referenceText')}
+              value={qwenRefText}
+              onChange={(e) => setQwenRefText(e.target.value)}
+            />
+          </>
+        )}
+
+        <div className="mb-sheet-row">
+          <div className="mb-library-actions">
+            <button
+              type="button"
+              className="mb-icon-btn"
+              data-testid="qwen-test-btn"
+              onClick={() => {
+                const targetUrl = qwenUrl.trim() || 'http://127.0.0.1:8000';
+                const targetVoice = qwenVoice.trim() || 'Vivian';
+                const targetModel = qwenModel.trim() || QWEN_PRESETS[0]!.model;
+                void (async () => {
+                  try {
+                    const res = await host.speech.synthesize({
+                      engine: 'qwen',
+                      voiceId: targetVoice,
+                      model: targetModel,
+                      text: '你好，世界。Hello world.',
+                      lang: 'zh-CN',
+                      baseUrl: targetUrl,
+                    });
+                    const genSec = (Math.max(100, res.synthMs) / 1000).toFixed(1);
+                    const durSec = (Math.max(500, res.durationMs ?? 1600) / 1000).toFixed(1);
+                    setQwenTestStatus(t('testOk', { gen: genSec, dur: durSec }));
+                  } catch {
+                    setQwenTestStatus(t('errNoConnection'));
+                  }
+                })();
+              }}
+            >
+              {t('test')}
+            </button>
+            <button
+              type="button"
+              className="mb-primary-btn"
+              data-testid="qwen-save-btn"
+              onClick={() => {
+                const trimmedUrl = qwenUrl.trim();
+                void updateSettings({
+                  qwenServer: trimmedUrl
+                    ? {
+                        baseUrl: trimmedUrl,
+                        protocol: qwenProtocol,
+                        model: qwenModel.trim() || QWEN_PRESETS[0]!.model,
+                        voice: qwenVoice.trim() || 'Vivian',
+                        ...(qwenInstruct.trim() ? { instruct: qwenInstruct.trim() } : {}),
+                        ...(qwenRefAudio.trim() ? { refAudio: qwenRefAudio.trim() } : {}),
+                        ...(qwenRefText.trim() ? { refText: qwenRefText.trim() } : {}),
+                      }
+                    : null,
+                });
+                useRouteStore.getState().closeSheetWithRefresh();
+              }}
+            >
+              {t('save')}
+            </button>
+          </div>
+          {settings.qwenServer && (
+            <button
+              type="button"
+              className="mb-icon-btn"
+              data-testid="qwen-clear-btn"
+              onClick={() => {
+                void updateSettings({ qwenServer: null });
+                useRouteStore.getState().closeSheetWithRefresh();
+              }}
+            >
+              {t('clear')}
+            </button>
+          )}
+        </div>
+
+        {qwenTestStatus && (
+          <div className="mb-list-row-meta" role="status" data-testid="qwen-test-status">
+            {qwenTestStatus}
+          </div>
+        )}
+
+        <div className="mb-list-row-meta" data-testid="qwen-mac-script-hint">
+          {t('macScriptHint')}
+        </div>
       </Sheet>
 
       {/* Custom OpenAI-Compatible Speech Server Sheet */}
@@ -619,6 +1357,13 @@ export function SettingsScreen(): ReactElement {
             <div style={{ fontWeight: 600 }}>Books (MiniBook) v{host.info.appVersion}</div>
             <div className="mb-list-row-meta">
               Literata Typeface — SIL Open Font License 1.1 (TypeTogether)
+            </div>
+            <div className="mb-list-row-meta">
+              Kokoro-82M v1.1-zh — Apache 2.0 (hexgrad / onnx-community / FluidInference)
+            </div>
+            <div className="mb-list-row-meta">ONNX Runtime — MIT License</div>
+            <div className="mb-list-row-meta">
+              misaki / jieba / pypinyin / cn2an — Apache 2.0 &amp; MIT License
             </div>
             <div className="mb-list-row-meta">
               MOBI/KF8 container &amp; index algorithms adapted from foliate-js (MIT, John Factotum)

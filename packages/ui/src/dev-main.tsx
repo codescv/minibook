@@ -10,7 +10,7 @@ import {
   type MockPlatformHost,
   type MockSpeechPlayer,
 } from './index';
-import type { EinkModeSetting, HostPlatform, ReadingTheme } from '@minibook/core';
+import type { EinkModeSetting, HostPlatform, ReadingTheme, SpeechModelState } from '@minibook/core';
 
 declare global {
   interface Window {
@@ -32,11 +32,22 @@ const platform = (params.get('platform') as HostPlatform | null) ?? 'desktop';
 const extraBooks = Number(params.get('extraBooks') ?? '0') || 0;
 const vendorRefresh = params.get('vendorRefresh') === '1';
 const includeSingleFile5 = params.get('singleFile5') === '1';
+const kokoroStateParam = params.get('kokoroState') as SpeechModelState | null;
 
 const host = createMockPlatformHost({
   platform,
   ...(includeSingleFile5
     ? { books: [buildSingleFileFiveChapterFixture(), ...buildDefaultMockFixtures()] }
+    : {}),
+  ...(kokoroStateParam
+    ? {
+        initialModelStatus: {
+          state: kokoroStateParam,
+          ...(kokoroStateParam === 'downloading' || kokoroStateParam === 'paused'
+            ? { bytesDone: Math.round(341_980_642 * 0.45), bytesTotal: 341_980_642 }
+            : {}),
+        },
+      }
     : {}),
   capabilities: {
     einkDetected: einkParam === 'on',

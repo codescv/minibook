@@ -1,12 +1,25 @@
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import type { SleepTimerConfig, Voice, VoiceRef } from '@minibook/core';
+import {
+  KOKORO_MODEL_ID,
+  kokoroVoiceLang,
+  type SleepTimerConfig,
+  type Voice,
+  type VoiceRef,
+} from '@minibook/core';
 import { useRouteStore } from '../app/routes';
 import { Sheet } from '../components/Sheet';
 import { Stepper } from '../components/Stepper';
 import { PagedList } from '../eink/PagedList';
 import { useHostContext } from '../host/HostContext';
-import { useT } from '../i18n';
+import { resolveLocale, useT } from '../i18n';
 import { useReadAloudStore, type ReadAloudController } from './ReadAloudController';
+import {
+  formatKokoroVoiceLabel,
+  formatModelErrorInfo,
+  formatSteppedEinkPct,
+  getSpeechModelsApi,
+  useSpeechModelStatus,
+} from './speech-model-store';
 
 export interface VoiceSheetProps {
   readonly open: boolean;
@@ -14,12 +27,21 @@ export interface VoiceSheetProps {
   readonly onCloseSheet: (coveredHalf: boolean) => void;
 }
 
-interface DisplayVoiceEntry {
-  readonly key: string;
-  readonly name: string;
-  readonly engineLabel: string;
-  readonly voiceRef: VoiceRef;
-}
+type VoiceSheetItem =
+  | {
+      readonly kind: 'voice';
+      readonly key: string;
+      readonly name: string;
+      readonly engineLabel: string;
+      readonly voiceRef: VoiceRef;
+    }
+  | {
+      readonly kind: 'kokoro-download';
+      readonly key: string;
+      readonly label: string;
+      readonly actionLabel: string | null;
+      readonly onAction: (() => void) | null;
+    };
 
 function voiceMatchesRef(entry: VoiceRef, active: VoiceRef | null): boolean {
   if (!active) return entry.kind === 'system' && entry.voiceId === null;
@@ -31,9 +53,10 @@ function voiceMatchesRef(entry: VoiceRef, active: VoiceRef | null): boolean {
 }
 
 /**
- * Voice & Speed Sheet (`PRODUCT_DESIGN.md` §4.6 & `UI_SPEC.md` §4.6):
+ * Voice & Speed Sheet (`PRODUCT_DESIGN.md` §4.6, `UI_SPEC.md` §4.6 & `TTS_V2_SPEC.md` §7.3):
  * 1. Speed stepper `0.5×–3.0×` (`0.1` steps)
- * 2. Flat hairline-divided voice list for the book's language (grouped by engine)
+ * 2. Flat hairline-divided voice list for the book's language (System -> Kokoro -> Edge -> Local GPU -> Custom server)
+ *    plus 1-tap in-app Kokoro download row when Kokoro is not yet installed
  * 3. Single-line slow-voice RTF warning + 1-tap `Use system voice`
  * 4. `More voices…` link to Settings
  */
@@ -43,11 +66,15 @@ export function VoiceSheet({
   onCloseSheet,
 }: VoiceSheetProps): ReactElement | null {
   const t = useT();
+  const locale = useMemo(() => resolveLocale(), []);
   const { host, speechPlayer, settings, isEink, refreshController } = useHostContext();
   const rate = useReadAloudStore((s) => s.rate);
   const selectedVoice = useReadAloudStore((s) => s.voice);
   const bookLang = useReadAloudStore((s) => s.bookLang);
   const slowVoiceRtf = useReadAloudStore((s) => s.slowVoiceRtf);
+
+  const modelsApi = getSpeechModelsApi(host);
+  const { status: modelStatus, displayPct } = useSpeechModelStatus(host, isEink);
 
   const [systemVoices, setSystemVoices] = useState<Voice[]>([]);
   const [edgeVoices, setEdgeVoices] = useState<Voice[]>([]);
@@ -78,8 +105,9 @@ export function VoiceSheet({
   }, [open, speechPlayer, host, settings.edgeVoicesEnabled]);
 
   const langPrefix = (bookLang?.split('-')[0] ?? 'en').toLowerCase();
+  const supportsKokoroLang = langPrefix === 'zh' || langPrefix === 'en';
 
-  const entries = useMemo<DisplayVoiceEntry[]>(() => {
+  const entries = useMemo<VoiceSheetItem[]>(() => {
     const matchesBookLang = (v: Voice): boolean => {
       const vl = (v.lang.split('-')[0] ?? '').toLowerCase();
       return !vl || vl === langPrefix;
@@ -93,9 +121,10 @@ export function VoiceSheet({
       (a.engine ?? 'System').localeCompare(b.engine ?? 'System'),
     );
 
-    const list: DisplayVoiceEntry[] = [];
+    const list: VoiceSheetItem[] = [];
     if (sortedSys.length === 0) {
       list.push({
+        kind: 'voice',
         key: 'sys:default',
         name: t('systemDefault'),
         engineLabel: t('systemDefault'),
@@ -104,6 +133,7 @@ export function VoiceSheet({
     } else {
       for (const v of sortedSys) {
         list.push({
+          kind: 'voice',
           key: `sys:${v.engine ?? 'System'}:${v.id}`,
           name: v.name,
           engineLabel: v.engine ?? t('systemDefault'),
@@ -116,9 +146,33 @@ export function VoiceSheet({
       }
     }
 
+    // 2. Kokoro voices (when model is ready and book language is zh or en)
+    if (modelsApi && supportsKokoroLang && modelStatus?.state === 'ready') {
+      const kokoroEngineLabel =
+        modelStatus.backend === 'webgpu'
+          ? `${t('onDevice')} · WebGPU`
+          : modelStatus.backend === 'wasm'
+            ? `${t('onDevice')} · WASM`
+            : t('onDevice');
+      for (const voiceId of modelStatus.installedVoices) {
+        const vLang = kokoroVoiceLang(voiceId).split('-')[0]?.toLowerCase() ?? 'en';
+        if (vLang === langPrefix) {
+          list.push({
+            kind: 'voice',
+            key: `kokoro:${voiceId}`,
+            name: formatKokoroVoiceLabel(voiceId, locale),
+            engineLabel: kokoroEngineLabel,
+            voiceRef: { kind: 'kokoro', voiceId },
+          });
+        }
+      }
+    }
+
+    // 3. Edge voices
     if (settings.edgeVoicesEnabled) {
       for (const v of edgeVoices.filter(matchesBookLang)) {
         list.push({
+          kind: 'voice',
           key: `edge:${v.id}`,
           name: v.name,
           engineLabel: 'Edge',
@@ -127,9 +181,23 @@ export function VoiceSheet({
       }
     }
 
+    // 4. Local GPU server (Qwen3-TTS / mlx-audio / vllm-omni)
+    if (settings.qwenServer) {
+      const qwen = settings.qwenServer;
+      list.push({
+        kind: 'voice',
+        key: `qwen:${qwen.voice}`,
+        name: qwen.voice || 'Vivian',
+        engineLabel: t('localGpu'),
+        voiceRef: { kind: 'qwen', voiceId: qwen.voice, model: qwen.model },
+      });
+    }
+
+    // 5. Custom OpenAI-compatible server
     if (settings.customSpeechServer) {
       const srv = settings.customSpeechServer;
       list.push({
+        kind: 'voice',
         key: `openai:${srv.voice}`,
         name: srv.voice || 'Custom Voice',
         engineLabel: 'Custom server',
@@ -137,8 +205,89 @@ export function VoiceSheet({
       });
     }
 
+    // 1-tap Kokoro download row when Kokoro is not yet installed
+    if (modelsApi && supportsKokoroLang && modelStatus?.state !== 'ready') {
+      const state = modelStatus?.state ?? 'absent';
+      const totalMb = Math.max(
+        1,
+        Math.round(((modelStatus?.bytesTotal ?? 129_967_797) / (1024 * 1024))),
+      );
+
+      if (state === 'absent') {
+        list.push({
+          kind: 'kokoro-download',
+          key: 'kokoro-dl:absent',
+          label: `${t('onDeviceNeuralVoice')} · ${t('downloadSizeMb', { mb: totalMb })}`,
+          actionLabel: t('get'),
+          onAction: () => {
+            void modelsApi.download(KOKORO_MODEL_ID);
+          },
+        });
+      } else if (state === 'downloading') {
+        list.push({
+          kind: 'kokoro-download',
+          key: `kokoro-dl:downloading:${displayPct}`,
+          label: isEink
+            ? `${t('onDeviceNeuralVoice')} · ${formatSteppedEinkPct(displayPct)}`
+            : t('downloadingPct', { pct: displayPct }),
+          actionLabel: t('pause'),
+          onAction: () => {
+            void modelsApi.pause(KOKORO_MODEL_ID);
+          },
+        });
+      } else if (state === 'paused') {
+        list.push({
+          kind: 'kokoro-download',
+          key: `kokoro-dl:paused:${displayPct}`,
+          label: isEink
+            ? `${t('onDeviceNeuralVoice')} · ${formatSteppedEinkPct(displayPct)}`
+            : t('pausedPct', { pct: displayPct }),
+          actionLabel: t('resume'),
+          onAction: () => {
+            void modelsApi.download(KOKORO_MODEL_ID);
+          },
+        });
+      } else if (state === 'verifying') {
+        list.push({
+          kind: 'kokoro-download',
+          key: 'kokoro-dl:verifying',
+          label: t('checking'),
+          actionLabel: null,
+          onAction: null,
+        });
+      } else if (state === 'error') {
+        const errInfo = formatModelErrorInfo(modelStatus, t);
+        list.push({
+          kind: 'kokoro-download',
+          key: 'kokoro-dl:error',
+          label: errInfo.message,
+          actionLabel: errInfo.actionKind === 'none' ? null : t('retry'),
+          onAction:
+            errInfo.actionKind === 'none'
+              ? null
+              : () => {
+                  void modelsApi.download(KOKORO_MODEL_ID);
+                },
+        });
+      }
+    }
+
     return list;
-  }, [systemVoices, edgeVoices, settings.edgeVoicesEnabled, settings.customSpeechServer, langPrefix, t]);
+  }, [
+    systemVoices,
+    edgeVoices,
+    settings.edgeVoicesEnabled,
+    settings.qwenServer,
+    settings.customSpeechServer,
+    modelsApi,
+    supportsKokoroLang,
+    modelStatus,
+    displayPct,
+    isEink,
+    langPrefix,
+    locale,
+    t,
+  ]);
 
   const showSlowWarning =
     slowVoiceRtf !== null &&
@@ -182,6 +331,27 @@ export function VoiceSheet({
         renderItems={(visible) => (
           <div role="listbox" aria-label={t('voice')}>
             {visible.map((item) => {
+              if (item.kind === 'kokoro-download') {
+                return (
+                  <div
+                    key={item.key}
+                    className="mb-sheet-row"
+                    data-testid="voice-sheet-kokoro-download"
+                  >
+                    <span className="mb-list-row-meta">{item.label}</span>
+                    {item.actionLabel && item.onAction && (
+                      <button
+                        type="button"
+                        className="mb-icon-btn"
+                        onClick={item.onAction}
+                      >
+                        {item.actionLabel}
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+
               const selected = voiceMatchesRef(item.voiceRef, selectedVoice);
               return (
                 <button

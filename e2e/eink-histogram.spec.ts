@@ -239,6 +239,54 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('settings-screen')).toBeVisible();
 
+    // Verify On-device neural voice (Kokoro) sheet in absent, downloading (stepped [ 45% ] & hidden progress bar), and ready states
+    await page.locator('[data-setting-row="on-device-neural-voice"]').click();
+    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Absent)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Absent)');
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'downloading',
+        bytesDone: 45_000_000,
+        bytesTotal: 100_000_000,
+        source: 'hf-mirror.com',
+      });
+    });
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('[ 45% ]');
+    const progressDisplay = await page
+      .getByTestId('kokoro-progress-track')
+      .evaluate((el) => window.getComputedStyle(el).display);
+    expect(progressDisplay).toBe('none');
+    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Downloading)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Downloading)');
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'ready',
+        bytesDone: 129_967_797,
+        bytesTotal: 129_967_797,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
+      });
+    });
+    await expect(page.getByTestId('kokoro-more-voices-btn')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Ready)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Ready)');
+
+    await page.getByTestId('kokoro-more-voices-btn').click();
+    await expect(page.getByRole('dialog', { name: /More voices/i })).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Kokoro 103 Voices PagedList Sheet');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro 103 Voices PagedList Sheet');
+    await page.keyboard.press('Escape');
+
+    // Verify Local GPU Server (Qwen3-TTS / mlx-audio) sheet in E-Ink mode
+    await page.locator('[data-setting-row="local-gpu-server"]').click();
+    await expect(page.getByRole('dialog', { name: 'Local GPU server' })).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Local GPU Server Sheet');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Local GPU Server Sheet');
+    await page.keyboard.press('Escape');
+
     // Return to Library and open Lu Xun CJK book (with ruby & footnote skip nodes)
     await page.getByRole('button', { name: 'Back to Library' }).click();
     await page.getByRole('button', { name: /呐喊/ }).click();

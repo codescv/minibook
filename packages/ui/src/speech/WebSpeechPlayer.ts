@@ -306,9 +306,11 @@ export class WebSpeechPlayer implements SpeechPlayer {
     }
 
     // Audio not yet attached -> enter buffering (`ARCHITECTURE.md` §8.5)
+    // `kokoro` is a local on-device engine, so `navigator.onLine === false` does not shorten its wait window.
     this.status = 'buffering';
     this.emitState();
-    const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const isLocalEngine = activeVoice.kind === 'kokoro';
+    const isOffline = !isLocalEngine && typeof navigator !== 'undefined' && navigator.onLine === false;
     const waitMs = isOffline ? this.offlineTimeoutMs : this.onlineTimeoutMs;
 
     this.clearBufferingTimer();

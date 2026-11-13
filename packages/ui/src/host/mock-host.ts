@@ -31,6 +31,8 @@ import {
   type SectionText,
   type SleepTimerConfig,
   type SpeechEvent,
+  type SpeechModelState,
+  type SpeechModelStatus,
   type SpeechPlayer,
   type SpeechSession,
   type SpeechState,
@@ -685,6 +687,7 @@ export interface MockPlatformHostOptions {
   readonly capabilities?: Partial<HostCapabilities>;
   readonly device?: Partial<DeviceInfo>;
   readonly initialSettings?: Partial<AppSettings>;
+  readonly initialModelStatus?: Partial<SpeechModelStatus>;
   readonly books?: readonly MockBookFixture[];
   readonly extraShelfBooks?: number;
   readonly synthDelayMs?: number;
@@ -704,6 +707,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   private speechCacheBytes = 12_582_912;
   private synthDelayMs: number;
   private synthRtf: number;
+  private modelStatus: SpeechModelStatus;
 
   public lastKeyPolicy: KeyPolicy = { volumePaging: false };
   public immersiveEnabled = false;
@@ -745,6 +749,30 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     };
     this.synthDelayMs = options?.synthDelayMs ?? 15;
     this.synthRtf = options?.synthRtf ?? 0.25;
+
+    const defaultVariant =
+      platform === 'ios' ? 'coreml' : platform === 'android' ? 'onnx-q8' : 'onnx-fp32';
+    const defaultTotalBytes =
+      platform === 'ios' ? 85_044_651 : platform === 'android' ? 129_967_797 : 341_980_642;
+    const defaultBackend =
+      platform === 'ios' ? 'coreml-cpu' : platform === 'android' ? 'ort-cpu' : 'webgpu';
+    const initState = options?.initialModelStatus?.state ?? 'absent';
+    this.modelStatus = {
+      id: 'kokoro-v1.1-zh',
+      state: initState,
+      variant: defaultVariant,
+      backend: defaultBackend,
+      bytesDone: initState === 'ready' ? defaultTotalBytes : 0,
+      bytesTotal: defaultTotalBytes,
+      installedBytes: initState === 'ready' ? defaultTotalBytes : 0,
+      installedVoices:
+        initState === 'ready' ? ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'] : [],
+      source: 'huggingface.co',
+      ...options?.initialModelStatus,
+    };
+    if (!this.info.capabilities.onDeviceNeuralSpeech) {
+      delete (this.speech as { models?: unknown }).models;
+    }
 
     const initialBooks = options?.books ?? buildDefaultMockFixtures();
     for (const b of initialBooks) {
@@ -797,6 +825,21 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   setSynthSimulation(opts: { delayMs?: number; rtf?: number }): void {
     if (opts.delayMs !== undefined) this.synthDelayMs = opts.delayMs;
     if (opts.rtf !== undefined) this.synthRtf = opts.rtf;
+  }
+
+  getModelStatus(): SpeechModelStatus {
+    return this.modelStatus;
+  }
+
+  setModelStatus(patch: Partial<SpeechModelStatus>, emit = true): SpeechModelStatus {
+    this.modelStatus = {
+      ...this.modelStatus,
+      ...patch,
+    };
+    if (emit) {
+      this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+    }
+    return this.modelStatus;
   }
 
   async openMockSession(bookId: BookId): Promise<BookSession> {
@@ -1053,7 +1096,11 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     storageUsage: async (): Promise<StorageUsage> => {
       let booksBytes = 0;
       for (const b of this.books.values()) booksBytes += b.size;
-      return { booksBytes, speechCacheBytes: this.speechCacheBytes };
+      return {
+        booksBytes,
+        speechCacheBytes: this.speechCacheBytes,
+        modelsBytes: this.modelStatus.installedBytes,
+      };
     },
   };
 
@@ -1117,34 +1164,51 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     },
     cacheSize: async () => this.speechCacheBytes,
     models: {
-      status: async (id) => ({
-        id,
-        state: 'absent',
-        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
-        bytesDone: 0,
-        bytesTotal: this.info.platform === 'ios' ? 85_044_651 : this.info.platform === 'android' ? 129_967_797 : 341_980_642,
-        installedBytes: 0,
-        installedVoices: [],
-      }),
-      download: async (id) => ({
-        id,
-        state: 'ready',
-        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
-        bytesDone: 129_967_797,
-        bytesTotal: 129_967_797,
-        installedBytes: 129_967_797,
-        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
-      }),
-      pause: async (id) => ({
-        id,
-        state: 'paused',
-        variant: this.info.platform === 'ios' ? 'coreml' : this.info.platform === 'android' ? 'onnx-q8' : 'onnx-fp32',
-        bytesDone: 0,
-        bytesTotal: 129_967_797,
-        installedBytes: 0,
-        installedVoices: [],
-      }),
-      remove: async () => {},
+      status: async () => this.modelStatus,
+      download: async (_id, opts) => {
+        const extraVoices = opts?.voices ?? [];
+        const baseVoices =
+          this.modelStatus.installedVoices.length > 0
+            ? this.modelStatus.installedVoices
+            : ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'];
+        const mergedVoices = Array.from(new Set([...baseVoices, ...extraVoices]));
+        const sourceLabel =
+          this.settingsData.modelDownloadSource === 'custom' && this.settingsData.modelMirrorBaseUrl
+            ? this.settingsData.modelMirrorBaseUrl
+            : this.settingsData.modelDownloadSource === 'hf-mirror'
+              ? 'hf-mirror.com'
+              : 'huggingface.co';
+        const { error: _prevErr, ...restReady } = this.modelStatus;
+        this.modelStatus = {
+          ...restReady,
+          state: 'ready',
+          bytesDone: this.modelStatus.bytesTotal,
+          installedBytes: this.modelStatus.bytesTotal,
+          installedVoices: mergedVoices,
+          source: sourceLabel,
+        };
+        this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+        return this.modelStatus;
+      },
+      pause: async () => {
+        this.modelStatus = {
+          ...this.modelStatus,
+          state: 'paused',
+        };
+        this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+        return this.modelStatus;
+      },
+      remove: async () => {
+        const { error: _prevErr, ...restRemoved } = this.modelStatus;
+        this.modelStatus = {
+          ...restRemoved,
+          state: 'absent',
+          bytesDone: 0,
+          installedBytes: 0,
+          installedVoices: [],
+        };
+        this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+      },
     },
   };
 

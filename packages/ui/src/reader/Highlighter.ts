@@ -203,7 +203,9 @@ export class Highlighter {
 
     if (options.isEink) {
       // E-Ink mode (R4): sentence-level 2px solid #000000 underline ONLY; word highlight never registered
-      const rects = mergeLineRects(sentenceRange.getClientRects(), scrollLeft);
+      const rawRects =
+        typeof sentenceRange.getClientRects === 'function' ? sentenceRange.getClientRects() : [];
+      const rects = mergeLineRects(rawRects, scrollLeft);
       for (const r of rects) {
         const line = this.frameDoc.createElement('div');
         line.className = 'mb-hl-overlay-eink-line';
@@ -226,7 +228,9 @@ export class Highlighter {
     }
 
     // Fallback: non-overlapping merged line-rect overlay (`0px` seam)
-    const sentenceRects = mergeLineRects(sentenceRange.getClientRects(), scrollLeft);
+    const rawSentenceRects =
+      typeof sentenceRange.getClientRects === 'function' ? sentenceRange.getClientRects() : [];
+    const sentenceRects = mergeLineRects(rawSentenceRects, scrollLeft);
     for (const r of sentenceRects) {
       const box = this.frameDoc.createElement('div');
       box.className = 'mb-hl-overlay-box';
@@ -237,7 +241,9 @@ export class Highlighter {
     if (options.word) {
       const wordRange = this.sectionRangeToDomRange(options.word.start, options.word.end);
       if (wordRange) {
-        const wordRects = mergeLineRects(wordRange.getClientRects(), scrollLeft);
+        const rawWordRects =
+          typeof wordRange.getClientRects === 'function' ? wordRange.getClientRects() : [];
+        const wordRects = mergeLineRects(rawWordRects, scrollLeft);
         const strokeColor = colors.hlWord.replace(/^2px\s+solid\s+/i, '');
         for (const r of wordRects) {
           const ul = this.frameDoc.createElement('div');
@@ -264,7 +270,8 @@ export class Highlighter {
     if (!range) return;
 
     if (isEink) {
-      const rects = mergeLineRects(range.getClientRects(), this.frameDoc.documentElement.scrollLeft);
+      const rawRects = typeof range.getClientRects === 'function' ? range.getClientRects() : [];
+      const rects = mergeLineRects(rawRects, this.frameDoc.documentElement.scrollLeft);
       for (const r of rects) {
         const line = this.frameDoc.createElement('div');
         line.className = 'mb-hl-overlay-eink-line';
