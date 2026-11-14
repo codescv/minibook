@@ -1241,12 +1241,25 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
       'com.apple.voice.enhanced.zh-HK.Sinji',
     );
 
-    // Readable metadata formatting in zh-CN & en
+    // Readable metadata formatting in zh-CN & en (including Android 3rd-party MultiTTS omitting raw pkg name)
     expect(formatSystemVoiceMeta(noisyVoices[6]!, 'zh-CN')).toBe('普通话 · 高音质');
     expect(formatSystemVoiceMeta(noisyVoices[7]!, 'zh-CN')).toBe('普通话 · 增强');
+    expect(formatSystemVoiceMeta(noisyVoices[8]!, 'zh-CN')).toBe('普通话 · 高音质');
     expect(formatSystemVoiceMeta(noisyVoices[11]!, 'zh-CN')).toBe('台湾普通话');
     expect(formatSystemVoiceMeta(noisyVoices[12]!, 'zh-CN')).toBe('粤语 · 增强');
     expect(formatSystemVoiceMeta(noisyVoices[13]!, 'en')).toBe('US English · Enhanced');
+
+    // Stale compact voiceId does not downgrade Tingting from neural/premium back to compact
+    const withStaleCompact = filterAndRankSystemVoices(noisyVoices, 'zh-CN', 'zh-CN', {
+      kind: 'system',
+      voiceId: 'com.apple.voice.compact.zh-CN.Tingting',
+    });
+    expect(withStaleCompact.primary.map((v) => v.id)).toContain(
+      'com.apple.voice.premium.zh-CN.Tingting',
+    );
+    expect(withStaleCompact.primary.map((v) => v.id)).not.toContain(
+      'com.apple.voice.compact.zh-CN.Tingting',
+    );
   });
 
   it('[v0.2.5] ReadAloudController resolves bookLang = zh-CN and zh preferred voice for Chinese .txt (meta.language: null) and mis-tagged <dc:language>en</dc:language> Chinese EPUBs', async () => {
@@ -1255,6 +1268,8 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     expect(resolveEffectiveBookLang('en-US', 'zh-CN')).toBe('zh-CN');
     expect(resolveEffectiveBookLang('zh', 'zh-CN')).toBe('zh-CN');
     expect(resolveEffectiveBookLang('zh-TW', 'zh-TW')).toBe('zh-TW');
+    expect(resolveEffectiveBookLang('ja', 'zh-CN')).toBe('ja');
+    expect(resolveEffectiveBookLang('zh-Hant', 'zh-CN')).toBe('zh-Hant');
     expect(resolveEffectiveBookLang('en-GB', 'en-GB')).toBe('en-GB');
 
     const baseFixtures = buildDefaultMockFixtures();
@@ -1325,5 +1340,132 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
 
     ctl.dispose();
     g2p.dispose();
+
+    // 3. [P1] Correctly-tagged English book (`meta.language === 'en'`) starting on a single Chinese epigraph
+    //    sentence MUST keep `bookLang === 'en'` and select the `'en'` voice (`Samantha`), NOT `'zh'`!
+    const buildParagraphSection = (paras: readonly string[], lang: string | null) => {
+      let text = '';
+      const blocks: Array<{ start: number; end: number; kind: 'p'; lang: string | null }> = [];
+      for (const p of paras) {
+        const start = text.length;
+        text += `${p}\n`;
+        blocks.push({ start, end: text.length, kind: 'p', lang });
+      }
+      return {
+        title: 'Opening',
+        lang,
+        dir: 'ltr' as const,
+        xhtml: paras.map((p) => `<p>${p}</p>`).join('\n'),
+        text: { text, blocks },
+      };
+    };
+
+    const enWithEpigraph = {
+      ...luxun,
+      id: 'b_en_with_cjk_epigraph',
+      fileName: 'analects-commentary.epub',
+      meta: { ...luxun.meta, title: 'Commentary', language: 'en', format: 'epub' as const },
+      sections: [
+        buildParagraphSection(
+          [
+            '学而时习之，不亦说乎。',
+            'Confucius opened the Analects with this famous reflection.',
+            'It speaks to the quiet joy of study and steady practice.',
+            'Throughout the chapters that follow, the prose remains English.',
+            'Readers encounter historical context and clear translation notes.',
+            'Even when an occasional quotation appears, the book itself is English.',
+            'Therefore the session voice must stay on the English voice.',
+          ],
+          'en',
+        ),
+      ],
+      toc: [{ title: 'Opening', locator: { section: 0, offset: 0 }, children: [] }],
+    };
+
+    // 4. [P2] Chinese .txt (`meta.language === null`) starting with 5 lines of English copyright/ISBN
+    //    front matter followed by Chinese prose MUST resolve `bookLang === 'zh-CN'` and pick `'zh'` voice!
+    const zhTxtWithEnFrontmatter = {
+      ...luxun,
+      id: 'b_zh_txt_frontmatter',
+      fileName: 'three-body-frontmatter.txt',
+      meta: { ...luxun.meta, title: '三体导读', language: null, format: 'txt' as const },
+      sections: [
+        buildParagraphSection(
+          [
+            'Copyright 2008 Liu Cixin.',
+            'All rights reserved.',
+            'ISBN 978-7-5366-9293-0.',
+            'First edition.',
+            'Printed in China.',
+            '文化大革命如火如荼进行的同时。',
+            '叶文洁静静地望向远处的群山。',
+            '红岸基地的巨大天线指向深邃的夜空。',
+            '汪淼在实验室里思考纳米材料的极限。',
+            '人类文明第一次收到了来自群星的回响。',
+          ],
+          null,
+        ),
+      ],
+      toc: [{ title: 'Opening', locator: { section: 0, offset: 0 }, children: [] }],
+    };
+
+    const host2 = createMockPlatformHost({
+      platform: 'ios',
+      books: [...baseFixtures, enWithEpigraph, zhTxtWithEnFrontmatter],
+      initialSettings: preferredSettings,
+      initialModelStatus: {
+        state: 'ready',
+        installedVoices: ['zf_018', 'zf_001', 'af_maple'],
+      },
+    });
+    useSpeechModelStore.getState().setStatus(host2.getModelStatus());
+    const player2 = createMockSpeechPlayer();
+    const g2p2 = new KokoroG2PClient();
+    const ctl2 = new ReadAloudController({
+      host: host2,
+      player: player2,
+      getSettings: () => preferredSettings,
+      getIsEink: () => false,
+      g2pClient: g2p2,
+    });
+
+    await ctl2.start({
+      bookId: 'b_en_with_cjk_epigraph',
+      startLocator: { section: 0, offset: 0 },
+    });
+    expect(useReadAloudStore.getState().bookLang).toBe('en');
+    expect(useReadAloudStore.getState().voice).toEqual({
+      kind: 'system',
+      voiceId: 'com.apple.voice.enhanced.en-US.Samantha',
+    });
+
+    await ctl2.start({
+      bookId: 'b_zh_txt_frontmatter',
+      startLocator: { section: 0, offset: 0 },
+    });
+    expect(useReadAloudStore.getState().bookLang).toBe('zh-CN');
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+
+    // [P3] Stale v0.2.4 Eloquence `preferredVoices` entry sanitizes cleanly back to `{ kind: 'system', voiceId: null }`
+    const staleSettings = {
+      ...DEFAULT_APP_SETTINGS,
+      preferredVoices: {
+        zh: { kind: 'system' as const, voiceId: 'com.apple.eloquence.zh-CN.Eddy' },
+        default: { kind: 'system' as const, voiceId: 'com.apple.speech.synthesis.voice.Zarvox' },
+      },
+    };
+    const ctl3 = new ReadAloudController({
+      host: host2,
+      player: player2,
+      getSettings: () => staleSettings,
+      getIsEink: () => false,
+      g2pClient: g2p2,
+    });
+    expect(ctl3.resolvePreferredVoice('zh-CN')).toEqual({ kind: 'system', voiceId: null });
+    expect(ctl3.resolvePreferredVoice('en-US')).toEqual({ kind: 'system', voiceId: null });
+
+    ctl3.dispose();
+    ctl2.dispose();
+    g2p2.dispose();
   }, 15_000);
 });

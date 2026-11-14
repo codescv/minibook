@@ -25,7 +25,7 @@ import { useSettingsStore } from '../host/HostContext';
 import { resolveLocale, translate } from '../i18n';
 import { AutoPageTurn, type AutoPageTurnViewAdapter } from './AutoPageTurn';
 import { KokoroG2PClient, isKokoroCompatibleLang } from './KokoroG2PClient';
-import { useSpeechModelStore } from './speech-model-store';
+import { useSpeechModelStore, isNaturalSystemVoiceEntry } from './speech-model-store';
 
 const MIN_QUEUE_HORIZON = 25;
 
@@ -65,9 +65,12 @@ export function resolveEffectiveBookLang(
   const normSample = normalizeLangTagClean(sampleUtteranceLang);
   const samplePrimary = normSample?.split('-')[0]?.toLowerCase() ?? null;
   const metaPrimary = normMeta?.split('-')[0]?.toLowerCase() ?? null;
+  const metaIsCjk = metaPrimary === 'zh' || metaPrimary === 'ja' || metaPrimary === 'ko';
 
   if (samplePrimary === 'zh' || samplePrimary === 'ja' || samplePrimary === 'ko') {
-    if (!normMeta || metaPrimary !== samplePrimary) {
+    // Override only when container metadata is missing/und OR declares a non-CJK language (e.g. `en`).
+    // Never overwrite an explicit CJK container language (`ja`, `zh-TW`, `zh-Hant`, `ko`) with `zh-CN`.
+    if (!normMeta || !metaIsCjk) {
       return normSample;
     }
     if (normMeta === 'zh' && normSample && normSample.includes('-')) {
@@ -81,35 +84,85 @@ function inferSampleUtteranceLang(
   utterances: readonly Utterance[],
   startIdx: number,
   targetUtteranceLang: string | null | undefined,
+  metaLang?: string | null | undefined,
 ): string | null {
+  const normMeta = normalizeLangTagClean(metaLang);
+  const metaPrimary = normMeta?.split('-')[0]?.toLowerCase() ?? null;
   const normTarget = normalizeLangTagClean(targetUtteranceLang);
-  const targetPrimary = normTarget?.split('-')[0]?.toLowerCase() ?? null;
-  if (targetPrimary === 'zh' || targetPrimary === 'ja' || targetPrimary === 'ko') {
+
+  // Container already declares CJK (`zh*`, `ja*`, `ko*`): trust utterance/container tag directly.
+  if (metaPrimary === 'zh' || metaPrimary === 'ja' || metaPrimary === 'ko') {
     return normTarget;
   }
-  // Handle chapters whose very first token is an ASCII chapter number (`"1"`, `"Chapter 1"`) followed by CJK prose.
-  const windowSlice = utterances.slice(startIdx, startIdx + 8);
-  if (windowSlice.length >= 2) {
-    const counts = new Map<string, { count: number; firstTag: string }>();
-    for (const u of windowSlice) {
-      const tag = normalizeLangTagClean(u.lang);
-      const p = tag?.split('-')[0]?.toLowerCase();
-      if (tag && (p === 'zh' || p === 'ja' || p === 'ko')) {
-        const prev = counts.get(p);
-        if (prev) {
-          prev.count += 1;
-        } else {
-          counts.set(p, { count: 1, firstTag: tag });
-        }
-      }
-    }
-    for (const entry of counts.values()) {
-      if (entry.count >= 2 && entry.count > windowSlice.length / 2) {
-        return entry.firstTag;
+
+  // Sample up to 40 utterances around `startIdx` (backfilling from earlier in `utterances` if near the end).
+  const windowSize = 40;
+  const winStart =
+    utterances.length <= windowSize
+      ? 0
+      : Math.max(0, Math.min(startIdx, utterances.length - windowSize));
+  const windowSlice = utterances.slice(winStart, winStart + windowSize);
+  if (windowSlice.length === 0) {
+    return normMeta ?? normTarget;
+  }
+
+  const counts = new Map<string, { count: number; chars: number; firstTag: string }>();
+  let totalChars = 0;
+  for (const u of windowSlice) {
+    const len = Math.max(1, u.text.trim().length);
+    totalChars += len;
+    const tag = normalizeLangTagClean(u.lang);
+    const p = tag?.split('-')[0]?.toLowerCase();
+    if (tag && (p === 'zh' || p === 'ja' || p === 'ko')) {
+      const prev = counts.get(p);
+      if (prev) {
+        prev.count += 1;
+        prev.chars += len;
+      } else {
+        counts.set(p, { count: 1, chars: len, firstTag: tag });
       }
     }
   }
-  return normTarget;
+
+  let bestCjk: { count: number; chars: number; firstTag: string } | null = null;
+  for (const entry of counts.values()) {
+    if (
+      !bestCjk ||
+      entry.count > bestCjk.count ||
+      (entry.count === bestCjk.count && entry.chars > bestCjk.chars)
+    ) {
+      bestCjk = entry;
+    }
+  }
+
+  if (bestCjk) {
+    const uttShare = bestCjk.count / windowSlice.length;
+    const charShare = totalChars > 0 ? bestCjk.chars / totalChars : 0;
+    if (normMeta) {
+      // [P1]: Container explicitly declares a non-CJK language (e.g. `<dc:language>en</dc:language>`).
+      // Override ONLY on a window majority (> 50%), never on a single CJK epigraph sentence!
+      const hasMinCount = windowSlice.length === 1 ? bestCjk.count === 1 : bestCjk.count >= 2;
+      if (hasMinCount && (uttShare > 0.5 || (uttShare >= 0.5 && charShare > 0.6))) {
+        return bestCjk.firstTag;
+      }
+      return normMeta;
+    }
+
+    // [P2]: Container has no language metadata (`null` / `und`, e.g. `.txt` / `.md`).
+    // Pick CJK when its share across the 40-utterance window is >= 30% (handles multi-line English
+    // copyright/ISBN front matter ahead of Chinese prose).
+    const hasMinCount = windowSlice.length <= 3 ? bestCjk.count >= 1 : bestCjk.count >= 2;
+    if (hasMinCount && (uttShare >= 0.3 || charShare >= 0.3)) {
+      return bestCjk.firstTag;
+    }
+    const nonCjk = windowSlice.find((u) => {
+      const p = normalizeLangTagClean(u.lang)?.split('-')[0]?.toLowerCase();
+      return p && p !== 'zh' && p !== 'ja' && p !== 'ko';
+    });
+    return normalizeLangTagClean(nonCjk?.lang) ?? normTarget;
+  }
+
+  return normMeta ?? normTarget;
 }
 
 export interface ReadAloudStoreState {
@@ -284,6 +337,17 @@ export class ReadAloudController {
           !explicit.voiceId ||
           modelStatus?.state !== 'ready' ||
           !modelStatus.installedVoices.includes(explicit.voiceId)
+        ) {
+          return { kind: 'system', voiceId: null };
+        }
+      }
+      if (explicit.kind === 'system' && explicit.voiceId) {
+        if (
+          !isNaturalSystemVoiceEntry({
+            id: explicit.voiceId,
+            name: '',
+            engine: explicit.engine,
+          })
         ) {
           return { kind: 'system', voiceId: null };
         }
@@ -473,6 +537,7 @@ export class ReadAloudController {
       this.utterances,
       startIdx,
       targetUtterance.lang,
+      this.session.meta.language,
     );
     const effectiveBookLang = resolveEffectiveBookLang(this.session.meta.language, sampleLang);
     const effectiveVoice = options.resolveVoiceFromEffectiveLang

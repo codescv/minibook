@@ -32,6 +32,7 @@ import {
   getSpeechModelsApi,
   isNaturalSystemVoiceEntry,
   resolveEffectiveModelSourceHost,
+  systemVoiceRowMatchesSelection,
   useSpeechModelStatus,
   useSpeechModelStore,
   type FilteredSystemVoices,
@@ -296,8 +297,8 @@ export function VoiceSheet({
   }, [open, speechPlayer, host, settings.edgeVoicesEnabled]);
 
   const targetSystemLang = useMemo(
-    () => canonicalizeSystemVoiceLang(activeUtteranceLang || bookLang || locale || 'en', locale),
-    [activeUtteranceLang, bookLang, locale],
+    () => canonicalizeSystemVoiceLang(bookLang || activeUtteranceLang || locale || 'en', locale),
+    [bookLang, activeUtteranceLang, locale],
   );
   const langPrefix = (targetSystemLang.split('-')[0] ?? 'en').toLowerCase();
 
@@ -412,7 +413,16 @@ export function VoiceSheet({
       const sortedSys = showAllSystemVoices ? rankedSystem.all : rankedSystem.primary;
 
       const defaultSysRef: VoiceRef = { kind: 'system', voiceId: null };
-      const defaultSelected = voiceMatchesRef(defaultSysRef, selectedVoice);
+      const staleNonNaturalSystemVoice =
+        selectedVoice?.kind === 'system' &&
+        Boolean(selectedVoice.voiceId) &&
+        !isNaturalSystemVoiceEntry({
+          id: selectedVoice.voiceId ?? '',
+          name: '',
+          engine: selectedVoice.engine,
+        });
+      const defaultSelected =
+        voiceMatchesRef(defaultSysRef, selectedVoice) || staleNonNaturalSystemVoice;
       rows.push({
         key: 'sys:default',
         render: () => (
@@ -435,7 +445,7 @@ export function VoiceSheet({
           voiceId: v.id,
           ...(v.engine ? { engine: v.engine } : {}),
         };
-        const selected = voiceMatchesRef(ref, selectedVoice);
+        const selected = systemVoiceRowMatchesSelection(v, selectedVoice);
         const vCanon = canonicalizeSystemVoiceLang(v.lang, locale);
         const vLangKey = (vCanon.split('-')[0] ?? langPrefix).toLowerCase() || langPrefix;
         const metaLabel = formatSystemVoiceMeta(v, locale);

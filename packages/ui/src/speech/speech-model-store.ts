@@ -559,6 +559,32 @@ function matchesSelectedSystemVoice(v: Voice, selected: VoiceRef | null | undefi
   return true;
 }
 
+function matchesSelectedSystemVoiceOrTierStem(
+  v: Voice,
+  selected: VoiceRef | null | undefined,
+): boolean {
+  if (matchesSelectedSystemVoice(v, selected)) return true;
+  if (!selected || selected.kind !== 'system' || !selected.voiceId) return false;
+  if (selected.engine && v.engine && selected.engine !== v.engine) return false;
+  // Match upgraded Apple tier stems (e.g. `com.apple.voice.compact.zh-CN.Tingting` -> `com.apple.voice.enhanced.zh-CN.Tingting`)
+  const appleStem = (id: string): string | null => {
+    const m = id
+      .trim()
+      .toLowerCase()
+      .match(/^com\.apple\.voice\.(?:compact|enhanced|premium|super-compact)\.(.+)$/);
+    return m ? m[1]! : null;
+  };
+  const vStem = appleStem(v.id);
+  const sStem = appleStem(selected.voiceId);
+  return Boolean(vStem && sStem && vStem === sStem);
+}
+
+export function systemVoiceRowMatchesSelection(
+  v: Voice,
+  selected: VoiceRef | null | undefined,
+): boolean {
+  return matchesSelectedSystemVoiceOrTierStem(v, selected);
+}
 export interface FilteredSystemVoices {
   /** Clean primary-dialect voices (+ 3rd-party TTS engines & any active non-primary selection). */
   readonly primary: Voice[];
@@ -612,11 +638,15 @@ export function filterAndRankSystemVoices(
       continue;
     }
 
-    const candSelected = matchesSelectedSystemVoice(v, selectedVoice);
-    const existSelected = matchesSelectedSystemVoice(existing, selectedVoice);
-    if (candSelected !== existSelected) {
-      if (candSelected) byDedupKey.set(dedupKey, v);
-      continue;
+    // For Google TTS `-local` vs `-network`, allow an explicitly selected `-network` entry to stay;
+    // for Apple multi-tier speakers (`compact` vs `enhanced`/`neural`), ALWAYS keep the highest quality tier.
+    if (dedupKey.startsWith('gtts:')) {
+      const candSelected = matchesSelectedSystemVoice(v, selectedVoice);
+      const existSelected = matchesSelectedSystemVoice(existing, selectedVoice);
+      if (candSelected !== existSelected) {
+        if (candSelected) byDedupKey.set(dedupKey, v);
+        continue;
+      }
     }
 
     const candScore = voiceQualityScore(v);
@@ -695,13 +725,13 @@ export function filterAndRankSystemVoices(
 
   if (hasExactMatches) {
     rawPrimary = deduped.filter(
-      (v) => isExactPrimaryMatch(v) || matchesSelectedSystemVoice(v, selectedVoice),
+      (v) => isExactPrimaryMatch(v) || matchesSelectedSystemVoiceOrTierStem(v, selectedVoice),
     );
     const primarySet = new Set(rawPrimary);
     rawSecondary = deduped.filter((v) => !primarySet.has(v));
   } else if (hasPrefixMatches) {
     rawPrimary = deduped.filter(
-      (v) => isPrefixMatch(v) || matchesSelectedSystemVoice(v, selectedVoice),
+      (v) => isPrefixMatch(v) || matchesSelectedSystemVoiceOrTierStem(v, selectedVoice),
     );
     const primarySet = new Set(rawPrimary);
     rawSecondary = deduped.filter((v) => !primarySet.has(v));
@@ -785,7 +815,12 @@ export function formatSystemVoiceMeta(v: Voice, locale = 'en'): string {
 
   const canon = canonicalizeSystemVoiceLang(v.lang, locale).toLowerCase();
   const dialectEntry = DIALECT_LABELS[canon];
-  const dialectLabel = dialectEntry ? dialectEntry[langGroup] : v.lang || 'System';
+  const rawLangClean = (v.lang || '').trim();
+  const dialectLabel = dialectEntry
+    ? dialectEntry[langGroup]
+    : canon === 'und' || rawLangClean.toLowerCase() === 'und'
+      ? ''
+      : rawLangClean;
 
   let qualityBadge = '';
   if (v.quality === 'neural') {
@@ -798,10 +833,16 @@ export function formatSystemVoiceMeta(v: Voice, locale = 'en'): string {
 
   let engineBadge = '';
   if (v.engine && v.engine !== 'System' && !v.engine.toLowerCase().startsWith('com.apple.')) {
-    const shortEngine =
-      v.engine.toLowerCase() === 'com.google.android.tts' ? 'Google TTS' : v.engine;
-    if (!v.name.toLowerCase().startsWith(shortEngine.toLowerCase())) {
-      engineBadge = shortEngine;
+    const engineLower = v.engine.toLowerCase();
+    if (engineLower === 'com.google.android.tts') {
+      if (!v.name.toLowerCase().startsWith('google')) {
+        engineBadge = 'Google TTS';
+      }
+    } else if (!v.name.includes(' · ') && !v.engine.includes('.')) {
+      // Friendly non-package engine labels (e.g. `sherpa-onnx`) when `v.name` doesn't already carry `Label · Voice`.
+      if (!v.name.toLowerCase().startsWith(engineLower)) {
+        engineBadge = v.engine;
+      }
     }
   }
 
