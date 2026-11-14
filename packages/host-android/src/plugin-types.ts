@@ -12,7 +12,8 @@
  * `MiniBookPlugin` (`fs.*`, `import.*`, `http.*`, `socket.*`, `speech.*`, `device.*`, `secrets.*`)
  * described in `ARCHITECTURE.md` §3.2.
  */
-import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
+import { createWebFallbackMiniBookBridge } from './web-bridge-fallback.js';
 import type {
   DeviceInfo,
   EpochMs,
@@ -507,6 +508,12 @@ export function wrapNativeBridge(bridge: MiniBookNativeBridge): MiniBookPlugin {
   };
 }
 
+let cachedWebFallbackPlugin: MiniBookPlugin | null = null;
+
 export function createDefaultMiniBookPlugin(): MiniBookPlugin {
+  if (!Capacitor.isNativePlatform()) {
+    cachedWebFallbackPlugin ??= wrapNativeBridge(createWebFallbackMiniBookBridge());
+    return cachedWebFallbackPlugin;
+  }
   return wrapNativeBridge(RawMiniBookBridge);
 }

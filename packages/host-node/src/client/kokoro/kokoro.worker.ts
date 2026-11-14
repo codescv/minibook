@@ -254,9 +254,23 @@ async function ensureInitialized(baseUrl: string, selfTestVoiceId?: string): Pro
   throw err;
 }
 
-self.addEventListener('message', async (ev: MessageEvent<KokoroWorkerRequest>) => {
-  const msg = ev.data;
-  try {
+const DedicatedWorkerCtor = (
+  globalThis as unknown as { DedicatedWorkerGlobalScope?: abstract new () => unknown }
+).DedicatedWorkerGlobalScope;
+
+const isDedicatedWorkerScope =
+  (typeof DedicatedWorkerCtor === 'function' &&
+    typeof self !== 'undefined' &&
+    self instanceof DedicatedWorkerCtor) ||
+  (typeof self !== 'undefined' &&
+    typeof window === 'undefined' &&
+    typeof (self as unknown as { postMessage?: unknown }).postMessage === 'function');
+
+if (isDedicatedWorkerScope) {
+  self.addEventListener('message', async (ev: MessageEvent<KokoroWorkerRequest>) => {
+    const msg = ev?.data;
+    if (!msg || typeof msg !== 'object') return;
+    try {
     if (msg.type === 'init') {
       const backend = await ensureInitialized(msg.baseUrl, msg.selfTestVoiceId);
       const reply: KokoroWorkerResponse = { type: 'ready', id: msg.id, backend };
@@ -329,4 +343,5 @@ self.addEventListener('message', async (ev: MessageEvent<KokoroWorkerRequest>) =
     };
     self.postMessage(reply);
   }
-});
+  });
+}

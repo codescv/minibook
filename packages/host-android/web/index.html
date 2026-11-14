@@ -8,7 +8,7 @@
     />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self' https://localhost capacitor://localhost; script-src 'self' https://localhost capacitor://localhost; worker-src 'self' https://localhost capacitor://localhost blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self' about:; img-src 'self' https://localhost capacitor://localhost blob: data:; font-src 'self' https://localhost capacitor://localhost blob: data:; style-src 'self' 'unsafe-inline'; media-src 'self' https://localhost capacitor://localhost blob:; connect-src 'self' https://localhost capacitor://localhost blob: data:"
+      content="default-src 'self' https://localhost capacitor://localhost; script-src 'self' 'wasm-unsafe-eval' https://localhost capacitor://localhost; worker-src 'self' https://localhost capacitor://localhost blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self' about: https://localhost capacitor://localhost; img-src 'self' https://localhost capacitor://localhost blob: data:; font-src 'self' https://localhost capacitor://localhost blob: data:; style-src 'self' 'unsafe-inline' https://localhost capacitor://localhost; media-src 'self' https://localhost capacitor://localhost blob:; connect-src 'self' https://localhost capacitor://localhost blob: data:"
     />
     <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#2C2C2E" media="(prefers-color-scheme: dark)" />
@@ -17,6 +17,7 @@
   </head>
   <body>
     <div id="root"></div>
+    <script src="/boot-diag.js"></script>
     <script type="module" src="/main.tsx"></script>
   </body>
 </html>

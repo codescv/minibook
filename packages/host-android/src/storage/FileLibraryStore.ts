@@ -15,6 +15,7 @@
 import {
   DEFAULT_APP_SETTINGS,
   MiniBookError,
+  sanitizeAppSettings,
   type AppSettings,
   type BookFormat,
   type BookId,
@@ -183,7 +184,11 @@ export class FileLibraryStore {
         >
       >('library.json');
       if (Array.isArray(cached)) {
+        const normalized: LibraryBook[] = [];
         for (const item of cached) {
+          if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id) {
+            continue;
+          }
           if (!this.pathMeta.has(item.id) && item.fileExt) {
             let coverUrl: string | null = null;
             if (item.hasCover && item.coverExt) {
@@ -194,16 +199,27 @@ export class FileLibraryStore {
             }
             this.pathMeta.set(item.id, {
               bookPath: `books/${item.id}/book.${item.fileExt}`,
-              size: item.size,
+              size: typeof item.size === 'number' && Number.isFinite(item.size) ? item.size : 0,
               derivedPath: `books/${item.id}/text.bin`,
               derivedSize: item.derivedTextSize ?? 0,
               coverUrl,
             });
           }
+          const { fileExt: _e, derivedTextSize: _d, coverExt: _c, ...clean } = item;
+          normalized.push({
+            ...clean,
+            title: typeof clean.title === 'string' && clean.title ? clean.title : (clean.fileName || clean.id),
+            authors: Array.isArray(clean.authors)
+              ? (clean.authors as readonly unknown[]).filter((a): a is string => typeof a === 'string')
+              : [],
+            fraction:
+              typeof clean.fraction === 'number' && Number.isFinite(clean.fraction)
+                ? Math.max(0, Math.min(1, clean.fraction))
+                : 0,
+            finished: Boolean(clean.finished),
+          });
         }
-        return cached.map(
-          ({ fileExt: _e, derivedTextSize: _d, coverExt: _c, ...clean }) => clean,
-        );
+        return normalized;
       }
     } catch {
       // Corrupt or missing library.json -> rebuild below
@@ -514,16 +530,5 @@ export class FileLibraryStore {
 }
 
 function mergeAppSettings(base: AppSettings, patch: Partial<AppSettings>): AppSettings {
-  const cleanPatch: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(patch)) {
-    if (v !== undefined) cleanPatch[k] = v;
-  }
-  return {
-    ...base,
-    ...(cleanPatch as Partial<AppSettings>),
-    preferredVoices:
-      patch.preferredVoices !== undefined
-        ? { ...patch.preferredVoices }
-        : { ...base.preferredVoices },
-  };
+  return sanitizeAppSettings(patch, base);
 }

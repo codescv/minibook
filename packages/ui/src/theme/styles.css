@@ -1496,3 +1496,65 @@ body,
 :root[data-eink="1"] .mb-danger-text {
   text-decoration: underline;
 }
+
+/* Boot & Render Recovery Card (strictly var(--mb-*) token-styled) */
+.mb-boot-error {
+  width: 100%;
+  height: 100%;
+  background-color: var(--mb-bg);
+  color: var(--mb-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--m-safe-top) + 24px) 24px calc(var(--m-safe-bottom) + 24px);
+}
+
+.mb-boot-error-card {
+  width: 100%;
+  max-width: 420px;
+  background-color: var(--mb-bg-sheet);
+  color: var(--mb-fg);
+  border: var(--mb-border-width) solid var(--mb-line);
+  border-radius: var(--mb-radius-lg);
+  box-shadow: var(--mb-shadow-popover);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mb-boot-error-title {
+  font-size: var(--mb-ui-title-size);
+  line-height: var(--mb-ui-title-lh);
+  font-weight: var(--mb-ui-title-weight);
+  letter-spacing: var(--mb-ui-title-tracking);
+  color: var(--mb-fg);
+}
+
+.mb-boot-error-desc {
+  font-size: var(--mb-ui-body-size);
+  line-height: var(--mb-ui-body-lh);
+  color: var(--mb-fg-quiet);
+}
+
+.mb-boot-error-detail {
+  font-family: var(--mb-font-mono);
+  font-size: var(--mb-ui-caption-size);
+  line-height: var(--mb-ui-caption-lh);
+  color: var(--mb-fg);
+  background-color: var(--mb-bg-control);
+  border: var(--mb-hairline-width) solid var(--mb-line);
+  border-radius: var(--mb-radius-sm);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.mb-boot-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+}

@@ -1,4 +1,4 @@
-import { DEFAULT_APP_SETTINGS, type AppSettings } from '@minibook/core';
+import { DEFAULT_APP_SETTINGS, sanitizeAppSettings, type AppSettings } from '@minibook/core';
 import type { Database } from '../sqlite.js';
 
 const APP_SETTINGS_KEY = 'app';
@@ -38,22 +38,5 @@ export class SettingsRepository {
 }
 
 export function mergeSettings(base: AppSettings, patch: Partial<AppSettings>): AppSettings {
-  return {
-    ...base,
-    ...stripUndefined(patch),
-    preferredVoices:
-      patch.preferredVoices !== undefined
-        ? { ...patch.preferredVoices }
-        : { ...base.preferredVoices },
-  };
-}
-
-function stripUndefined<T extends object>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) {
-      (out as Record<string, unknown>)[k] = v;
-    }
-  }
-  return out;
+  return sanitizeAppSettings(patch, base);
 }

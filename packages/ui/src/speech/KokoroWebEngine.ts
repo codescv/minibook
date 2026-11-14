@@ -13,7 +13,7 @@ import {
   type KokoroSynthesizePayload,
   type KokoroWorkerRequest,
   type KokoroWorkerResponse,
-} from './kokoro.worker';
+} from './kokoro-synthesis-core';
 
 export interface KokoroWebEngineOptions {
   baseUrl?: string | undefined;

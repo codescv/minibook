@@ -3,6 +3,7 @@ import { createElement, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { PlatformHost, SpeechPlayer } from '@minibook/core';
 import { App, type AppProps } from './app/App';
+import { AppErrorBoundary, type AppErrorBoundaryProps } from './app/ErrorBoundary';
 import { useRouteStore } from './app/routes';
 import { useSettingsStore } from './host/HostContext';
 import { useImportStore } from './library/ImportController';
@@ -18,6 +19,9 @@ export function mountMiniBookApp(
   host: PlatformHost,
   speechPlayer: SpeechPlayer,
 ): MountedMiniBookApp {
+  if (typeof window !== 'undefined') {
+    window.__minibookMounted = false;
+  }
   useRouteStore.getState().reset();
   useSettingsStore.getState().reset();
   useImportStore.getState().reset();
@@ -30,6 +34,9 @@ export function mountMiniBookApp(
   return {
     unmount() {
       root.unmount();
+      if (typeof window !== 'undefined') {
+        window.__minibookMounted = false;
+      }
       useRouteStore.getState().reset();
       useSettingsStore.getState().reset();
       useImportStore.getState().reset();
@@ -39,7 +46,7 @@ export function mountMiniBookApp(
   };
 }
 
-export { App, type AppProps };
+export { App, type AppProps, AppErrorBoundary, type AppErrorBoundaryProps };
 export {
   HostProvider,
   useHost,
@@ -89,7 +96,7 @@ export {
   type OrtRuntimeLike,
   type OrtSessionLike,
   type OrtTensorLike,
-} from './speech/kokoro.worker';
+} from './speech/kokoro-synthesis-core';
 export {
   useSpeechModelStore,
   useSpeechModelStatus,

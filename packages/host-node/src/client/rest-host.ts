@@ -86,7 +86,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
   let currentInfo: HostInfo = options?.initialInfo ?? {
     platform: 'desktop',
-    appVersion: '0.2.1',
+    appVersion: '0.2.2',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,

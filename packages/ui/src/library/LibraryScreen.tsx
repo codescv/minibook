@@ -76,8 +76,12 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
   const importer = useMemo(() => new ImportController(host), [host]);
 
   const reloadBooks = useCallback(async () => {
-    const list = await host.library.list();
-    setBooks(list);
+    try {
+      const list = await host.library.list();
+      setBooks(list);
+    } catch {
+      // preserve current shelf if host list fails transiently
+    }
   }, [host]);
 
   useEffect(() => {
@@ -126,7 +130,8 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
     const q = query.trim().normalize('NFKC').toLowerCase();
     if (!q) return books;
     return books.filter((b) => {
-      const hay = `${b.title} ${b.authors.join(' ')}`.normalize('NFKC').toLowerCase();
+      const authors = Array.isArray(b.authors) ? b.authors : [];
+      const hay = `${b.title ?? ''} ${authors.join(' ')}`.normalize('NFKC').toLowerCase();
       return hay.includes(q);
     });
   }, [books, query]);

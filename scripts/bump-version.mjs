@@ -60,6 +60,17 @@ patchIfExists('packages/host-node/src/server/context.ts', (src) =>
 patchIfExists('packages/host-node/src/client/rest-host.ts', (src) =>
   src.replace(/appVersion: '[0-9]+\.[0-9]+\.[0-9]+'/, `appVersion: '${nextVersion}'`),
 );
+patchIfExists('packages/host-node/src/models/model-store.ts', (src) =>
+  src.replace(/'User-Agent': 'MiniBook\/[0-9]+\.[0-9]+\.[0-9]+'/, `'User-Agent': 'MiniBook/${nextVersion}'`),
+);
+patchIfExists(
+  'packages/host-android/android/app/src/main/java/dev/minibook/app/ModelDownloadManager.java',
+  (src) =>
+    src.replace(
+      /\.header\("User-Agent", "MiniBook\/[0-9]+\.[0-9]+\.[0-9]+"\)/,
+      `.header("User-Agent", "MiniBook/${nextVersion}")`,
+    ),
+);
 
 let nextVersionCode = 1;
 patchIfExists('packages/host-android/android/app/build.gradle', (gradle) =>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import type { PlatformHost, SpeechPlayer } from '@minibook/core';
+import { DEFAULT_APP_SETTINGS, type PlatformHost, type SpeechPlayer } from '@minibook/core';
+import { AppErrorBoundary } from './ErrorBoundary';
 import { installGlobalBackHandler } from './back';
 import { installKeymapAndPolicySync } from './keymap';
 import { useRouteStore } from './routes';
@@ -217,6 +218,12 @@ function AppShell(): ReactElement {
         ? 'covered-reader'
         : 'active';
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.__minibookMounted = true;
+    }
+  }, []);
+
   return (
     <div className="mb-app">
       {instant ? (
@@ -305,8 +312,15 @@ function AppShell(): ReactElement {
 
 export function App({ host, speechPlayer }: AppProps): ReactElement {
   return (
-    <HostProvider host={host} speechPlayer={speechPlayer}>
-      <AppShell />
-    </HostProvider>
+    <AppErrorBoundary
+      onResetSettings={() => {
+        useSettingsStore.getState().setSettings(DEFAULT_APP_SETTINGS);
+        void host.settings.update(DEFAULT_APP_SETTINGS).catch(() => {});
+      }}
+    >
+      <HostProvider host={host} speechPlayer={speechPlayer}>
+        <AppShell />
+      </HostProvider>
+    </AppErrorBoundary>
   );
 }

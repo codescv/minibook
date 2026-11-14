@@ -115,7 +115,7 @@ export class NativeSpeechPlayer implements SpeechPlayer {
 
   subscribe(listener: (event: SpeechEvent) => void): Unsubscribe {
     this.listeners.add(listener);
-    void this.ensureListenersAttached();
+    void this.ensureListenersAttached().catch(() => undefined);
     return () => {
       this.listeners.delete(listener);
       if (this.listeners.size === 0) {

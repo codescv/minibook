@@ -1,4 +1,4 @@
-import { cpSync, existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
@@ -8,11 +8,35 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const localPublicDir = fileURLToPath(new URL('./public', import.meta.url));
 const publicDir = existsSync(localPublicDir) ? localPublicDir : undefined;
 const coreG2pDir = resolve(here, '../../core/assets/kokoro-g2p');
-const wwwG2pDir = resolve(here, '../www/kokoro-g2p');
+const wwwOutDir = resolve(here, '../www');
+const wwwG2pDir = resolve(wwwOutDir, 'kokoro-g2p');
 
-function kokoroG2pAssetsPlugin(): Plugin {
+const CLANG_FORMAT_OFF_BANNER = '/* clang-format off */\n';
+
+/**
+ * Prepends `/* clang-format off *\/` to every emitted `.js` file under `www/` so Google3's
+ * `/usr/bin/google3format` (`jj fix`, `hg fix`, Critique presubmit) leaves minified bundles and
+ * regex literals 100% byte-for-byte untouched when synced to `//experimental/users/chii/ios/minibook/Resources/www`.
+ */
+function guardJsFromClangFormat(dir: string): void {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    const st = statSync(full);
+    if (st.isDirectory()) {
+      guardJsFromClangFormat(full);
+    } else if (entry.endsWith('.js')) {
+      const content = readFileSync(full, 'utf8');
+      if (!content.startsWith('/* clang-format off */')) {
+        writeFileSync(full, CLANG_FORMAT_OFF_BANNER + content, 'utf8');
+      }
+    }
+  }
+}
+
+function kokoroG2pAndFormatGuardPlugin(): Plugin {
   return {
-    name: 'minibook-bundle-kokoro-g2p',
+    name: 'minibook-bundle-kokoro-g2p-and-format-guard',
     configureServer(server) {
       server.middlewares.use('/kokoro-g2p', (req, res, next) => {
         const rel = ((req.url ?? '').split('?')[0] ?? '').replace(/^\/+/, '');
@@ -33,6 +57,7 @@ function kokoroG2pAssetsPlugin(): Plugin {
       if (existsSync(coreG2pDir)) {
         cpSync(coreG2pDir, wwwG2pDir, { recursive: true });
       }
+      guardJsFromClangFormat(wwwOutDir);
     },
   };
 }
@@ -41,7 +66,10 @@ function kokoroG2pAssetsPlugin(): Plugin {
 export default defineConfig({
   root: here,
   ...(publicDir ? { publicDir } : {}),
-  plugins: [react(), kokoroG2pAssetsPlugin()],
+  plugins: [react(), kokoroG2pAndFormatGuardPlugin()],
+  worker: {
+    format: 'es',
+  },
   resolve: {
     alias: {
       '@minibook/core': resolve(here, '../../core/src/index.ts'),

@@ -22,16 +22,19 @@ export function CoverTile({
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressed = useRef(false);
 
-  const pct = Math.max(1, Math.min(99, Math.round(book.fraction * 100)));
-  const isFinished = book.finished || book.fraction >= 0.995;
-  const isUnread = !isFinished && book.fraction <= 0.001;
+  const rawFraction =
+    typeof book.fraction === 'number' && Number.isFinite(book.fraction) ? book.fraction : 0;
+  const pct = Math.max(1, Math.min(99, Math.round(rawFraction * 100)));
+  const isFinished = Boolean(book.finished) || rawFraction >= 0.995;
+  const isUnread = !isFinished && rawFraction <= 0.001;
 
   const statusA11y = isFinished
     ? t('statusFinished')
     : isUnread
       ? t('statusNew')
       : `${pct} percent`;
-  const authorText = book.authors.join(', ');
+  const authors = Array.isArray(book.authors) ? book.authors : [];
+  const authorText = authors.join(', ');
   const ariaLabel = authorText
     ? `${book.title}, ${authorText}, ${statusA11y}`
     : `${book.title}, ${statusA11y}`;

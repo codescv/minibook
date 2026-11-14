@@ -1,6 +1,6 @@
 {
   "name": "@minibook/ui",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MiniBook shared UI (React 19): Library, paginated Reader, ReadAloudController, WebSpeechPlayer, and Android E-Ink Mode. Exposes `mountMiniBookApp(el, host, speech)`.",
   "license": "MIT",
   "type": "module",

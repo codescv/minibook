@@ -14,11 +14,19 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     headless: true,
-    launchOptions: {
-      ...(useSystemChrome ? { executablePath: SYSTEM_CHROME } : {}),
-      args: ['--disable-lcd-text', '--font-render-hinting=full'],
-    },
   },
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        browserName: 'chromium',
+        launchOptions: {
+          ...(useSystemChrome ? { executablePath: SYSTEM_CHROME } : {}),
+          args: ['--disable-lcd-text', '--font-render-hinting=full'],
+        },
+      },
+    },
+  ],
   webServer: {
     command: 'pnpm --filter @minibook/ui dev',
     url: 'http://127.0.0.1:4173',

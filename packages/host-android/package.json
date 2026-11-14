@@ -1,6 +1,6 @@
 {
   "name": "@minibook/host-android",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "MiniBook Android standalone host (Capacitor 8, appId dev.minibook.app, Books): bounded native fs.read, Media3 ReadAloudService, and E-Ink detector/refresh/hardware-key bridge.",
   "license": "MIT",
   "type": "module",

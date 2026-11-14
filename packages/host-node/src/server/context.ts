@@ -132,7 +132,7 @@ export function createNodeHostContext(options?: NodeHostOptions): NodeHostContex
 
   const info: HostInfo = {
     platform: 'desktop',
-    appVersion: options?.appVersion ?? '0.2.1',
+    appVersion: options?.appVersion ?? '0.2.2',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,

@@ -40,12 +40,25 @@ function getG2P(): KokoroG2P {
   return g2pInstance;
 }
 
-const workerScope =
-  typeof self !== 'undefined' ? (self as unknown as WorkerGlobalLike) : null;
+const DedicatedWorkerCtor = (
+  globalThis as unknown as { DedicatedWorkerGlobalScope?: abstract new () => unknown }
+).DedicatedWorkerGlobalScope;
 
-if (workerScope && typeof workerScope.postMessage === 'function') {
+const isDedicatedWorkerScope =
+  (typeof DedicatedWorkerCtor === 'function' &&
+    typeof self !== 'undefined' &&
+    self instanceof DedicatedWorkerCtor) ||
+  (typeof self !== 'undefined' &&
+    typeof window === 'undefined' &&
+    typeof (self as unknown as { postMessage?: unknown }).postMessage === 'function');
+
+const workerScope = isDedicatedWorkerScope
+  ? (self as unknown as WorkerGlobalLike)
+  : null;
+
+if (workerScope) {
   workerScope.onmessage = async (event: MessageEvent<G2PWorkerRequest>) => {
-    const msg = event.data;
+    const msg = event?.data;
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'init') {

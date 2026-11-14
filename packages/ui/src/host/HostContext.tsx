@@ -10,6 +10,7 @@ import {
 import { create } from 'zustand';
 import {
   DEFAULT_APP_SETTINGS,
+  sanitizeAppSettings,
   type AppSettings,
   type DeviceInfo,
   type PlatformHost,
@@ -36,10 +37,10 @@ export const useSettingsStore = create<SettingsStoreState>((set) => ({
   settings: DEFAULT_APP_SETTINGS,
   hydrated: false,
   setSettings(next) {
-    set({ settings: next, hydrated: true });
+    set({ settings: sanitizeAppSettings(next, DEFAULT_APP_SETTINGS), hydrated: true });
   },
   patchLocal(patch) {
-    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    set((s) => ({ settings: sanitizeAppSettings(patch, s.settings) }));
   },
   reset() {
     set({ settings: DEFAULT_APP_SETTINGS, hydrated: false });

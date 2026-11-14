@@ -762,6 +762,190 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   fallbackToSystemVoice: true,
 };
 
+function isValidVoiceRef(raw: unknown): raw is VoiceRef {
+  if (!raw || typeof raw !== 'object') return false;
+  const v = raw as Record<string, unknown>;
+  switch (v.kind) {
+    case 'system':
+      return v.voiceId === null || typeof v.voiceId === 'string';
+    case 'edge':
+    case 'kokoro':
+      return typeof v.voiceId === 'string' && v.voiceId.length > 0;
+    case 'openai':
+    case 'qwen':
+      return (
+        typeof v.voiceId === 'string' &&
+        v.voiceId.length > 0 &&
+        typeof v.model === 'string' &&
+        v.model.length > 0
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Safely merges and validates partial/legacy `AppSettings` payloads against `base`
+ * (`DEFAULT_APP_SETTINGS` by default) so corrupt or older persisted JSON never crashes UI boot.
+ */
+export function sanitizeAppSettings(
+  raw: unknown,
+  base: AppSettings = DEFAULT_APP_SETTINGS,
+): AppSettings {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...base, preferredVoices: { ...base.preferredVoices } };
+  }
+  const p = raw as Record<string, unknown>;
+
+  const theme: ReadingTheme =
+    p.theme === 'original' || p.theme === 'paper' || p.theme === 'calm' || p.theme === 'quiet'
+      ? p.theme
+      : base.theme;
+  const fontFamily: BookFontFamily =
+    p.fontFamily === 'original' || p.fontFamily === 'serif' || p.fontFamily === 'sans'
+      ? p.fontFamily
+      : base.fontFamily;
+  const fontScale =
+    typeof p.fontScale === 'number' && Number.isFinite(p.fontScale)
+      ? Math.max(80, Math.min(200, Math.round(p.fontScale)))
+      : base.fontScale;
+  const lineSpacing: LineSpacingPreset =
+    p.lineSpacing === 'tight' || p.lineSpacing === 'normal' || p.lineSpacing === 'loose'
+      ? p.lineSpacing
+      : base.lineSpacing;
+  const margins: MarginPreset =
+    p.margins === 'narrow' || p.margins === 'medium' || p.margins === 'wide'
+      ? p.margins
+      : base.margins;
+  const captionMode: BarePageCaptionMode =
+    p.captionMode === 'pages-left' || p.captionMode === 'percent' || p.captionMode === 'hidden'
+      ? p.captionMode
+      : base.captionMode;
+  const einkMode: EinkModeSetting =
+    p.einkMode === 'auto' || p.einkMode === 'on' || p.einkMode === 'off'
+      ? p.einkMode
+      : base.einkMode;
+  const fullRefreshEvery: FullRefreshCadence =
+    p.fullRefreshEvery === 0 ||
+    p.fullRefreshEvery === 5 ||
+    p.fullRefreshEvery === 10 ||
+    p.fullRefreshEvery === 20
+      ? p.fullRefreshEvery
+      : base.fullRefreshEvery;
+  const textBoldness: TextBoldnessStep =
+    p.textBoldness === 0 || p.textBoldness === 1 || p.textBoldness === 2 || p.textBoldness === 3
+      ? p.textBoldness
+      : base.textBoldness;
+  const speechRate =
+    typeof p.speechRate === 'number' && Number.isFinite(p.speechRate) && p.speechRate > 0
+      ? Math.max(0.5, Math.min(3.0, p.speechRate))
+      : base.speechRate;
+  const modelDownloadSource: ModelDownloadSource =
+    p.modelDownloadSource === 'auto' ||
+    p.modelDownloadSource === 'huggingface' ||
+    p.modelDownloadSource === 'hf-mirror' ||
+    p.modelDownloadSource === 'custom'
+      ? p.modelDownloadSource
+      : base.modelDownloadSource;
+
+  let preferredVoices: Record<string, VoiceRef> = { ...base.preferredVoices };
+  if (p.preferredVoices !== undefined) {
+    preferredVoices = {};
+    if (p.preferredVoices && typeof p.preferredVoices === 'object' && !Array.isArray(p.preferredVoices)) {
+      for (const [langKey, ref] of Object.entries(p.preferredVoices as Record<string, unknown>)) {
+        if (isValidVoiceRef(ref)) {
+          preferredVoices[langKey] = ref;
+        }
+      }
+    }
+  }
+
+  let customSpeechServer = base.customSpeechServer;
+  if (p.customSpeechServer === null) {
+    customSpeechServer = null;
+  } else if (
+    p.customSpeechServer &&
+    typeof p.customSpeechServer === 'object' &&
+    !Array.isArray(p.customSpeechServer)
+  ) {
+    const c = p.customSpeechServer as Record<string, unknown>;
+    if (typeof c.baseUrl === 'string') {
+      customSpeechServer = {
+        baseUrl: c.baseUrl,
+        model: typeof c.model === 'string' && c.model ? c.model : 'tts-1',
+        voice: typeof c.voice === 'string' && c.voice ? c.voice : 'alloy',
+      };
+    }
+  }
+
+  let qwenServer = base.qwenServer;
+  if (p.qwenServer === null) {
+    qwenServer = null;
+  } else if (p.qwenServer && typeof p.qwenServer === 'object' && !Array.isArray(p.qwenServer)) {
+    const q = p.qwenServer as Record<string, unknown>;
+    if (typeof q.baseUrl === 'string') {
+      const protocol: QwenProtocol =
+        q.protocol === 'mlx-audio' || q.protocol === 'vllm-omni' || q.protocol === 'qwen-native'
+          ? q.protocol
+          : 'mlx-audio';
+      qwenServer = {
+        baseUrl: q.baseUrl,
+        protocol,
+        model:
+          typeof q.model === 'string' && q.model
+            ? q.model
+            : 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit',
+        voice: typeof q.voice === 'string' && q.voice ? q.voice : 'Vivian',
+        ...(typeof q.instruct === 'string' ? { instruct: q.instruct } : {}),
+        ...(typeof q.refAudio === 'string' ? { refAudio: q.refAudio } : {}),
+        ...(typeof q.refText === 'string' ? { refText: q.refText } : {}),
+        ...(typeof q.xVectorOnly === 'boolean' ? { xVectorOnly: q.xVectorOnly } : {}),
+      };
+    }
+  }
+
+  const einkAutoNoticeShown =
+    typeof p.einkAutoNoticeShown === 'boolean'
+      ? p.einkAutoNoticeShown
+      : base.einkAutoNoticeShown;
+
+  return {
+    theme,
+    matchSystemTheme:
+      typeof p.matchSystemTheme === 'boolean' ? p.matchSystemTheme : base.matchSystemTheme,
+    fontFamily,
+    fontScale,
+    lineSpacing,
+    margins,
+    justify: typeof p.justify === 'boolean' ? p.justify : base.justify,
+    captionMode,
+    einkMode,
+    ...(einkAutoNoticeShown !== undefined ? { einkAutoNoticeShown } : {}),
+    volumeKeyPaging:
+      p.volumeKeyPaging === null || typeof p.volumeKeyPaging === 'boolean'
+        ? p.volumeKeyPaging
+        : base.volumeKeyPaging,
+    fullRefreshEvery,
+    textBoldness,
+    keepScreenOn: typeof p.keepScreenOn === 'boolean' ? p.keepScreenOn : base.keepScreenOn,
+    speechRate,
+    preferredVoices,
+    edgeVoicesEnabled:
+      typeof p.edgeVoicesEnabled === 'boolean' ? p.edgeVoicesEnabled : base.edgeVoicesEnabled,
+    customSpeechServer,
+    qwenServer,
+    modelDownloadSource,
+    modelMirrorBaseUrl:
+      p.modelMirrorBaseUrl === null || typeof p.modelMirrorBaseUrl === 'string'
+        ? p.modelMirrorBaseUrl
+        : base.modelMirrorBaseUrl,
+    fallbackToSystemVoice:
+      typeof p.fallbackToSystemVoice === 'boolean'
+        ? p.fallbackToSystemVoice
+        : base.fallbackToSystemVoice,
+  };
+}
+
 export type HostPlatform = 'desktop' | 'android' | 'ios';
 
 export interface HostCapabilities {

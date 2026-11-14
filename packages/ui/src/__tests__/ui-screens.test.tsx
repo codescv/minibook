@@ -517,4 +517,100 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     mounted.unmount();
     container.remove();
   });
+
+  it('[v0.2.2] guards worker modules on window, sanitizes legacy/malformed settings & books, and renders AppErrorBoundary recovery card instead of white screen', async () => {
+    window.onmessage = null;
+    await import('../speech/kokoro.worker');
+    await import('../speech/kokoro-g2p.worker');
+    expect(window.onmessage).toBeNull();
+
+    const { sanitizeAppSettings } = await import('@minibook/core');
+    const sanitized = sanitizeAppSettings({
+      theme: 'sepia-legacy',
+      fontScale: 9999,
+      speechRate: -5,
+      preferredVoices: { default: null, zh: { kind: 'kokoro', voiceId: 'zf_001' }, bad: { foo: 1 } },
+      qwenServer: 'not-an-object',
+      customSpeechServer: { baseUrl: 'http://127.0.0.1:9000' },
+    });
+    expect(sanitized.theme).toBe('original');
+    expect(sanitized.fontScale).toBe(200);
+    expect(sanitized.speechRate).toBe(1.0);
+    expect(sanitized.preferredVoices).toEqual({ zh: { kind: 'kokoro', voiceId: 'zf_001' } });
+    expect(sanitized.qwenServer).toBeNull();
+    expect(sanitized.customSpeechServer).toEqual({
+      baseUrl: 'http://127.0.0.1:9000',
+      model: 'tts-1',
+      voice: 'alloy',
+    });
+
+    // Mount App with malformed legacy settings + book missing authors array
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const host = createMockPlatformHost({
+      platform: 'ios',
+      initialSettings: {
+        preferredVoices: null as unknown as Record<string, never>,
+      },
+    });
+    const origList = host.library.list.bind(host.library);
+    host.library.list = async () => {
+      const base = await origList();
+      return [
+        {
+          ...base[0]!,
+          authors: undefined as unknown as readonly string[],
+          fraction: Number.NaN,
+        },
+      ];
+    };
+    const speech = createMockSpeechPlayer();
+    const mounted = mountMiniBookApp(container, host, speech);
+    expect(await screen.findByRole('heading', { name: 'Library' })).toBeInTheDocument();
+    expect((window as unknown as { __minibookMounted?: boolean }).__minibookMounted).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(await screen.findByTestId('settings-screen')).toBeInTheDocument();
+    mounted.unmount();
+
+    // Verify AppErrorBoundary catches render crash and displays visible recovery card
+    const { createElement } = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { AppErrorBoundary } = await import('../app/ErrorBoundary');
+    let shouldThrow = true;
+    function Boom() {
+      if (shouldThrow) {
+        throw new Error('Synthetic render explosion');
+      }
+      return createElement('div', { 'data-testid': 'recovered-view' }, 'Recovered');
+    }
+    (window as unknown as { __minibookBootErrors?: string[] }).__minibookBootErrors = [];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errRoot = createRoot(container);
+    await act(async () => {
+      errRoot.render(
+        createElement(
+          AppErrorBoundary,
+          {
+            onResetSettings: () => {
+              shouldThrow = false;
+            },
+          },
+          createElement(Boom),
+        ),
+      );
+    });
+    expect(screen.getByTestId('boot-error-card')).toBeInTheDocument();
+    expect(screen.getByText(/Synthetic render explosion/)).toBeInTheDocument();
+    expect(
+      (window as unknown as { __minibookBootErrors?: string[] }).__minibookBootErrors,
+    ).toContain('react:Synthetic render explosion');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Retry with defaults/i }));
+    });
+    expect(screen.getByTestId('recovered-view')).toBeInTheDocument();
+    errRoot.unmount();
+    errSpy.mockRestore();
+    container.remove();
+  });
 });
