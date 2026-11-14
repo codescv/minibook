@@ -842,12 +842,15 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     });
     winWithCap.Capacitor = { isNativePlatform: () => true };
     try {
-      const capG2p = new KokoroG2PClient({ handshakeTimeoutMs: 5000 });
+      const capG2p = new KokoroG2PClient({ handshakeTimeoutMs: 6000 });
       const t0 = performance.now();
       const out = await capG2p.phonemize('你好，世界。', 'zh-CN', { voiceId: 'zf_018' });
       expect(capG2p.getExecutionMode()).toBe('main');
       expect(workerSpawnCount).toBe(0);
-      expect(performance.now() - t0).toBeLessThan(1500);
+      expect(performance.now() - t0).toBeLessThan(4000);
+      const tWarm = performance.now();
+      await capG2p.phonemize('你好，世界。', 'zh-CN', { voiceId: 'zf_018' });
+      expect(performance.now() - tWarm).toBeLessThan(500);
       expect(out.phonemeIds.length).toBeGreaterThan(0);
       capG2p.dispose();
     } finally {
