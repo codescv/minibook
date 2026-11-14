@@ -134,7 +134,7 @@ public final class KokoroModelStore {
         }
     }
 
-    public String getActiveVariant() {
+    public String getDesiredVariant() {
         String configured = readConfiguredPrecisionVariant();
         if (configured != null) return configured;
         JSONObject raw = readRawInstalledMeta();
@@ -145,6 +145,18 @@ public final class KokoroModelStore {
             }
         }
         return DEFAULT_VARIANT;
+    }
+
+    public String getActiveVariant() {
+        String desired = getDesiredVariant();
+        if (readInstalledMetaForVariant(desired) != null) {
+            return desired;
+        }
+        String alt = VARIANT_FP32.equals(desired) ? VARIANT_Q8 : VARIANT_FP32;
+        if (readInstalledMetaForVariant(alt) != null) {
+            return alt;
+        }
+        return desired;
     }
 
     @Nullable

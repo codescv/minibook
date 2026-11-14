@@ -163,7 +163,7 @@ export const zhCN: I18nDict = {
   ttsGuideServer:
     '连接电脑局域网部署的 AI 语音服务（如 Mac 运行 Qwen3-TTS / mlx-audio）、兼容 OpenAI 的自建/云端接口，或开启免费在线的微软 Edge 语音。',
   modelQuality: '模型音质',
-  precisionQ8: '标准版 · 124 MB',
+  precisionQ8: '标准版 · 121 MB',
   precisionFp32: '高清无损 · 324 MB',
   showAllSystemVoices: '显示全部系统语音（{n}）',
   showBookLangVoicesOnly: '仅显示当前书籍语言',

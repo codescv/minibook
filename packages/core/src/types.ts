@@ -736,7 +736,7 @@ export interface AppSettings {
   readonly qwenServer: QwenServerConfig | null;
   readonly modelDownloadSource: ModelDownloadSource;
   readonly modelMirrorBaseUrl: string | null;
-  /** Optional ONNX model precision override (`'q8'` 124 MB vs `'fp32'` 324 MB); platform default applies when unset (`'q8'` on Android, `'fp32'` on desktop). */
+  /** Optional ONNX model precision override (`'q8'` 121 MB vs `'fp32'` 324 MB); platform default applies when unset (`'q8'` on Android, `'fp32'` on desktop). */
   readonly kokoroPrecision?: KokoroPrecision;
   readonly fallbackToSystemVoice: boolean;
 }

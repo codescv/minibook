@@ -438,6 +438,8 @@ export class ReadAloudController {
     } else {
       if (this.pendingVoiceSwitchResume !== null) {
         this.pendingVoiceSwitchResume = true;
+        useReadAloudStore.setState({ status: 'buffering' });
+        return;
       }
       this.player.play();
     }
@@ -623,7 +625,7 @@ export class ReadAloudController {
       this.player.setVoice(voice);
       const slice = this.utterances.slice(idx);
       this.configureSchedulerForVoice(voice, slice, target.id);
-      if (wasPlaying && useReadAloudStore.getState().status === 'paused') {
+      if (wasPlaying) {
         this.player.play();
       }
       return;

@@ -161,7 +161,7 @@ export const en = {
   ttsGuideServer:
     'Connects to a LAN AI voice server on your computer (e.g. Mac running Qwen3-TTS / mlx-audio), an OpenAI-compatible endpoint, or free online Microsoft Edge voices.',
   modelQuality: 'Model quality',
-  precisionQ8: 'Standard · 124 MB',
+  precisionQ8: 'Standard · 121 MB',
   precisionFp32: 'HD FP32 · 324 MB',
   showAllSystemVoices: 'Show all system voices ({n})',
   showBookLangVoicesOnly: 'Filter by book language',

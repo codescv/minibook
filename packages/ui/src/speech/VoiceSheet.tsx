@@ -620,35 +620,58 @@ export function VoiceSheet({
                         })}`
                       : ''}
                   </span>
-                  <button
-                    type="button"
-                    className="mb-icon-btn mb-danger-text"
-                    data-testid="kokoro-delete-btn"
-                    onClick={() => {
-                      if (!confirmingDelete) {
-                        setConfirmingDelete(true);
+                  <div className="mb-library-actions">
+                    {host.info.platform !== 'ios' &&
+                      modelStatus?.variant &&
+                      modelStatus.variant !== requestedVariant && (
+                        <button
+                          type="button"
+                          className="mb-primary-btn"
+                          data-testid="kokoro-upgrade-variant-btn"
+                          onClick={() => {
+                            void modelsApi.download(KOKORO_MODEL_ID, {
+                              variant: requestedVariant,
+                              ...(modelStatus.installedVoices.length > 0
+                                ? { voices: modelStatus.installedVoices }
+                                : {}),
+                              source: settings.modelDownloadSource,
+                              mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                            });
+                          }}
+                        >
+                          {t('download')}
+                        </button>
+                      )}
+                    <button
+                      type="button"
+                      className="mb-icon-btn mb-danger-text"
+                      data-testid="kokoro-delete-btn"
+                      onClick={() => {
+                        if (!confirmingDelete) {
+                          setConfirmingDelete(true);
+                          if (deleteTimerRef.current !== null) {
+                            clearTimeout(deleteTimerRef.current);
+                          }
+                          deleteTimerRef.current = setTimeout(() => {
+                            setConfirmingDelete(false);
+                            deleteTimerRef.current = null;
+                          }, 4000);
+                          return;
+                        }
                         if (deleteTimerRef.current !== null) {
                           clearTimeout(deleteTimerRef.current);
-                        }
-                        deleteTimerRef.current = setTimeout(() => {
-                          setConfirmingDelete(false);
                           deleteTimerRef.current = null;
-                        }, 4000);
-                        return;
-                      }
-                      if (deleteTimerRef.current !== null) {
-                        clearTimeout(deleteTimerRef.current);
-                        deleteTimerRef.current = null;
-                      }
-                      setConfirmingDelete(false);
-                      if (selectedVoice?.kind === 'kokoro') {
-                        selectAndPersistVoice({ kind: 'system', voiceId: null });
-                      }
-                      void modelsApi.remove(KOKORO_MODEL_ID);
-                    }}
-                  >
-                    {confirmingDelete ? t('deleteConfirm') : t('delete')}
-                  </button>
+                        }
+                        setConfirmingDelete(false);
+                        if (selectedVoice?.kind === 'kokoro') {
+                          selectAndPersistVoice({ kind: 'system', voiceId: null });
+                        }
+                        void modelsApi.remove(KOKORO_MODEL_ID);
+                      }}
+                    >
+                      {confirmingDelete ? t('deleteConfirm') : t('delete')}
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -668,7 +691,10 @@ export function VoiceSheet({
                           source: settings.modelDownloadSource,
                           mirrorBaseUrl: settings.modelMirrorBaseUrl,
                         };
-                        if (errorInfo.actionKind === 'try-again') {
+                        if (
+                          errorInfo.actionKind === 'try-again' &&
+                          (modelStatus?.installedVoices?.length ?? 0) === 0
+                        ) {
                           void modelsApi.remove(KOKORO_MODEL_ID).then(() => {
                             void modelsApi.download(KOKORO_MODEL_ID, dlOpts);
                           });
@@ -726,7 +752,10 @@ export function VoiceSheet({
                   void (async () => {
                     await updateSettings({ kokoroPrecision: nextPrecision });
                     const refreshed = await useSpeechModelStore.getState().refreshFromHost(host);
-                    if (wasReadyOrDownloading && refreshed?.state !== 'ready') {
+                    if (
+                      wasReadyOrDownloading &&
+                      (refreshed?.state !== 'ready' || refreshed.variant !== nextVariant)
+                    ) {
                       void modelsApi.download(KOKORO_MODEL_ID, {
                         variant: nextVariant,
                         ...(prevVoices.length > 0 ? { voices: prevVoices } : {}),
@@ -876,7 +905,7 @@ export function VoiceSheet({
                         langKey: item.langKey,
                       };
                       void modelsApi.download(KOKORO_MODEL_ID, {
-                        variant: requestedVariant,
+                        variant: modelStatus?.state === 'ready' ? modelStatus.variant : requestedVariant,
                         voices: [item.voiceId],
                         source: settings.modelDownloadSource,
                         mirrorBaseUrl: settings.modelMirrorBaseUrl,

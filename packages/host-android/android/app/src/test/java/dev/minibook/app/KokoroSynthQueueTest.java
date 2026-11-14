@@ -2,11 +2,13 @@ package dev.minibook.app;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -521,5 +523,39 @@ public class KokoroSynthQueueTest {
         String keyQ8 = KokoroSynthQueue.computeCacheKey("onnx-q8", "zf_018", annotatedFromU1.get(0));
         String keyFp32 = KokoroSynthQueue.computeCacheKey("onnx-fp32", "zf_018", annotatedFromU1.get(0));
         assertFalse("onnx-q8 and onnx-fp32 cache keys MUST differ", keyQ8.equals(keyFp32));
+
+        // 6. [P1] With only `onnx-q8` installed on disk, setting `kokoroPrecision: "fp32"` in settings.json
+        // MUST keep `modelStore.getActiveVariant() == "onnx-q8"` so synthesis keeps working cleanly while `fp32` is absent/paused!
+        byte[] fakeQ8Model = new byte[128];
+        Arrays.fill(fakeQ8Model, (byte) 0x42);
+        File q8File = modelStore.resolveInModelJail(KokoroModelStore.MODEL_ID, "onnx/model_quantized.onnx");
+        AtomicFiles.writeAtomicFile(q8File, fakeQ8Model);
+        JSONObject installedMeta = new JSONObject();
+        installedMeta.put("variant", "onnx-q8");
+        installedMeta.put("revision", "rev1");
+        installedMeta.put("files", new JSONArray()
+            .put(new JSONObject().put("path", "onnx/model_quantized.onnx").put("size", fakeQ8Model.length))
+            .put(new JSONObject().put("path", "voices/zm_010.bin").put("size", KokoroModelStore.VOICE_BIN_BYTES)));
+        installedMeta.put("voices", new JSONArray().put("zm_010"));
+        modelStore.writeInstalledMeta(installedMeta);
+
+        AtomicFiles.writeAtomicFile(
+            new File(tempRoot, "settings.json"),
+            "{\"kokoroPrecision\":\"fp32\"}".getBytes(StandardCharsets.UTF_8)
+        );
+        assertEquals("onnx-fp32", modelStore.getDesiredVariant());
+        assertEquals("onnx-q8", modelStore.getActiveVariant());
+        engine.pause();
+        engine.setVoice(new ReadAloudQueueEngine.VoiceSpec("kokoro", "zm_010", null, null));
+        engine.play();
+        assertEquals(Arrays.asList("u1", "u1", "u1", "u1"), playedUtteranceIds);
+
+        // 7. [P3-1] Stale `engineGeneration` delivery after `setVoice` MUST be dropped by `attachLocalSynthAudio`!
+        int staleGen = engine.getLocalPlanGeneration();
+        engine.pause();
+        engine.setVoice(new ReadAloudQueueEngine.VoiceSpec("system", null, null, null)); // purges item.audio & increments localPlanGeneration
+        assertNull(engine.getCurrentItem().audio);
+        engine.attachLocalSynthAudio("u1", zf001WavPath, 900L, Collections.emptyList(), staleGen);
+        assertNull("Stale generation WAV MUST NOT re-attach after setVoice!", engine.getCurrentItem().audio);
     }
 }

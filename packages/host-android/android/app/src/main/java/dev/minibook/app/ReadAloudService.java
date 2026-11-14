@@ -250,10 +250,45 @@ public class ReadAloudService extends MediaSessionService {
                 }
 
                 @Override
+                public void attachAudio(
+                    String utteranceId,
+                    String wavPath,
+                    long durationMs,
+                    List<ReadAloudQueueEngine.WordMarkSpec> marks,
+                    int engineGeneration
+                ) {
+                    MAIN_HANDLER.post(() -> {
+                        if (queueEngine != null) {
+                            queueEngine.attachLocalSynthAudio(
+                                utteranceId,
+                                wavPath,
+                                durationMs,
+                                marks,
+                                engineGeneration
+                            );
+                        }
+                    });
+                }
+
+                @Override
                 public void onSynthFailed(String utteranceId, String errorCode, String message) {
                     MAIN_HANDLER.post(() -> {
                         if (queueEngine != null) {
                             queueEngine.onLocalSynthFailed(utteranceId, errorCode);
+                        }
+                    });
+                }
+
+                @Override
+                public void onSynthFailed(
+                    String utteranceId,
+                    String errorCode,
+                    String message,
+                    int engineGeneration
+                ) {
+                    MAIN_HANDLER.post(() -> {
+                        if (queueEngine != null) {
+                            queueEngine.onLocalSynthFailed(utteranceId, errorCode, engineGeneration);
                         }
                         if ("model-selftest".equals(errorCode) && kokoroModelStore != null) {
                             JSONObject errStatus = kokoroModelStore.buildReconciledStatus(
@@ -413,6 +448,11 @@ public class ReadAloudService extends MediaSessionService {
             if (svc.kokoroBackend != null) {
                 svc.kokoroBackend.close();
             }
+            MAIN_HANDLER.post(() -> {
+                if (svc.queueEngine != null) {
+                    svc.queueEngine.onLocalModelVariantChanged();
+                }
+            });
         }
     }
 

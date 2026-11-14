@@ -853,6 +853,9 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       ...this.modelStatus,
       ...patch,
     };
+    if (this.modelStatus.state === 'ready') {
+      this.downloadedModelVariants.add(this.modelStatus.variant);
+    }
     if (emit) {
       this.emitEvent({ type: 'speech-model', status: this.modelStatus });
     }
@@ -1110,6 +1113,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
         const nextVariant = this.settingsData.kokoroPrecision === 'fp32' ? 'onnx-fp32' : 'onnx-q8';
         const nextTotal = nextVariant === 'onnx-fp32' ? 344_069_602 : 132_056_757;
         const voices = this.modelStatus.installedVoices;
+        const altVariant = nextVariant === 'onnx-fp32' ? 'onnx-q8' : 'onnx-fp32';
         if (this.downloadedModelVariants.has(nextVariant) && voices.length > 0) {
           this.modelStatus = {
             ...this.modelStatus,
@@ -1118,6 +1122,17 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
             bytesDone: nextTotal,
             bytesTotal: nextTotal,
             installedBytes: nextTotal,
+          };
+        } else if (this.downloadedModelVariants.has(altVariant) && voices.length > 0) {
+          // Keep the already-downloaded serving variant `ready` until the new variant finishes downloading!
+          const altTotal = altVariant === 'onnx-fp32' ? 344_069_602 : 132_056_757;
+          this.modelStatus = {
+            ...this.modelStatus,
+            state: 'ready',
+            variant: altVariant,
+            bytesDone: altTotal,
+            bytesTotal: altTotal,
+            installedBytes: altTotal,
           };
         } else if (this.modelStatus.variant !== nextVariant) {
           const voicesBytes = voices.length * 522_240;
@@ -1279,10 +1294,28 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
         return this.modelStatus;
       },
       pause: async () => {
-        this.modelStatus = {
-          ...this.modelStatus,
-          state: 'paused',
-        };
+        if (this.downloadedModelVariants.size > 0 && this.modelStatus.installedVoices.length > 0) {
+          const servingVariant = [...this.downloadedModelVariants][0]! as SpeechModelStatus['variant'];
+          const servingTotal =
+            servingVariant === 'coreml'
+              ? 87_133_611
+              : servingVariant === 'onnx-q8'
+                ? 132_056_757
+                : 344_069_602;
+          this.modelStatus = {
+            ...this.modelStatus,
+            state: 'ready',
+            variant: servingVariant,
+            bytesDone: servingTotal,
+            bytesTotal: servingTotal,
+            installedBytes: servingTotal,
+          };
+        } else {
+          this.modelStatus = {
+            ...this.modelStatus,
+            state: 'paused',
+          };
+        }
         this.emitEvent({ type: 'speech-model', status: this.modelStatus });
         return this.modelStatus;
       },

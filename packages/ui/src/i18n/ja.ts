@@ -163,7 +163,7 @@ export const ja: I18nDict = {
   ttsGuideServer:
     'LAN 上の PC で動く AI 音声サーバー（Mac の Qwen3-TTS / mlx-audio 等）、OpenAI 互換 API、または無料の Microsoft Edge オンライン音声に接続します。',
   modelQuality: 'モデル音質',
-  precisionQ8: '標準 · 124 MB',
+  precisionQ8: '標準 · 121 MB',
   precisionFp32: '高音質 · 324 MB',
   showAllSystemVoices: 'すべてのシステム音声を表示（{n}）',
   showBookLangVoicesOnly: '本の言語のみ表示',

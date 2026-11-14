@@ -364,9 +364,21 @@ export class ModelStore {
     }
   }
 
+  private resolveServingVariant(): 'onnx-fp32' | 'onnx-q8' {
+    const desired = this.resolveDesiredVariant();
+    if (this.readInstalledMetadata(desired)) {
+      return desired;
+    }
+    const alt = desired === 'onnx-fp32' ? 'onnx-q8' : 'onnx-fp32';
+    if (this.readInstalledMetadata(alt)) {
+      return alt;
+    }
+    return desired;
+  }
+
   private reconcileFromDisk(): SpeechModelStatus {
-    const desiredVariant = this.resolveDesiredVariant();
-    const meta = this.readInstalledMetadata(desiredVariant);
+    const servingVariant = this.resolveServingVariant();
+    const meta = this.readInstalledMetadata(servingVariant);
     if (meta) {
       const installedBytes = meta.files.reduce((sum, f) => sum + f.size, 0);
       return {
@@ -380,6 +392,8 @@ export class ModelStore {
         ...(meta.source ? { source: meta.source } : {}),
       };
     }
+
+    const desiredVariant = this.resolveDesiredVariant();
 
     const rawMeta = this.readRawInstalledMetadata();
     const diskBytes = sumDirectoryBytes(this.kokoroRoot);
@@ -449,7 +463,11 @@ export class ModelStore {
 
   status(id: SpeechModelId): SpeechModelStatus {
     this.assertSupportedModelId(id);
-    if (!this.activeJobPromise && this.statusState.state !== 'error') {
+    if (
+      !this.activeJobPromise &&
+      (this.statusState.state !== 'error' ||
+        this.statusState.variant !== this.resolveDesiredVariant())
+    ) {
       this.statusState = this.reconcileFromDisk();
     }
     return this.statusState;

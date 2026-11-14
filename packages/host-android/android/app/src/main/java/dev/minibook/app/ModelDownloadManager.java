@@ -181,7 +181,8 @@ public final class ModelDownloadManager {
             if (!activeDownloading) {
                 // Keep reconciled status up-to-date if not actively transferring
                 String curState = currentStatus.optString("state", "absent");
-                if (!"error".equals(curState)) {
+                if (!"error".equals(curState)
+                    || !Objects.equals(currentStatus.optString("variant"), store.getDesiredVariant())) {
                     currentStatus = store.buildReconciledStatus(
                         currentStatus.has("backend") ? currentStatus.optString("backend") : null,
                         currentStatus.optDouble("rtf", 0.0),

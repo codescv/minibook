@@ -107,7 +107,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
   let lastKnownBackend: SpeechModelBackend | undefined;
   let lastKnownRtf: number | undefined;
   let lastSelfTestError: MiniBookError | null = null;
-  let activeModelVariant: 'onnx-fp32' | 'onnx-q8' = 'onnx-fp32';
+  let activeModelVariant: 'onnx-fp32' | 'onnx-q8' | null = null;
   let lastKnownPrecision: 'q8' | 'fp32' | undefined;
   const localModelListeners = new Set<(event: HostEvent) => void>();
 
@@ -148,7 +148,10 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
   });
 
   function enrichModelStatus(status: SpeechModelStatus): SpeechModelStatus {
-    if (status.variant === 'onnx-q8' || status.variant === 'onnx-fp32') {
+    if (
+      status.state === 'ready' &&
+      (status.variant === 'onnx-q8' || status.variant === 'onnx-fp32')
+    ) {
       activeModelVariant = status.variant;
     }
     return {
@@ -224,6 +227,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
     },
     async remove(id: 'kokoro-v1.1-zh') {
       kokoroEngine.dispose();
+      activeModelVariant = null;
       lastKnownBackend = undefined;
       lastKnownRtf = undefined;
       lastSelfTestError = null;
@@ -496,7 +500,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
         );
         lastKnownPrecision = s.kokoroPrecision;
         if (patch && 'kokoroPrecision' in patch) {
-          activeModelVariant = s.kokoroPrecision === 'q8' ? 'onnx-q8' : 'onnx-fp32';
+          await modelsApi.status('kokoro-v1.1-zh').catch(() => undefined);
         }
         return s;
       },
@@ -528,12 +532,19 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
           if (!req.phonemeIds || req.phonemeIds.length === 0) {
             throw new MiniBookError('invalid-argument', 'Kokoro synthesis requires phonemeIds');
           }
-          const variant: 'onnx-fp32' | 'onnx-q8' =
+          const desiredVariant =
             lastKnownPrecision === 'q8'
               ? 'onnx-q8'
               : lastKnownPrecision === 'fp32'
                 ? 'onnx-fp32'
-                : activeModelVariant;
+                : null;
+          if (
+            activeModelVariant === null ||
+            (desiredVariant !== null && activeModelVariant !== desiredVariant)
+          ) {
+            await modelsApi.status('kokoro-v1.1-zh').catch(() => undefined);
+          }
+          const variant: 'onnx-fp32' | 'onnx-q8' = activeModelVariant ?? 'onnx-fp32';
           const key = await computeSpeechCacheKey({
             engine: 'kokoro',
             voiceId: req.voiceId,

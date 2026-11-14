@@ -391,6 +391,7 @@ describe('@minibook/host-node server, SQLite, HTTP 206 Range & RestPlatformHost'
     expect(badCacheKey.status).toBe(400);
 
     let workerRuns = 0;
+    const workerVariants: Array<string | undefined> = [];
     const fakeWorkerFactory = (): KokoroWorkerLike => {
       const msgListeners = new Set<(ev: MessageEvent<KokoroWorkerResponse>) => void>();
       return {
@@ -400,6 +401,7 @@ describe('@minibook/host-node server, SQLite, HTTP 206 Range & RestPlatformHost'
         postMessage(msg: KokoroWorkerRequest) {
           if (msg.type === 'synth') {
             workerRuns += 1;
+            workerVariants.push(msg.variant);
             const wav = encodeMonoPcm16Wav(new Float32Array(2400).fill(0.25), 24_000);
             const buf = wav.wav.slice().buffer;
             const resp: KokoroWorkerResponse = {
@@ -456,6 +458,43 @@ describe('@minibook/host-node server, SQLite, HTTP 206 Range & RestPlatformHost'
     expect(workerRuns).toBe(1);
     expect(synth2.cached).toBe(true);
     expect(synth2.ref).toBe(synth1.ref);
+
+    // [v0.2.4 P1]: Seed a valid `onnx-q8` install on disk, switch `kokoroPrecision` to `'fp32'` BEFORE `onnx/model.onnx`
+    // is downloaded, and verify `RestPlatformHost.speech.synthesize` STILL synthesizes using `'onnx-q8'`!
+    const { KOKORO_MANIFEST } = await import('@minibook/core');
+    const onnxDir = join(tempDir, 'models', KOKORO_MODEL_ID, 'onnx');
+    mkdirSync(onnxDir, { recursive: true });
+    const fakeQ8 = new Uint8Array(128).fill(0x11);
+    writeFileSync(join(onnxDir, 'model_quantized.onnx'), fakeQ8);
+    writeFileSync(
+      join(tempDir, 'models', KOKORO_MODEL_ID, 'installed.json'),
+      JSON.stringify({
+        revision: KOKORO_MANIFEST.onnx.revision,
+        variant: 'onnx-q8',
+        files: [
+          { path: 'onnx/model_quantized.onnx', size: fakeQ8.byteLength, sha256: '00' },
+          { path: 'voices/zf_001.bin', size: fakeVoice.byteLength, sha256: '00' },
+        ],
+        voices: ['zf_001'],
+        installedAt: Date.now(),
+      }),
+    );
+    await host.settings.update({ kokoroPrecision: 'fp32' });
+    const statusWhileFp32Absent = await host.models!.status(KOKORO_MODEL_ID);
+    expect(statusWhileFp32Absent.state).toBe('ready');
+    expect(statusWhileFp32Absent.variant).toBe('onnx-q8');
+
+    workerVariants.length = 0;
+    const synthWhileUpgrading = await host.speech.synthesize({
+      engine: 'kokoro',
+      voiceId: 'zf_001',
+      text: '升级期间继续用标准版朗读。',
+      lang: 'zh-CN',
+      phonemeIds: [[73, 127, 172, 4]],
+      phonemeSpeeds: [1.0],
+    });
+    expect(synthWhileUpgrading.cached).toBe(false);
+    expect(workerVariants).toEqual(['onnx-q8']);
 
     // [v0.2.3] Stage + commit a CJK book and verify GET /api/books/:id/download returns attachment with UTF-8 filename*
     const cjkBookBytes = new TextEncoder().encode('第一章 科学边界\n\n我们在这里说话，没有觉得奇怪，还会继续前进。');

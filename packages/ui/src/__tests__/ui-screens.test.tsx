@@ -776,7 +776,8 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     expect(androidHost.getModelStatus().installedVoices).toContain('zf_018');
     expect(androidHost.getModelStatus().installedVoices).toContain('zf_001');
 
-    // Switch precision `Standard · 124 MB` -> `HD FP32 · 324 MB`: upgrades to `onnx-fp32` while preserving all 6 voices!
+    // Switch precision `Standard · 121 MB` -> `HD FP32 · 324 MB`: upgrades to `onnx-fp32` while preserving all 6 voices!
+    expect(screen.getByRole('tab', { name: /Standard · 121 MB/i })).toBeInTheDocument();
     const fp32Tab = screen.getByRole('tab', { name: /HD FP32 · 324 MB/i });
     await act(async () => {
       fireEvent.click(fp32Tab);

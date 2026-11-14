@@ -971,4 +971,103 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     ctl.dispose();
     g2p.dispose();
   });
+
+  it('[v0.2.4] handles async native SpeechPlayer events on Kokoro->System switch (P2-1) and Pause->Play during in-flight Kokoro G2P without leaking old voice (P2-2)', async () => {
+    const host = createMockPlatformHost({
+      platform: 'ios',
+      initialModelStatus: {
+        state: 'ready',
+        installedVoices: ['zf_001', 'zm_010', 'zf_018'],
+      },
+    });
+    useSpeechModelStore.getState().setStatus(host.getModelStatus());
+
+    // Wrap MockSpeechPlayer so all native speech events arrive asynchronously via setTimeout(5ms),
+    // matching real Capacitor bridge timing on iOS/Android, and record every `play()` call's active voice.
+    const rawPlayer = createMockSpeechPlayer();
+    const origSubscribe = rawPlayer.subscribe.bind(rawPlayer);
+    rawPlayer.subscribe = (listener) =>
+      origSubscribe((ev) => {
+        setTimeout(() => listener(ev), 5);
+      });
+
+    const playVoiceLog: Array<string> = [];
+    const origPlay = rawPlayer.play.bind(rawPlayer);
+    rawPlayer.play = () => {
+      void rawPlayer.getState().then((st) => {
+        playVoiceLog.push(`${st.voice?.kind ?? 'null'}:${st.voice?.voiceId ?? 'null'}`);
+      });
+      origPlay();
+    };
+
+    // Wrap G2P with a deterministic 25ms async window so rapid taps land mid-G2P
+    const realG2p = new KokoroG2PClient();
+    const origPhonemize = realG2p.phonemize.bind(realG2p);
+    let g2pDelayMs = 25;
+    realG2p.phonemize = async (text, lang, opts) => {
+      if (g2pDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, g2pDelayMs));
+      }
+      return origPhonemize(text, lang, opts);
+    };
+
+    const ctl = new ReadAloudController({
+      host,
+      player: rawPlayer,
+      getSettings: () => DEFAULT_APP_SETTINGS,
+      getIsEink: () => false,
+      g2pClient: realG2p,
+    });
+
+    await ctl.start({
+      bookId: 'b_luxun',
+      startLocator: { section: 0, offset: 0 },
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    // [P2-1]: Switch to zf_001 first, let it settle & attach WAV -> playing zf_001
+    g2pDelayMs = 0;
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_001' });
+    await vi.waitFor(async () => {
+      expect((await rawPlayer.getState()).voice).toEqual({ kind: 'kokoro', voiceId: 'zf_001' });
+    });
+    const curId = rawPlayer.currentUtterance()!.id;
+    rawPlayer.attachAudio(curId, { ref: 'file:///zf_001.wav', durationMs: 1000 });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    // Now re-enable 25ms G2P delay and tap `zm_010 -> System` within the G2P window!
+    g2pDelayMs = 25;
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zm_010' });
+    ctl.setVoice({ kind: 'system', voiceId: null });
+    await new Promise((r) => setTimeout(r, 45));
+
+    // Must NOT be left paused when async native events settle!
+    expect((await rawPlayer.getState()).voice).toEqual({ kind: 'system', voiceId: null });
+    expect((await rawPlayer.getState()).status).toBe('playing');
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    // [P2-2]: Start switching `System -> zf_018` (25ms G2P window), then tap Pause -> Play mid-switch!
+    playVoiceLog.length = 0;
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_018' });
+    // Pause then Play BEFORE the 25ms G2P completes:
+    ctl.togglePlayPause();
+    expect(useReadAloudStore.getState().status).toBe('paused');
+    ctl.togglePlayPause();
+    expect(useReadAloudStore.getState().status).toBe('buffering');
+    // Crucial: `rawPlayer.play()` MUST NOT have been called yet while player voice is still `system`!
+    expect(playVoiceLog).toEqual([]);
+    expect((await rawPlayer.getState()).status).toBe('paused');
+
+    // Once the 25ms G2P completes, `setVoice` switches player to `zf_018`, enqueues, and calls `play()`!
+    await vi.waitFor(async () => {
+      expect((await rawPlayer.getState()).voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+      expect((await rawPlayer.getState()).status).toBe('buffering');
+    });
+    expect(playVoiceLog).toEqual(['kokoro:zf_018']);
+
+    ctl.dispose();
+    realG2p.dispose();
+  });
 });

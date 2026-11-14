@@ -39,7 +39,28 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             long durationMs,
             List<ReadAloudQueueEngine.WordMarkSpec> marks
         );
+
+        default void attachAudio(
+            String utteranceId,
+            String wavPath,
+            long durationMs,
+            List<ReadAloudQueueEngine.WordMarkSpec> marks,
+            int engineGeneration
+        ) {
+            attachAudio(utteranceId, wavPath, durationMs, marks);
+        }
+
         void onSynthFailed(String utteranceId, String errorCode, String message);
+
+        default void onSynthFailed(
+            String utteranceId,
+            String errorCode,
+            String message,
+            int engineGeneration
+        ) {
+            onSynthFailed(utteranceId, errorCode, message);
+        }
+
         void onEngineSlow(double rtf);
     }
 
@@ -141,7 +162,8 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             workerHandler.removeCallbacks(idleCloseTask);
         }
 
-        Runnable task = () -> processPlan(snapshot, currentIndex, voiceId, variant, myPlanGen);
+        Runnable task = () ->
+            processPlan(snapshot, currentIndex, voiceId, variant, myPlanGen, engineGeneration);
         if (workerHandler != null) {
             workerHandler.post(task);
         } else if (customExecutor != null) {
@@ -171,7 +193,8 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
         int currentIndex,
         String voiceId,
         String variant,
-        int myPlanGen
+        int myPlanGen,
+        int engineGeneration
     ) {
         try {
             long readyAheadMs = 0L;
@@ -194,7 +217,7 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
                     }
                 }
 
-                long durMs = synthesizeOrUseCache(item, voiceId, variant, myPlanGen);
+                long durMs = synthesizeOrUseCache(item, voiceId, variant, myPlanGen, engineGeneration);
                 if (planGeneration.get() != myPlanGen) return;
                 if (durMs > 0L) {
                     readyAheadMs += durMs;
@@ -213,7 +236,8 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
         ReadAloudQueueEngine.UtteranceItem item,
         String voiceId,
         String variant,
-        int myPlanGen
+        int myPlanGen,
+        int engineGeneration
     ) {
         try {
             String key = computeCacheKey(variant, voiceId, item);
@@ -223,8 +247,15 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             }
             File wavFile = new File(speechCacheDir, "kokoro-" + key + ".wav");
             if (wavFile.exists() && wavFile.isFile() && wavFile.length() > 44L) {
+                if (planGeneration.get() != myPlanGen) return 0L;
                 long cachedDurMs = estimateWavDurationMs(wavFile.length());
-                callback.attachAudio(item.id, wavFile.getAbsolutePath(), cachedDurMs, Collections.emptyList());
+                callback.attachAudio(
+                    item.id,
+                    wavFile.getAbsolutePath(),
+                    cachedDurMs,
+                    Collections.emptyList(),
+                    engineGeneration
+                );
                 return cachedDurMs;
             }
 
@@ -274,13 +305,25 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             recordRtfSample(synthMs / Math.max(100.0, (double) durationMs));
 
             if (planGeneration.get() != myPlanGen) return 0L;
-            callback.attachAudio(item.id, wavFile.getAbsolutePath(), durationMs, marks);
+            callback.attachAudio(
+                item.id,
+                wavFile.getAbsolutePath(),
+                durationMs,
+                marks,
+                engineGeneration
+            );
             return durationMs;
         } catch (KokoroInference.SelfTestException ste) {
+            if (planGeneration.get() != myPlanGen) return 0L;
             synchronized (failedInPlan) {
                 failedInPlan.add(item.id + "@" + variant + "@" + voiceId);
             }
-            callback.onSynthFailed(item.id, "model-selftest", ste.getMessage() != null ? ste.getMessage() : "Self-test failed");
+            callback.onSynthFailed(
+                item.id,
+                "model-selftest",
+                ste.getMessage() != null ? ste.getMessage() : "Self-test failed",
+                engineGeneration
+            );
             return 0L;
         } catch (Exception e) {
             if (planGeneration.get() != myPlanGen) return 0L;
@@ -290,7 +333,8 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             callback.onSynthFailed(
                 item.id,
                 "speech-unavailable",
-                e.getMessage() != null ? e.getMessage() : "Kokoro synthesis failed"
+                e.getMessage() != null ? e.getMessage() : "Kokoro synthesis failed",
+                engineGeneration
             );
             return 0L;
         }

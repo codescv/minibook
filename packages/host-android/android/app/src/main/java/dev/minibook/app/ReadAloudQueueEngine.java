@@ -362,6 +362,7 @@ public final class ReadAloudQueueEngine {
     private int stickyFallbackSection = -1;
     private int stickyFallbackBlockIndex = -1;
     private int playbackGeneration = 0;
+    private int localPlanGeneration = 0;
     private boolean inInterUtterancePause = false;
     private boolean autoContinueOnBufferTopUp = false;
     private boolean queueLowEmitted = false;
@@ -394,14 +395,28 @@ public final class ReadAloudQueueEngine {
 
     private void notifyLocalSynthPlan() {
         if (localSynth != null && session != null && currentIndex >= 0 && currentIndex < queue.size()) {
-            localSynth.onPlan(queue, currentIndex, session.voice, playbackGeneration);
+            localSynth.onPlan(queue, currentIndex, session.voice, localPlanGeneration);
         }
     }
 
     private void cancelLocalSynth() {
+        localPlanGeneration++;
         if (localSynth != null) {
             localSynth.cancelAll();
         }
+    }
+
+    public int getLocalPlanGeneration() {
+        return localPlanGeneration;
+    }
+
+    public void onLocalModelVariantChanged() {
+        if (session == null || !"kokoro".equals(session.voice.kind)) return;
+        localPlanGeneration++;
+        for (int i = Math.max(0, currentIndex + 1); i < queue.size(); i++) {
+            queue.get(i).audio = null;
+        }
+        notifyLocalSynthPlan();
     }
 
     public static float clampRate(float r) {
@@ -504,6 +519,17 @@ public final class ReadAloudQueueEngine {
             }
         }
         notifyLocalSynthPlan();
+    }
+
+    public void attachLocalSynthAudio(
+        String utteranceId,
+        String path,
+        long durationMs,
+        List<WordMarkSpec> marks,
+        int generation
+    ) {
+        if (generation != localPlanGeneration) return;
+        attachAudio(utteranceId, path, durationMs, marks);
     }
 
     public void attachAudio(
@@ -831,6 +857,11 @@ public final class ReadAloudQueueEngine {
             }
             // When systemFallback == null, stay in BUFFERING until attachAudio or user pauses (§8.5 #3)
         });
+    }
+
+    public void onLocalSynthFailed(String utteranceId, @Nullable String reason, int generation) {
+        if (generation != localPlanGeneration) return;
+        onLocalSynthFailed(utteranceId, reason);
     }
 
     public void onLocalSynthFailed(String utteranceId, @Nullable String reason) {

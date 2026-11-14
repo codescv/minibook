@@ -579,12 +579,36 @@ describe('ModelStore downloader, mirror fallback, HTTP 206 resume & SHA-256 veri
     const zf018Bytes = makeFakeBytes(KOKORO_VOICE_BIN_BYTES, 87);
 
     let voiceFetches = 0;
+    let stallFp32 = false;
+    let fp32ChunkSent!: () => void;
+    const fp32ChunkPromise = new Promise<void>((r) => {
+      fp32ChunkSent = r;
+    });
     const srv = await startHttpFixture((req, res) => {
       const u = req.url ?? '';
+      if (u.includes('model.onnx') && stallFp32) {
+        res.writeHead(200, { 'Content-Length': String(fp32Bytes.byteLength) });
+        res.write(fp32Bytes.subarray(0, 4096));
+        fp32ChunkSent();
+        req.on('close', () => res.end());
+        return;
+      }
       let payload: Uint8Array;
       if (u.includes('model_quantized.onnx')) {
         payload = q8Bytes;
       } else if (u.includes('model.onnx')) {
+        const rangeHdr = req.headers.range;
+        const m = typeof rangeHdr === 'string' ? /^bytes=(\d+)-$/.exec(rangeHdr) : null;
+        if (m) {
+          const start = Number.parseInt(m[1]!, 10);
+          const slice = fp32Bytes.subarray(start);
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${fp32Bytes.byteLength - 1}/${fp32Bytes.byteLength}`,
+            'Content-Length': String(slice.byteLength),
+          });
+          res.end(slice);
+          return;
+        }
         payload = fp32Bytes;
       } else {
         voiceFetches += 1;
@@ -594,6 +618,7 @@ describe('ModelStore downloader, mirror fallback, HTTP 206 resume & SHA-256 veri
       res.end(payload);
     });
 
+    settings = { ...settings, kokoroPrecision: 'q8' };
     const store = new ModelStore({
       dataDir: tempDir,
       getSettings: () => settings,
@@ -632,33 +657,53 @@ describe('ModelStore downloader, mirror fallback, HTTP 206 resume & SHA-256 veri
       minFreeMarginBytes: 0,
     });
 
-    // 1. Download default `onnx-fp32` with `zf_001` + `zf_018`
-    await store.download(KOKORO_MODEL_ID, { voices: ['zf_001', 'zf_018'] });
-    await store.waitForIdle();
-    expect(store.status(KOKORO_MODEL_ID).state).toBe('ready');
-    expect(store.status(KOKORO_MODEL_ID).variant).toBe('onnx-fp32');
-    expect(voiceFetches).toBe(2);
-
-    // 2. Switch settings to `kokoroPrecision: 'q8'` -> reconciles to `absent` (`onnx-q8`) while keeping voices on disk!
-    settings = { ...settings, kokoroPrecision: 'q8' };
-    const afterSwitchToQ8 = store.reconcileForSettingsChange();
-    expect(afterSwitchToQ8.state).toBe('absent');
-    expect(afterSwitchToQ8.variant).toBe('onnx-q8');
-    expect(afterSwitchToQ8.installedVoices).toEqual(['zf_001', 'zf_018']);
-
-    // Download `onnx-q8`: must NOT re-download `zf_001.bin` or `zf_018.bin`!
+    // 1. Download `onnx-q8` with `zf_001` + `zf_018`
     await store.download(KOKORO_MODEL_ID, { variant: 'onnx-q8', voices: ['zf_001', 'zf_018'] });
     await store.waitForIdle();
-    expect(voiceFetches).toBe(2);
     expect(store.status(KOKORO_MODEL_ID).state).toBe('ready');
     expect(store.status(KOKORO_MODEL_ID).variant).toBe('onnx-q8');
+    expect(voiceFetches).toBe(2);
 
-    // 3. Switch back `q8 -> fp32`: since `onnx/model.onnx` is still on disk, immediately reconciles to `ready` (`onnx-fp32`)!
+    // 2. [P1] Switch settings to `kokoroPrecision: 'fp32'` BEFORE `model.onnx` is on disk:
+    //    `onnx-q8` MUST remain the `ready` serving variant (never `absent`!)!
     settings = { ...settings, kokoroPrecision: 'fp32' };
-    const backToFp32 = store.reconcileForSettingsChange();
-    expect(backToFp32.state).toBe('ready');
-    expect(backToFp32.variant).toBe('onnx-fp32');
-    expect(backToFp32.installedVoices).toEqual(['zf_001', 'zf_018']);
+    const afterSwitchToFp32 = store.reconcileForSettingsChange();
+    expect(afterSwitchToFp32.state).toBe('ready');
+    expect(afterSwitchToFp32.variant).toBe('onnx-q8');
+    expect(afterSwitchToFp32.installedVoices).toEqual(['zf_001', 'zf_018']);
+
+    // 3. [P1] Start `onnx-fp32` upgrade download and PAUSE mid-download (`model.onnx.part` on disk):
+    //    `pause()` and `status()` MUST keep `onnx-q8` `ready` and usable!
+    stallFp32 = true;
+    const upgrading = await store.download(KOKORO_MODEL_ID, {
+      variant: 'onnx-fp32',
+      voices: ['zf_001', 'zf_018'],
+    });
+    expect(upgrading.state).toBe('downloading');
+    expect(upgrading.variant).toBe('onnx-fp32');
+    await fp32ChunkPromise;
+    await new Promise((r) => setTimeout(r, 20));
+    const pausedUpgrade = await store.pause(KOKORO_MODEL_ID);
+    expect(pausedUpgrade.state).toBe('ready');
+    expect(pausedUpgrade.variant).toBe('onnx-q8');
+    expect(existsSync(join(tempDir, 'models', KOKORO_MODEL_ID, 'onnx', 'model.onnx.part'))).toBe(
+      true,
+    );
+
+    // 4. Resume `onnx-fp32` download -> completes via HTTP 206 WITHOUT re-downloading voices, and switches serving variant to `onnx-fp32`!
+    stallFp32 = false;
+    await store.download(KOKORO_MODEL_ID, { variant: 'onnx-fp32', voices: ['zf_001', 'zf_018'] });
+    await store.waitForIdle();
+    expect(voiceFetches).toBe(2);
+    expect(store.status(KOKORO_MODEL_ID).state).toBe('ready');
+    expect(store.status(KOKORO_MODEL_ID).variant).toBe('onnx-fp32');
+
+    // 5. Switch back `fp32 -> q8`: since `onnx/model_quantized.onnx` is still on disk, immediately reconciles to `ready` (`onnx-q8`)!
+    settings = { ...settings, kokoroPrecision: 'q8' };
+    const backToQ8 = store.reconcileForSettingsChange();
+    expect(backToQ8.state).toBe('ready');
+    expect(backToQ8.variant).toBe('onnx-q8');
+    expect(backToQ8.installedVoices).toEqual(['zf_001', 'zf_018']);
 
     // 4. Verify speech cache keys for `onnx-q8` vs `onnx-fp32` are strictly distinct!
     const kQ8 = computeSpeechCacheKeySync({

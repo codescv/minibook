@@ -593,6 +593,9 @@ public class ModelDownloadManagerTest {
         String zf018Sha = sha256(zf018Bytes);
 
         AtomicInteger voiceDownloadHits = new AtomicInteger(0);
+        AtomicBoolean stallFp32 = new AtomicBoolean(false);
+        CountDownLatch fp32ChunkSent = new CountDownLatch(1);
+        CountDownLatch releaseFp32 = new CountDownLatch(1);
         MockWebServer srv = newServer();
         srv.setDispatcher(new Dispatcher() {
             @Override
@@ -602,6 +605,25 @@ public class ModelDownloadManagerTest {
                     return new MockResponse().setResponseCode(200).setBody(new Buffer().write(q8Bytes));
                 }
                 if (p.contains("model.onnx")) {
+                    if (stallFp32.get()) {
+                        Buffer partial = new Buffer().write(fp32Bytes, 0, 4096);
+                        fp32ChunkSent.countDown();
+                        try {
+                            releaseFp32.await(2, TimeUnit.SECONDS);
+                        } catch (InterruptedException ignored) {}
+                        return new MockResponse()
+                            .setResponseCode(200)
+                            .setHeader("Content-Length", String.valueOf(fp32Bytes.length))
+                            .setBody(partial);
+                    }
+                    String range = request.getHeader("Range");
+                    if (range != null && range.startsWith("bytes=")) {
+                        int start = Integer.parseInt(range.substring(6, range.indexOf('-')));
+                        return new MockResponse()
+                            .setResponseCode(206)
+                            .setHeader("Content-Range", "bytes " + start + "-" + (fp32Bytes.length - 1) + "/" + fp32Bytes.length)
+                            .setBody(new Buffer().write(fp32Bytes, start, fp32Bytes.length - start));
+                    }
                     return new MockResponse().setResponseCode(200).setBody(new Buffer().write(fp32Bytes));
                 }
                 voiceDownloadHits.incrementAndGet();
@@ -672,18 +694,41 @@ public class ModelDownloadManagerTest {
         assertEquals(3, voiceDownloadHits.get());
         assertEquals(Arrays.asList("zf_001", "zf_018", "zm_010"), store.detectInstalledVoicesOnDisk());
 
-        // 3. Upgrade precision `onnx-q8` -> `onnx-fp32`: write settings.json `kokoroPrecision: "fp32"`,
-        // verify status transitions to `absent` for `onnx-fp32` while keeping `installedVoices` intact,
-        // then download `onnx-fp32` WITHOUT re-downloading any of the 3 voices!
+        // 3. [P1] Upgrade precision `onnx-q8` -> `onnx-fp32`: write settings.json `kokoroPrecision: "fp32"`,
+        // verify `getDesiredVariant()` is `onnx-fp32` while `getActiveVariant()` and `getStatus()` STAY `ready` (`onnx-q8`)!
         AtomicFiles.writeAtomicFile(
             new File(tempRoot, "settings.json"),
             "{\"kokoroPrecision\":\"fp32\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8)
         );
+        assertEquals("onnx-fp32", store.getDesiredVariant());
+        assertEquals("onnx-q8", store.getActiveVariant());
         JSONObject beforeFp32Dl = mgr.getStatus(KokoroModelStore.MODEL_ID);
-        assertEquals("absent", beforeFp32Dl.optString("state"));
-        assertEquals("onnx-fp32", beforeFp32Dl.optString("variant"));
+        assertEquals("ready", beforeFp32Dl.optString("state"));
+        assertEquals("onnx-q8", beforeFp32Dl.optString("variant"));
         assertEquals(3, beforeFp32Dl.getJSONArray("installedVoices").length());
 
+        // Start stalled `onnx-fp32` download -> `getActiveVariant()` stays `onnx-q8` during download;
+        // pause mid-download -> `pause()` returns `ready` (`onnx-q8`) while `.part` stays on disk!
+        stallFp32.set(true);
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-fp32",
+            Collections.singletonList(
+                new ModelDownloadManager.FileSpec("onnx/model.onnx", fp32Bytes.length, fp32Sha, "repo", "rev1")
+            ),
+            Collections.singletonList(baseUrl),
+            allowHosts
+        ));
+        assertTrue(fp32ChunkSent.await(5, TimeUnit.SECONDS));
+        assertEquals("onnx-q8", store.getActiveVariant());
+        JSONObject pausedUpgrade = mgr.pause(KokoroModelStore.MODEL_ID);
+        releaseFp32.countDown();
+        assertEquals("ready", pausedUpgrade.optString("state"));
+        assertEquals("onnx-q8", pausedUpgrade.optString("variant"));
+        assertEquals("onnx-q8", store.getActiveVariant());
+
+        // Resume `onnx-fp32` download -> completes without re-downloading any of the 3 voices and switches to `onnx-fp32`!
+        stallFp32.set(false);
         CountDownLatch fp32Ready = new CountDownLatch(1);
         currentLatch[0] = fp32Ready;
         mgr.startDownload(new ModelDownloadManager.DownloadRequest(
@@ -699,6 +744,7 @@ public class ModelDownloadManagerTest {
         assertEquals(3, voiceDownloadHits.get()); // 0 extra voice downloads!
         assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
         assertEquals("onnx-fp32", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("variant"));
+        assertEquals("onnx-fp32", store.getActiveVariant());
         assertTrue("Expected unloadLocalModels hook when active variant changed", unloadHooks.get() >= 1);
 
         // 4. Switch back `fp32 -> q8` in settings.json: since `model_quantized.onnx` is still on disk,
