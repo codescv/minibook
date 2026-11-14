@@ -165,6 +165,8 @@ export const ja: I18nDict = {
   modelQuality: 'モデル音質',
   precisionQ8: '標準 · 121 MB',
   precisionFp32: '高音質 · 324 MB',
+  downloadHd: '高音質版を取得',
+  downloadStandard: '標準版を取得',
   showAllSystemVoices: 'すべてのシステム音声を表示（{n}）',
   showBookLangVoicesOnly: '本の言語のみ表示',
   kokoroSizeAndVoices: '{mb} MB · {count} 音声',

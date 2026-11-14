@@ -163,6 +163,8 @@ export const en = {
   modelQuality: 'Model quality',
   precisionQ8: 'Standard · 121 MB',
   precisionFp32: 'HD FP32 · 324 MB',
+  downloadHd: 'Download HD',
+  downloadStandard: 'Download Standard',
   showAllSystemVoices: 'Show all system voices ({n})',
   showBookLangVoicesOnly: 'Filter by book language',
   kokoroSizeAndVoices: '{mb} MB · {count} voices',

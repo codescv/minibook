@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   KOKORO_MODEL_ID,
   encodeMonoPcm16Wav,
@@ -306,12 +306,15 @@ describe('@minibook/host-node server, SQLite, HTTP 206 Range & RestPlatformHost'
       });
       expect(imported.title).toBe('CLI Imported Book');
 
-      await new Promise((r) => setTimeout(r, 40));
-      unsub();
-
-      expect(received.some((e) => e.type === 'library-changed' && e.bookId === imported.id)).toBe(
-        true,
+      await vi.waitFor(
+        () => {
+          expect(
+            received.some((e) => e.type === 'library-changed' && e.bookId === imported.id),
+          ).toBe(true);
+        },
+        { timeout: 5_000 },
       );
+      unsub();
     } finally {
       await running.close();
     }

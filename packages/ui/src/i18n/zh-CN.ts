@@ -165,6 +165,8 @@ export const zhCN: I18nDict = {
   modelQuality: '模型音质',
   precisionQ8: '标准版 · 121 MB',
   precisionFp32: '高清无损 · 324 MB',
+  downloadHd: '下载高清版',
+  downloadStandard: '下载标准版',
   showAllSystemVoices: '显示全部系统语音（{n}）',
   showBookLangVoicesOnly: '仅显示当前书籍语言',
   kokoroSizeAndVoices: '{mb} MB · {count} 种音色',

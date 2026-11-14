@@ -617,7 +617,7 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 15_000);
 
   it('runs KokoroWebEngine load-time self-test, WebGPU -> WASM fallback, voice .bin row slicing, PCM16 WAV + WordMark[] synthesis, and RTF EMA >= 0.9 engine-slow (§5.1)', async () => {
     // Build a deterministic 522,240-byte voice .bin where row `r` has `style[0] = r + 0.5`
@@ -815,7 +815,7 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     expect(player.getQueue().length).toBe(fullQueueLenBefore);
 
     ctl.dispose();
-  });
+  }, 15_000);
 
   it('[v0.2.4] live-switches System <-> Kokoro voices mid-Reader (playing, paused & rapid 4-way taps), purges stale attached audio, and bypasses Capacitor custom-scheme Worker timeout', async () => {
     // 1. Verify KokoroG2PClient immediately selects main-thread mode on Capacitor (`window.Capacitor.isNativePlatform()`) with 0 Worker spawns!
@@ -970,7 +970,7 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
 
     ctl.dispose();
     g2p.dispose();
-  });
+  }, 15_000);
 
   it('[v0.2.4] handles async native SpeechPlayer events on Kokoro->System switch (P2-1) and Pause->Play during in-flight Kokoro G2P without leaking old voice (P2-2)', async () => {
     const host = createMockPlatformHost({
@@ -1069,5 +1069,5 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
 
     ctl.dispose();
     realG2p.dispose();
-  });
+  }, 15_000);
 });

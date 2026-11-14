@@ -639,7 +639,9 @@ export function VoiceSheet({
                             });
                           }}
                         >
-                          {t('download')}
+                          {requestedVariant === 'onnx-fp32'
+                            ? t('downloadHd')
+                            : t('downloadStandard')}
                         </button>
                       )}
                     <button
