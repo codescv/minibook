@@ -25,18 +25,29 @@ public final class KokoroOnnxBackend implements KokoroInference {
     private final Object lock = new Object();
     @Nullable private OrtEnvironment env;
     @Nullable private OrtSession session;
+    @Nullable private String loadedVariant;
     @Nullable private volatile OrtSession.RunOptions activeRunOptions;
     private boolean selfTestVerified = false;
 
     @Override
     public void ensureReady(KokoroModelStore store) throws Exception {
         synchronized (lock) {
-            if (session != null && selfTestVerified) {
+            String targetVariant = store.getActiveVariant();
+            if (session != null && !targetVariant.equals(loadedVariant)) {
+                try {
+                    session.close();
+                } catch (Exception ignored) {}
+                session = null;
+                loadedVariant = null;
+                selfTestVerified = false;
+            }
+            if (session != null && selfTestVerified && targetVariant.equals(loadedVariant)) {
                 return;
             }
-            File modelFile = store.resolveInModelJail(KokoroModelStore.MODEL_ID, "onnx/model_quantized.onnx");
+            String relPath = KokoroModelStore.onnxRelativePathForVariant(targetVariant);
+            File modelFile = store.resolveInModelJail(KokoroModelStore.MODEL_ID, relPath);
             if (!modelFile.exists() || !modelFile.isFile()) {
-                throw new IllegalStateException("Kokoro model_quantized.onnx is not installed");
+                throw new IllegalStateException("Kokoro " + relPath + " is not installed");
             }
 
             if (env == null) {
@@ -53,13 +64,14 @@ public final class KokoroOnnxBackend implements KokoroInference {
                     opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
                     opts.addConfigEntry("session.intra_op.allow_spinning", "0");
                     session = env.createSession(modelFile.getAbsolutePath(), opts);
+                    loadedVariant = targetVariant;
                 } finally {
                     opts.close();
                 }
             }
 
             String osBuild = Build.FINGERPRINT != null ? Build.FINGERPRINT : "unknown";
-            if (store.isSelfTestPassed(KokoroModelStore.DEFAULT_VARIANT, ORT_RUNTIME_VERSION, osBuild)) {
+            if (store.isSelfTestPassed(targetVariant, ORT_RUNTIME_VERSION, osBuild)) {
                 selfTestVerified = true;
                 return;
             }
@@ -78,7 +90,7 @@ public final class KokoroOnnxBackend implements KokoroInference {
                 validateSelfTestResult(res.waveform);
                 selfTestVerified = true;
                 store.recordSelfTestResult(
-                    KokoroModelStore.DEFAULT_VARIANT,
+                    targetVariant,
                     ORT_RUNTIME_VERSION,
                     osBuild,
                     true,
@@ -87,7 +99,7 @@ public final class KokoroOnnxBackend implements KokoroInference {
             } catch (Exception e) {
                 close();
                 store.recordSelfTestResult(
-                    KokoroModelStore.DEFAULT_VARIANT,
+                    targetVariant,
                     ORT_RUNTIME_VERSION,
                     osBuild,
                     false,
@@ -223,6 +235,7 @@ public final class KokoroOnnxBackend implements KokoroInference {
         cancel();
         synchronized (lock) {
             selfTestVerified = false;
+            loadedVariant = null;
             if (session != null) {
                 try { session.close(); } catch (Exception ignored) {}
                 session = null;

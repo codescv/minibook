@@ -154,10 +154,17 @@ export const ja: I18nDict = {
   ttsTabServer: 'Server',
   ttsGuideSystem:
     '端末標準のシステム音声（iOS Siri・Android TTS）を使用します。ダウンロード不要・容量ゼロでオフラインですぐ読み上げます。',
+  ttsGuideSystemIos:
+    'iPhone 標準のシステム音声をオフラインで使用します。ヒント：「iOS 設定 → アクセシビリティ → 読み上げコンテンツ → 声」で Siri や高音質（Premium）音声をダウンロードすると選択できます。',
   ttsGuideOnDevice:
     '約 {mb} MB の Kokoro-82M 神経音声モデルを端末に保存し、オフラインで自然な中英音声・ロック画面再生・単語ハイライトを実現します。',
+  ttsGuideOnDeviceIos:
+    '約 {mb} MB の Kokoro-82M（v1.1-zh）を端末に保存しオフラインで読み上げます。★付きの厳選スタジオ音声（女性 18 ★、女性 04 ★、男性 10 ★）は 01 より自然で温かみがあります。大規模モデル（Qwen3-TTS 1.7B / 無料 Edge 音声）は「Server」タブで利用できます。',
   ttsGuideServer:
     'LAN 上の PC で動く AI 音声サーバー（Mac の Qwen3-TTS / mlx-audio 等）、OpenAI 互換 API、または無料の Microsoft Edge オンライン音声に接続します。',
+  modelQuality: 'モデル音質',
+  precisionQ8: '標準 · 124 MB',
+  precisionFp32: '高音質 · 324 MB',
   showAllSystemVoices: 'すべてのシステム音声を表示（{n}）',
   showBookLangVoicesOnly: '本の言語のみ表示',
   kokoroSizeAndVoices: '{mb} MB · {count} 音声',

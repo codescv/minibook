@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import {
   KOKORO_CURATED_VOICES,
+  KOKORO_DEFAULT_VOICES,
   KOKORO_MODEL_ID,
   KOKORO_VOICE_IDS,
   kokoroVoiceLang,
+  type KokoroPrecision,
   type ModelDownloadSource,
   type QwenProtocol,
   type SleepTimerConfig,
@@ -139,6 +141,7 @@ export function VoiceSheet({
   const [customMirrorUrl, setCustomMirrorUrl] = useState(settings.modelMirrorBaseUrl ?? '');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [fetchingVoiceId, setFetchingVoiceId] = useState<string | null>(null);
+  const pendingAutoSelectVoiceRef = useRef<{ voiceId: string; langKey: string } | null>(null);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Local GPU Server (Qwen3-TTS / mlx-audio / vllm-omni) draft state
@@ -288,6 +291,35 @@ export function VoiceSheet({
     controller.setVoice(ref);
   };
 
+  useEffect(() => {
+    const pending = pendingAutoSelectVoiceRef.current;
+    if (
+      pending &&
+      modelStatus?.state === 'ready' &&
+      modelStatus.installedVoices.includes(pending.voiceId)
+    ) {
+      pendingAutoSelectVoiceRef.current = null;
+      setFetchingVoiceId(null);
+      const ref: VoiceRef = { kind: 'kokoro', voiceId: pending.voiceId };
+      void updateSettings({
+        preferredVoices: {
+          ...settings.preferredVoices,
+          [pending.langKey]: ref,
+          default: ref,
+        },
+      });
+      controller.setVoice(ref);
+    } else if (modelStatus?.state === 'error' || modelStatus?.state === 'absent') {
+      pendingAutoSelectVoiceRef.current = null;
+    }
+  }, [
+    modelStatus?.state,
+    modelStatus?.installedVoices,
+    controller,
+    settings.preferredVoices,
+    updateSettings,
+  ]);
+
   const applyQwenPreset = (nextIdx: number): void => {
     const wrapped = (nextIdx + QWEN_PRESETS.length) % QWEN_PRESETS.length;
     const preset = QWEN_PRESETS[wrapped]!;
@@ -344,7 +376,7 @@ export function VoiceSheet({
         key: 'sys-guide',
         render: () => (
           <div className="mb-tts-guide" data-testid="tts-guide-system">
-            {t('ttsGuideSystem')}
+            {host.info.platform === 'ios' ? t('ttsGuideSystemIos') : t('ttsGuideSystem')}
           </div>
         ),
       });
@@ -433,11 +465,29 @@ export function VoiceSheet({
     }
 
     if (activeTab === 'on-device' && modelsApi) {
+      const effectivePrecision: KokoroPrecision =
+        settings.kokoroPrecision ??
+        (modelStatus?.variant === 'onnx-fp32'
+          ? 'fp32'
+          : modelStatus?.variant === 'onnx-q8'
+            ? 'q8'
+            : host.info.platform === 'android'
+              ? 'q8'
+              : 'fp32');
+      const requestedVariant =
+        host.info.platform === 'ios'
+          ? ('coreml' as const)
+          : effectivePrecision === 'fp32'
+            ? ('onnx-fp32' as const)
+            : ('onnx-q8' as const);
+
       rows.push({
         key: 'kokoro-guide',
         render: () => (
           <div className="mb-tts-guide" data-testid="tts-guide-on-device">
-            {t('ttsGuideOnDevice', { mb: totalModelMb })}
+            {host.info.platform === 'ios'
+              ? t('ttsGuideOnDeviceIos', { mb: totalModelMb })
+              : t('ttsGuideOnDevice', { mb: totalModelMb })}
           </div>
         ),
       });
@@ -468,7 +518,7 @@ export function VoiceSheet({
                   <span className="mb-kokoro-status-label" data-testid="kokoro-status-text">
                     {t('kokoroSizeAndVoices', {
                       mb: totalModelMb,
-                      count: 5,
+                      count: KOKORO_DEFAULT_VOICES.length,
                     })}
                   </span>
                   <button
@@ -476,13 +526,11 @@ export function VoiceSheet({
                     className="mb-primary-btn"
                     data-testid="kokoro-download-btn"
                     onClick={() => {
-                      void modelsApi.download(
-                        KOKORO_MODEL_ID,
-                        {
-                          source: settings.modelDownloadSource,
-                          mirrorBaseUrl: settings.modelMirrorBaseUrl,
-                        } as never,
-                      );
+                      void modelsApi.download(KOKORO_MODEL_ID, {
+                        variant: requestedVariant,
+                        source: settings.modelDownloadSource,
+                        mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                      });
                     }}
                   >
                     {t('download')}
@@ -533,13 +581,11 @@ export function VoiceSheet({
                       className="mb-primary-btn"
                       data-testid="kokoro-resume-btn"
                       onClick={() => {
-                        void modelsApi.download(
-                          KOKORO_MODEL_ID,
-                          {
-                            source: settings.modelDownloadSource,
-                            mirrorBaseUrl: settings.modelMirrorBaseUrl,
-                          } as never,
-                        );
+                        void modelsApi.download(KOKORO_MODEL_ID, {
+                          variant: requestedVariant,
+                          source: settings.modelDownloadSource,
+                          mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                        });
                       }}
                     >
                       {t('resume')}
@@ -618,9 +664,10 @@ export function VoiceSheet({
                       data-testid="kokoro-retry-btn"
                       onClick={() => {
                         const dlOpts = {
+                          variant: requestedVariant,
                           source: settings.modelDownloadSource,
                           mirrorBaseUrl: settings.modelMirrorBaseUrl,
-                        } as never;
+                        };
                         if (errorInfo.actionKind === 'try-again') {
                           void modelsApi.remove(KOKORO_MODEL_ID).then(() => {
                             void modelsApi.download(KOKORO_MODEL_ID, dlOpts);
@@ -654,6 +701,46 @@ export function VoiceSheet({
           </div>
         ),
       });
+
+      if (host.info.platform !== 'ios') {
+        rows.push({
+          key: 'kokoro-precision-seg',
+          render: () => (
+            <div className="mb-field" data-testid="kokoro-precision-row">
+              <span className="mb-field-label">{t('modelQuality')}</span>
+              <Segmented<KokoroPrecision>
+                label={t('modelQuality')}
+                value={effectivePrecision}
+                options={[
+                  { value: 'q8', label: t('precisionQ8') },
+                  { value: 'fp32', label: t('precisionFp32') },
+                ]}
+                onChange={(nextPrecision) => {
+                  const nextVariant = nextPrecision === 'fp32' ? 'onnx-fp32' : 'onnx-q8';
+                  const prevStatus = useSpeechModelStore.getState().status ?? modelStatus;
+                  const wasReadyOrDownloading =
+                    prevStatus?.state === 'ready' ||
+                    prevStatus?.state === 'downloading' ||
+                    prevStatus?.state === 'verifying';
+                  const prevVoices = prevStatus?.installedVoices ?? [];
+                  void (async () => {
+                    await updateSettings({ kokoroPrecision: nextPrecision });
+                    const refreshed = await useSpeechModelStore.getState().refreshFromHost(host);
+                    if (wasReadyOrDownloading && refreshed?.state !== 'ready') {
+                      void modelsApi.download(KOKORO_MODEL_ID, {
+                        variant: nextVariant,
+                        ...(prevVoices.length > 0 ? { voices: prevVoices } : {}),
+                        source: settings.modelDownloadSource,
+                        mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                      });
+                    }
+                  })();
+                }}
+              />
+            </div>
+          ),
+        });
+      }
 
       rows.push({
         key: 'kokoro-source-seg',
@@ -780,17 +867,20 @@ export function VoiceSheet({
                   <button
                     type="button"
                     className="mb-icon-btn"
+                    data-testid={`kokoro-get-${item.voiceId}`}
                     disabled={isModelBusy}
                     onClick={() => {
                       setFetchingVoiceId(item.voiceId);
-                      void modelsApi.download(
-                        KOKORO_MODEL_ID,
-                        {
-                          voices: [item.voiceId],
-                          source: settings.modelDownloadSource,
-                          mirrorBaseUrl: settings.modelMirrorBaseUrl,
-                        } as never,
-                      );
+                      pendingAutoSelectVoiceRef.current = {
+                        voiceId: item.voiceId,
+                        langKey: item.langKey,
+                      };
+                      void modelsApi.download(KOKORO_MODEL_ID, {
+                        variant: requestedVariant,
+                        voices: [item.voiceId],
+                        source: settings.modelDownloadSource,
+                        mirrorBaseUrl: settings.modelMirrorBaseUrl,
+                      });
                     }}
                   >
                     {isThisVoiceFetching ? t('checking') : t('get')}

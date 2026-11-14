@@ -121,6 +121,7 @@ public final class ModelDownloadManager {
     @Nullable private Call activeCall;
     @Nullable private Thread activeWorkerThread;
     private List<String> activeSources = Collections.emptyList();
+    @Nullable private String activeVariant = null;
     private volatile boolean activeDownloading = false;
     private volatile @Nullable String lastGoodSource = null;
     private long lastProgressEmitMs = 0L;
@@ -236,10 +237,10 @@ public final class ModelDownloadManager {
 
         synchronized (stateLock) {
             if (activeDownloading) {
-                if (normalizedSources.equals(activeSources)) {
+                if (normalizedSources.equals(activeSources) && Objects.equals(req.variant, activeVariant)) {
                     return cloneJson(currentStatus);
                 }
-                switchedSources = true;
+                switchedSources = !normalizedSources.equals(activeSources);
                 generation.incrementAndGet();
                 activeDownloading = false;
                 callToCancel = activeCall;
@@ -337,6 +338,7 @@ public final class ModelDownloadManager {
         synchronized (stateLock) {
             activeDownloading = true;
             activeSources = Collections.unmodifiableList(new ArrayList<>(normalizedSources));
+            activeVariant = req.variant;
             currentStatus = initial;
         }
         emitImmediate(initial);
@@ -434,16 +436,23 @@ public final class ModelDownloadManager {
 
     private List<FileSpec> mergeWithInstalledFiles(DownloadRequest req) {
         Map<String, FileSpec> byPath = new LinkedHashMap<>();
-        JSONObject existing = store.readInstalledMeta();
+        for (FileSpec f : req.files) {
+            byPath.put(f.path, f);
+        }
+        JSONObject existing = store.readRawInstalledMeta();
         if (existing != null) {
             String prevRepo = existing.optString("repo", "");
             String prevRev = existing.optString("revision", "");
+            boolean sameVariant = req.variant.equals(existing.optString("variant", req.variant));
             JSONArray prevFiles = existing.optJSONArray("files");
-            if (prevFiles != null && req.variant.equals(existing.optString("variant", req.variant))) {
+            if (prevFiles != null) {
                 for (int i = 0; i < prevFiles.length(); i++) {
                     JSONObject obj = prevFiles.optJSONObject(i);
                     if (obj == null) continue;
                     String p = obj.optString("path", "");
+                    // Voice packs (`voices/*.bin`) are shared across `onnx-q8` and `onnx-fp32`!
+                    if (!sameVariant && !p.startsWith("voices/")) continue;
+                    if (byPath.containsKey(p)) continue;
                     long sz = obj.optLong("size", 0L);
                     String sha = obj.optString("sha256", "");
                     String r = obj.optString("repo", prevRepo);
@@ -453,9 +462,6 @@ public final class ModelDownloadManager {
                     }
                 }
             }
-        }
-        for (FileSpec f : req.files) {
-            byPath.put(f.path, f);
         }
         return new ArrayList<>(byPath.values());
     }
@@ -729,9 +735,12 @@ public final class ModelDownloadManager {
             }
             emitImmediate(verifying);
 
-            // Write installed.json atomically
+            // Write installed.json atomically (preserving multi-variant `variants` & `selfTests` maps)
+            JSONObject prevMeta = store.readRawInstalledMeta();
+            String prevVariant = prevMeta != null ? prevMeta.optString("variant", "") : "";
             Set<String> voices = new LinkedHashSet<>(store.detectInstalledVoicesOnDisk());
             JSONArray filesJson = new JSONArray();
+            JSONObject onnxVariantSpec = null;
             for (FileSpec f : req.files) {
                 JSONObject fj = new JSONObject();
                 fj.put("path", f.path);
@@ -740,18 +749,49 @@ public final class ModelDownloadManager {
                 fj.put("repo", f.repo);
                 fj.put("revision", f.revision);
                 filesJson.put(fj);
+                if (f.path.startsWith("onnx/")) {
+                    onnxVariantSpec = new JSONObject(fj.toString());
+                }
             }
+            JSONObject variantsMap = (prevMeta != null && prevMeta.optJSONObject("variants") != null)
+                ? new JSONObject(prevMeta.optJSONObject("variants").toString())
+                : new JSONObject();
+            if (prevMeta != null && !prevVariant.isEmpty() && !variantsMap.has(prevVariant)) {
+                JSONArray oldFiles = prevMeta.optJSONArray("files");
+                if (oldFiles != null) {
+                    for (int i = 0; i < oldFiles.length(); i++) {
+                        JSONObject of = oldFiles.optJSONObject(i);
+                        if (of != null && of.optString("path", "").startsWith("onnx/")) {
+                            variantsMap.put(prevVariant, new JSONObject(of.toString()));
+                            break;
+                        }
+                    }
+                }
+            }
+            if (onnxVariantSpec != null) {
+                variantsMap.put(req.variant, onnxVariantSpec);
+            }
+
             JSONObject meta = new JSONObject();
             meta.put("revision", req.files.isEmpty() ? "" : req.files.get(0).revision);
             meta.put("repo", req.files.isEmpty() ? "" : req.files.get(0).repo);
             meta.put("variant", req.variant);
             meta.put("files", filesJson);
+            meta.put("variants", variantsMap);
+            if (prevMeta != null && prevMeta.optJSONObject("selfTests") != null) {
+                meta.put("selfTests", new JSONObject(prevMeta.optJSONObject("selfTests").toString()));
+            }
             meta.put("voices", new JSONArray(voices));
             meta.put("installedAt", System.currentTimeMillis());
             if (lastSourceHost[0] != null) {
                 meta.put("source", lastSourceHost[0]);
             }
             store.writeInstalledMeta(meta);
+            if (!prevVariant.isEmpty() && !prevVariant.equals(req.variant) && onBeforeRemove != null) {
+                try {
+                    onBeforeRemove.run();
+                } catch (Exception ignored) {}
+            }
 
             JSONObject ready = KokoroModelStore.buildStatusJson(
                 "ready",
@@ -827,7 +867,7 @@ public final class ModelDownloadManager {
             Request.Builder rb = new Request.Builder()
                 .url(url)
                 .header("Accept-Encoding", "identity")
-                .header("User-Agent", "MiniBook/0.2.3");
+                .header("User-Agent", "MiniBook/0.2.4");
             if (offset > 0L) {
                 rb.header("Range", "bytes=" + offset + "-");
             }

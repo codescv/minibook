@@ -1,5 +1,6 @@
 import {
   DEFAULT_APP_SETTINGS,
+  KOKORO_DEFAULT_VOICES,
   MiniBookError,
   memoryByteSource,
   type AppSettings,
@@ -708,6 +709,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   private synthDelayMs: number;
   private synthRtf: number;
   private modelStatus: SpeechModelStatus;
+  private readonly downloadedModelVariants = new Set<string>();
 
   public lastKeyPolicy: KeyPolicy = { volumePaging: false };
   public immersiveEnabled = false;
@@ -724,7 +726,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: options?.appVersion ?? '0.2.3',
+      appVersion: options?.appVersion ?? '0.2.4',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,
@@ -752,9 +754,21 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     this.synthRtf = options?.synthRtf ?? 0.25;
 
     const defaultVariant =
-      platform === 'ios' ? 'coreml' : platform === 'android' ? 'onnx-q8' : 'onnx-fp32';
+      platform === 'ios'
+        ? 'coreml'
+        : this.settingsData.kokoroPrecision === 'fp32'
+          ? 'onnx-fp32'
+          : this.settingsData.kokoroPrecision === 'q8'
+            ? 'onnx-q8'
+            : platform === 'android'
+              ? 'onnx-q8'
+              : 'onnx-fp32';
     const defaultTotalBytes =
-      platform === 'ios' ? 85_044_651 : platform === 'android' ? 129_967_797 : 341_980_642;
+      defaultVariant === 'coreml'
+        ? 87_133_611
+        : defaultVariant === 'onnx-q8'
+          ? 132_056_757
+          : 344_069_602;
     const defaultBackend =
       platform === 'ios' ? 'coreml-cpu' : platform === 'android' ? 'ort-cpu' : 'webgpu';
     const initState = options?.initialModelStatus?.state ?? 'absent';
@@ -766,11 +780,13 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       bytesDone: initState === 'ready' ? defaultTotalBytes : 0,
       bytesTotal: defaultTotalBytes,
       installedBytes: initState === 'ready' ? defaultTotalBytes : 0,
-      installedVoices:
-        initState === 'ready' ? ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'] : [],
+      installedVoices: initState === 'ready' ? [...KOKORO_DEFAULT_VOICES] : [],
       source: 'huggingface.co',
       ...options?.initialModelStatus,
     };
+    if (this.modelStatus.state === 'ready') {
+      this.downloadedModelVariants.add(this.modelStatus.variant);
+    }
     if (!this.info.capabilities.onDeviceNeuralSpeech) {
       delete (this.speech as { models?: unknown }).models;
     }
@@ -1090,6 +1106,31 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     get: async () => this.settingsData,
     update: async (patch) => {
       this.settingsData = { ...this.settingsData, ...patch };
+      if (this.info.platform !== 'ios' && patch && 'kokoroPrecision' in patch) {
+        const nextVariant = this.settingsData.kokoroPrecision === 'fp32' ? 'onnx-fp32' : 'onnx-q8';
+        const nextTotal = nextVariant === 'onnx-fp32' ? 344_069_602 : 132_056_757;
+        const voices = this.modelStatus.installedVoices;
+        if (this.downloadedModelVariants.has(nextVariant) && voices.length > 0) {
+          this.modelStatus = {
+            ...this.modelStatus,
+            state: 'ready',
+            variant: nextVariant,
+            bytesDone: nextTotal,
+            bytesTotal: nextTotal,
+            installedBytes: nextTotal,
+          };
+        } else if (this.modelStatus.variant !== nextVariant) {
+          const voicesBytes = voices.length * 522_240;
+          this.modelStatus = {
+            ...this.modelStatus,
+            state: 'absent',
+            variant: nextVariant,
+            bytesDone: voicesBytes,
+            bytesTotal: nextTotal,
+          };
+        }
+        this.emitEvent({ type: 'speech-model', status: this.modelStatus });
+      }
       return this.settingsData;
     },
     setSecret: async (name, value) => {
@@ -1173,6 +1214,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
         const rawOpts = opts as
           | {
               readonly voices?: readonly string[];
+              readonly variant?: SpeechModelStatus['variant'];
               readonly source?: AppSettings['modelDownloadSource'];
               readonly mirrorBaseUrl?: string | null;
             }
@@ -1186,11 +1228,26 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
               : {}),
           };
         }
+        const targetVariant =
+          rawOpts?.variant ??
+          (this.info.platform === 'ios'
+            ? 'coreml'
+            : this.settingsData.kokoroPrecision === 'fp32'
+              ? 'onnx-fp32'
+              : this.settingsData.kokoroPrecision === 'q8'
+                ? 'onnx-q8'
+                : this.modelStatus.variant);
+        const targetTotal =
+          targetVariant === 'coreml'
+            ? 87_133_611
+            : targetVariant === 'onnx-q8'
+              ? 132_056_757
+              : 344_069_602;
         const extraVoices = rawOpts?.voices ?? [];
         const baseVoices =
           this.modelStatus.installedVoices.length > 0
             ? this.modelStatus.installedVoices
-            : ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'];
+            : [...KOKORO_DEFAULT_VOICES];
         const mergedVoices = Array.from(new Set([...baseVoices, ...extraVoices]));
         const sourceLabel =
           this.settingsData.modelDownloadSource === 'custom' && this.settingsData.modelMirrorBaseUrl
@@ -1198,7 +1255,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
             : this.settingsData.modelDownloadSource === 'hf-mirror'
               ? 'hf-mirror.com'
               : 'huggingface.co';
-        if (this.modelStatus.state === 'downloading') {
+        if (this.modelStatus.state === 'downloading' && this.modelStatus.variant === targetVariant) {
           this.modelStatus = {
             ...this.modelStatus,
             source: sourceLabel,
@@ -1207,11 +1264,14 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
           return this.modelStatus;
         }
         const { error: _prevErr, ...restReady } = this.modelStatus;
+        this.downloadedModelVariants.add(targetVariant);
         this.modelStatus = {
           ...restReady,
           state: 'ready',
-          bytesDone: this.modelStatus.bytesTotal,
-          installedBytes: this.modelStatus.bytesTotal,
+          variant: targetVariant,
+          bytesDone: targetTotal,
+          bytesTotal: targetTotal,
+          installedBytes: targetTotal,
           installedVoices: mergedVoices,
           source: sourceLabel,
         };
@@ -1228,6 +1288,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       },
       remove: async () => {
         const { error: _prevErr, ...restRemoved } = this.modelStatus;
+        this.downloadedModelVariants.clear();
         this.modelStatus = {
           ...restRemoved,
           state: 'absent',
@@ -1351,14 +1412,23 @@ export class MockSpeechPlayer implements SpeechPlayer {
       const idx = this.queue.findIndex((u) => u.id === opts.replaceFromId);
       if (idx >= 0) {
         this.queue = [...this.queue.slice(0, idx), ...items];
+        if (this.currentIdx >= this.queue.length && this.queue.length > 0) {
+          this.currentIdx = idx;
+        }
         return;
       }
     }
-    const existingIds = new Set(this.queue.map((u) => u.id));
+    const indexById = new Map<string, number>();
+    for (let i = 0; i < this.queue.length; i++) {
+      indexById.set(this.queue[i]!.id, i);
+    }
     for (const item of items) {
-      if (!existingIds.has(item.id)) {
+      const existingIdx = indexById.get(item.id);
+      if (existingIdx !== undefined) {
+        this.queue[existingIdx] = item;
+      } else {
+        indexById.set(item.id, this.queue.length);
         this.queue.push(item);
-        existingIds.add(item.id);
       }
     }
   }
@@ -1417,10 +1487,27 @@ export class MockSpeechPlayer implements SpeechPlayer {
     this.emitState();
   }
 
+  private static isSameVoice(a: VoiceRef | null, b: VoiceRef): boolean {
+    if (!a || a.kind !== b.kind || a.voiceId !== b.voiceId) return false;
+    if (a.kind === 'system' && b.kind === 'system') return (a.engine ?? null) === (b.engine ?? null);
+    if ((a.kind === 'openai' && b.kind === 'openai') || (a.kind === 'qwen' && b.kind === 'qwen')) {
+      return a.model === b.model;
+    }
+    return true;
+  }
+
   setVoice(voice: VoiceRef): void {
+    const wasActive = this.status === 'playing' || this.status === 'buffering';
+    if (!MockSpeechPlayer.isSameVoice(this.voice, voice)) {
+      this.attached.clear();
+    }
     this.voice = voice;
     this.usingFallback = false;
-    this.emitState();
+    if (wasActive) {
+      this.play();
+    } else {
+      this.emitState();
+    }
   }
 
   setSleepTimer(timer: SleepTimerConfig): void {

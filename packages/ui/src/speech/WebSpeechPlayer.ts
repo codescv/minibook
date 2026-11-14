@@ -30,6 +30,7 @@ export class WebSpeechPlayer implements SpeechPlayer {
   } as const;
 
   private readonly onlineTimeoutMs: number;
+  private readonly localKokoroTimeoutMs: number;
   private readonly offlineTimeoutMs: number;
   private readonly listeners = new Set<(e: SpeechEvent) => void>();
 
@@ -57,6 +58,7 @@ export class WebSpeechPlayer implements SpeechPlayer {
 
   constructor(options?: WebSpeechPlayerOptions) {
     this.onlineTimeoutMs = options?.bufferingTimeoutOnlineMs ?? 8000;
+    this.localKokoroTimeoutMs = options?.bufferingTimeoutOnlineMs ?? 20_000;
     this.offlineTimeoutMs = options?.bufferingTimeoutOfflineMs ?? 2000;
   }
 
@@ -123,14 +125,23 @@ export class WebSpeechPlayer implements SpeechPlayer {
       const idx = this.queue.findIndex((u) => u.id === opts.replaceFromId);
       if (idx >= 0) {
         this.queue = [...this.queue.slice(0, idx), ...items];
+        if (this.currentIdx >= this.queue.length && this.queue.length > 0) {
+          this.currentIdx = idx;
+        }
         return;
       }
     }
-    const seen = new Set(this.queue.map((u) => u.id));
+    const indexById = new Map<string, number>();
+    for (let i = 0; i < this.queue.length; i++) {
+      indexById.set(this.queue[i]!.id, i);
+    }
     for (const u of items) {
-      if (!seen.has(u.id)) {
+      const existingIdx = indexById.get(u.id);
+      if (existingIdx !== undefined) {
+        this.queue[existingIdx] = u;
+      } else {
+        indexById.set(u.id, this.queue.length);
         this.queue.push(u);
-        seen.add(u.id);
       }
     }
     if (this.queue.length - this.currentIdx > 20) {
@@ -203,9 +214,22 @@ export class WebSpeechPlayer implements SpeechPlayer {
     this.emitState();
   }
 
+  private static isSameVoice(a: VoiceRef | null, b: VoiceRef): boolean {
+    if (!a || a.kind !== b.kind || a.voiceId !== b.voiceId) return false;
+    if (a.kind === 'system' && b.kind === 'system') return (a.engine ?? null) === (b.engine ?? null);
+    if ((a.kind === 'openai' && b.kind === 'openai') || (a.kind === 'qwen' && b.kind === 'qwen')) {
+      return a.model === b.model;
+    }
+    return true;
+  }
+
   setVoice(voice: VoiceRef): void {
     const wasActive = this.status === 'playing' || this.status === 'buffering';
+    const voiceChanged = !WebSpeechPlayer.isSameVoice(this.voice, voice);
     this.cancelActiveOutput();
+    if (voiceChanged) {
+      this.attached.clear();
+    }
     this.voice = voice;
     this.stickyFallbackBlock = null;
     this.emitState();
@@ -311,7 +335,11 @@ export class WebSpeechPlayer implements SpeechPlayer {
     this.emitState();
     const isLocalEngine = activeVoice.kind === 'kokoro';
     const isOffline = !isLocalEngine && typeof navigator !== 'undefined' && navigator.onLine === false;
-    const waitMs = isOffline ? this.offlineTimeoutMs : this.onlineTimeoutMs;
+    const waitMs = isLocalEngine
+      ? this.localKokoroTimeoutMs
+      : isOffline
+        ? this.offlineTimeoutMs
+        : this.onlineTimeoutMs;
 
     this.clearBufferingTimer();
     this.bufferingTimerHandle = setTimeout(() => {
@@ -429,11 +457,13 @@ export class WebSpeechPlayer implements SpeechPlayer {
       }
     };
 
-    void audio.play().catch(() => {
-      if (gen !== this.playGeneration) return;
-      this.clearMarkTicker();
-      this.onUtteranceFinished(u, gen);
-    });
+    void Promise.resolve()
+      .then(() => audio.play())
+      .catch(() => {
+        if (gen !== this.playGeneration) return;
+        this.clearMarkTicker();
+        this.onUtteranceFinished(u, gen);
+      });
   }
 
   private onUtteranceFinished(u: Utterance, gen: number): void {

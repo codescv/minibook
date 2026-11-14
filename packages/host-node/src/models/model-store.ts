@@ -69,6 +69,7 @@ interface InstalledMetadata {
   readonly revision: string;
   readonly variant: SpeechModelVariant;
   readonly files: readonly KokoroManifestFile[];
+  readonly variants?: Readonly<Record<string, KokoroManifestFile>>;
   readonly voices: readonly string[];
   readonly installedAt: number;
   readonly source?: string;
@@ -263,38 +264,109 @@ export class ModelStore {
     return out;
   }
 
-  private readInstalledMetadata(): InstalledMetadata | null {
+  private readRawInstalledMetadata(): Partial<InstalledMetadata> | null {
     const metaPath = join(this.kokoroRoot, 'installed.json');
     if (!existsSync(metaPath)) return null;
     try {
       const parsed = JSON.parse(readFileSync(metaPath, 'utf8')) as Partial<InstalledMetadata>;
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private resolveDesiredVariant(): 'onnx-fp32' | 'onnx-q8' {
+    const prec = this.getSettings().kokoroPrecision;
+    if (prec === 'q8') return 'onnx-q8';
+    if (prec === 'fp32') return 'onnx-fp32';
+    const raw = this.readRawInstalledMetadata();
+    if (raw?.variant === 'onnx-q8' || raw?.variant === 'onnx-fp32') {
+      return raw.variant;
+    }
+    return 'onnx-fp32';
+  }
+
+  private readInstalledMetadata(targetVariant?: 'onnx-fp32' | 'onnx-q8'): InstalledMetadata | null {
+    const desired = targetVariant ?? this.resolveDesiredVariant();
+    const parsed = this.readRawInstalledMetadata();
+    if (
+      !parsed ||
+      typeof parsed.revision !== 'string' ||
+      (parsed.variant !== 'onnx-fp32' && parsed.variant !== 'onnx-q8') ||
+      !Array.isArray(parsed.files) ||
+      !Array.isArray(parsed.voices)
+    ) {
+      return null;
+    }
+    if (parsed.revision !== KOKORO_MANIFEST.onnx.revision) {
+      return null;
+    }
+    try {
+      if (parsed.variant === desired) {
+        let allValid = true;
+        for (const f of parsed.files) {
+          if (!f || typeof f.path !== 'string' || typeof f.size !== 'number') {
+            allValid = false;
+            break;
+          }
+          if (!isSafeManifestRelativePath(f.path)) {
+            allValid = false;
+            break;
+          }
+          const full = resolve(this.kokoroRoot, f.path);
+          if (!full.startsWith(this.kokoroRoot + sep) || !existsSync(full)) {
+            allValid = false;
+            break;
+          }
+          if (statSync(full).size !== f.size) {
+            allValid = false;
+            break;
+          }
+        }
+        if (allValid) {
+          return parsed as InstalledMetadata;
+        }
+      }
+
+      const varSpec = parsed.variants?.[desired];
       if (
-        !parsed ||
-        typeof parsed.revision !== 'string' ||
-        (parsed.variant !== 'onnx-fp32' && parsed.variant !== 'onnx-q8') ||
-        !Array.isArray(parsed.files) ||
-        !Array.isArray(parsed.voices)
+        varSpec &&
+        typeof varSpec.path === 'string' &&
+        typeof varSpec.size === 'number' &&
+        isSafeManifestRelativePath(varSpec.path)
       ) {
-        return null;
+        const onnxFull = resolve(this.kokoroRoot, varSpec.path);
+        const voicesOnDisk = this.detectInstalledVoicesOnDisk();
+        if (
+          onnxFull.startsWith(this.kokoroRoot + sep) &&
+          existsSync(onnxFull) &&
+          statSync(onnxFull).size === varSpec.size &&
+          voicesOnDisk.length > 0
+        ) {
+          const voiceFiles = voicesOnDisk
+            .map((v) => KOKORO_MANIFEST.onnx.voices.find((vf) => vf.path === `voices/${v}.bin`))
+            .filter((vf): vf is KokoroManifestFile => Boolean(vf));
+          return {
+            revision: parsed.revision,
+            variant: desired,
+            files: [varSpec, ...voiceFiles],
+            ...(parsed.variants ? { variants: parsed.variants } : {}),
+            voices: voicesOnDisk,
+            installedAt: typeof parsed.installedAt === 'number' ? parsed.installedAt : 0,
+            ...(parsed.source ? { source: parsed.source } : {}),
+          };
+        }
       }
-      if (parsed.revision !== KOKORO_MANIFEST.onnx.revision) {
-        return null;
-      }
-      for (const f of parsed.files) {
-        if (!f || typeof f.path !== 'string' || typeof f.size !== 'number') return null;
-        if (!isSafeManifestRelativePath(f.path)) return null;
-        const full = resolve(this.kokoroRoot, f.path);
-        if (!full.startsWith(this.kokoroRoot + sep) || !existsSync(full)) return null;
-        if (statSync(full).size !== f.size) return null;
-      }
-      return parsed as InstalledMetadata;
+      return null;
     } catch {
       return null;
     }
   }
 
   private reconcileFromDisk(): SpeechModelStatus {
-    const meta = this.readInstalledMetadata();
+    const desiredVariant = this.resolveDesiredVariant();
+    const meta = this.readInstalledMetadata(desiredVariant);
     if (meta) {
       const installedBytes = meta.files.reduce((sum, f) => sum + f.size, 0);
       return {
@@ -309,18 +381,41 @@ export class ModelStore {
       };
     }
 
+    const rawMeta = this.readRawInstalledMetadata();
     const diskBytes = sumDirectoryBytes(this.kokoroRoot);
     const installedVoices = this.detectInstalledVoicesOnDisk();
-    const defaultVariant: SpeechModelVariant = 'onnx-fp32';
     const expectedVoices =
       installedVoices.length > 0 ? installedVoices : [...KOKORO_DEFAULT_VOICES];
-    const bytesTotal = totalManifestBytesForVariant(defaultVariant, expectedVoices);
+    const bytesTotal = totalManifestBytesForVariant(desiredVariant, expectedVoices);
+    const onnxRel =
+      desiredVariant === 'onnx-q8'
+        ? KOKORO_MANIFEST.onnx.models.q8.path
+        : KOKORO_MANIFEST.onnx.models.fp32.path;
+    const onnxPartPath = join(this.kokoroRoot, `${onnxRel}.part`);
+    const partSize = existsSync(onnxPartPath) ? statSync(onnxPartPath).size : 0;
+    const voicesBytes = installedVoices.length * KOKORO_MANIFEST.onnx.voices[0]!.size;
+
+    if (rawMeta && Array.isArray(rawMeta.files)) {
+      const prevInstalled = rawMeta.files.reduce(
+        (s, f) => s + (typeof f?.size === 'number' ? f.size : 0),
+        0,
+      );
+      return {
+        id: KOKORO_MODEL_ID,
+        state: partSize > 0 ? 'paused' : 'absent',
+        variant: desiredVariant,
+        bytesDone: Math.min(voicesBytes + partSize, bytesTotal),
+        bytesTotal,
+        installedBytes: prevInstalled,
+        installedVoices,
+      };
+    }
 
     if (diskBytes > 0) {
       return {
         id: KOKORO_MODEL_ID,
         state: 'paused',
-        variant: defaultVariant,
+        variant: desiredVariant,
         bytesDone: Math.min(diskBytes, bytesTotal),
         bytesTotal,
         installedBytes: 0,
@@ -331,12 +426,21 @@ export class ModelStore {
     return {
       id: KOKORO_MODEL_ID,
       state: 'absent',
-      variant: defaultVariant,
+      variant: desiredVariant,
       bytesDone: 0,
       bytesTotal,
       installedBytes: 0,
       installedVoices: [],
     };
+  }
+
+  reconcileForSettingsChange(): SpeechModelStatus {
+    if (this.activeJobPromise && (this.statusState.state === 'downloading' || this.statusState.state === 'verifying')) {
+      return this.statusState;
+    }
+    this.statusState = this.reconcileFromDisk();
+    this.emitStatusImmediate();
+    return this.statusState;
   }
 
   totalBytes(): number {
@@ -345,6 +449,9 @@ export class ModelStore {
 
   status(id: SpeechModelId): SpeechModelStatus {
     this.assertSupportedModelId(id);
+    if (!this.activeJobPromise && this.statusState.state !== 'error') {
+      this.statusState = this.reconcileFromDisk();
+    }
     return this.statusState;
   }
 
@@ -455,7 +562,10 @@ export class ModelStore {
     },
   ): Promise<SpeechModelStatus> {
     this.assertSupportedModelId(id);
-    const variant: SpeechModelVariant = opts?.variant === 'onnx-q8' ? 'onnx-q8' : 'onnx-fp32';
+    const variant: SpeechModelVariant =
+      opts?.variant === 'onnx-q8' || opts?.variant === 'onnx-fp32'
+        ? opts.variant
+        : this.resolveDesiredVariant();
     const { sources, allowHosts } = this.resolveSourcesAndAllowHosts(opts);
 
     const existingVoices = this.detectInstalledVoicesOnDisk();
@@ -709,10 +819,35 @@ export class ModelStore {
             ...(lastSourceHost ? { source: lastSourceHost } : {}),
           };
           this.emitStatusImmediate();
+          const prevRaw = this.readRawInstalledMetadata();
+          const prevVariants: Record<string, KokoroManifestFile> = {
+            ...(prevRaw?.variants ?? {}),
+          };
+          if (prevRaw?.variant && Array.isArray(prevRaw.files) && !prevVariants[prevRaw.variant]) {
+            const prevOnnx = prevRaw.files.find(
+              (f) => f && typeof f.path === 'string' && f.path.startsWith('onnx/'),
+            );
+            if (prevOnnx) {
+              prevVariants[prevRaw.variant] = {
+                path: prevOnnx.path,
+                size: prevOnnx.size,
+                sha256: prevOnnx.sha256,
+              };
+            }
+          }
+          const curOnnx = manifestFiles.find((f) => f.path.startsWith('onnx/'));
+          if (curOnnx) {
+            prevVariants[variant] = {
+              path: curOnnx.path,
+              size: curOnnx.size,
+              sha256: curOnnx.sha256,
+            };
+          }
           const meta: InstalledMetadata = {
             revision: KOKORO_MANIFEST.onnx.revision,
             variant,
             files: manifestFiles.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+            variants: prevVariants,
             voices: installedVoices,
             installedAt: this.now(),
             ...(lastSourceHost ? { source: lastSourceHost } : {}),
@@ -1006,7 +1141,7 @@ export class ModelStore {
         for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
           const reqHeaders: Record<string, string> = {
             'Accept-Encoding': 'identity',
-            'User-Agent': 'MiniBook/0.2.3',
+            'User-Agent': 'MiniBook/0.2.4',
           };
           if (offset > 0) {
             reqHeaders['Range'] = `bytes=${offset}-`;

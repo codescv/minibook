@@ -62,6 +62,7 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
     private final AtomicInteger planGeneration = new AtomicInteger(0);
     private final Set<String> failedInPlan = new HashSet<>();
     @Nullable private String activeVoiceId;
+    @Nullable private String activeVariant;
     private double rtfEma = 0.0;
     private int rtfSamples = 0;
     private boolean slowEmittedForVoice = false;
@@ -122,8 +123,10 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
         }
 
         final String voiceId = voice.voiceId;
-        if (!voiceId.equals(activeVoiceId)) {
+        final String variant = modelStore.getActiveVariant();
+        if (!voiceId.equals(activeVoiceId) || !variant.equals(activeVariant)) {
             activeVoiceId = voiceId;
+            activeVariant = variant;
             rtfEma = 0.0;
             rtfSamples = 0;
             slowEmittedForVoice = false;
@@ -138,7 +141,7 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             workerHandler.removeCallbacks(idleCloseTask);
         }
 
-        Runnable task = () -> processPlan(snapshot, currentIndex, voiceId, myPlanGen);
+        Runnable task = () -> processPlan(snapshot, currentIndex, voiceId, variant, myPlanGen);
         if (workerHandler != null) {
             workerHandler.post(task);
         } else if (customExecutor != null) {
@@ -167,6 +170,7 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
         List<ReadAloudQueueEngine.UtteranceItem> queue,
         int currentIndex,
         String voiceId,
+        String variant,
         int myPlanGen
     ) {
         try {
@@ -185,12 +189,12 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
                     continue;
                 }
                 synchronized (failedInPlan) {
-                    if (failedInPlan.contains(item.id + "@" + voiceId)) {
+                    if (failedInPlan.contains(item.id + "@" + variant + "@" + voiceId)) {
                         continue;
                     }
                 }
 
-                long durMs = synthesizeOrUseCache(item, voiceId, myPlanGen);
+                long durMs = synthesizeOrUseCache(item, voiceId, variant, myPlanGen);
                 if (planGeneration.get() != myPlanGen) return;
                 if (durMs > 0L) {
                     readyAheadMs += durMs;
@@ -208,10 +212,11 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
     private long synthesizeOrUseCache(
         ReadAloudQueueEngine.UtteranceItem item,
         String voiceId,
+        String variant,
         int myPlanGen
     ) {
         try {
-            String key = computeCacheKey(voiceId, item);
+            String key = computeCacheKey(variant, voiceId, item);
             if (!speechCacheDir.exists()) {
                 //noinspection ResultOfMethodCallIgnored
                 speechCacheDir.mkdirs();
@@ -273,14 +278,14 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
             return durationMs;
         } catch (KokoroInference.SelfTestException ste) {
             synchronized (failedInPlan) {
-                failedInPlan.add(item.id + "@" + voiceId);
+                failedInPlan.add(item.id + "@" + variant + "@" + voiceId);
             }
             callback.onSynthFailed(item.id, "model-selftest", ste.getMessage() != null ? ste.getMessage() : "Self-test failed");
             return 0L;
         } catch (Exception e) {
             if (planGeneration.get() != myPlanGen) return 0L;
             synchronized (failedInPlan) {
-                failedInPlan.add(item.id + "@" + voiceId);
+                failedInPlan.add(item.id + "@" + variant + "@" + voiceId);
             }
             callback.onSynthFailed(
                 item.id,
@@ -386,9 +391,20 @@ public final class KokoroSynthQueue implements ReadAloudQueueEngine.LocalSynth {
     }
 
     static String computeCacheKey(String voiceId, ReadAloudQueueEngine.UtteranceItem item) throws Exception {
+        return computeCacheKey(KokoroModelStore.DEFAULT_VARIANT, voiceId, item);
+    }
+
+    static String computeCacheKey(
+        String variant,
+        String voiceId,
+        ReadAloudQueueEngine.UtteranceItem item
+    ) throws Exception {
+        String effectiveVariant = (variant != null && !variant.isEmpty())
+            ? variant
+            : KokoroModelStore.DEFAULT_VARIANT;
         MessageDigest md = MessageDigest.getInstance("SHA-256");
         StringBuilder sb = new StringBuilder();
-        sb.append(KokoroModelStore.DEFAULT_VARIANT)
+        sb.append(effectiveVariant)
             .append('|')
             .append(voiceId)
             .append("|g2p")

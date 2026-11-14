@@ -18,6 +18,7 @@ const RTF_EMA_WINDOW = 8;
 
 export interface KokoroWebSynthInput {
   readonly voiceId: string;
+  readonly variant?: 'onnx-fp32' | 'onnx-q8';
   readonly text: string;
   readonly phonemeIds: readonly (readonly number[])[];
   readonly phonemeSpeeds?: readonly number[];
@@ -211,6 +212,7 @@ export class KokoroWebEngine {
         type: 'synth',
         id,
         baseUrl: this.baseUrl,
+        ...(input.variant !== undefined ? { variant: input.variant } : {}),
         voiceId: input.voiceId,
         text: input.text,
         phonemeIds: input.phonemeIds,

@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startServer } from './start.js';
 
-export const MINIBOOK_VERSION = '0.2.3';
+export const MINIBOOK_VERSION = '0.2.4';
 
 export interface ParsedCliArgs {
   readonly port: number;

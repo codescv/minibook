@@ -795,17 +795,180 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
     expect(firstQueued.phonemeIds?.length).toBeGreaterThan(0);
     expect(firstQueued.phonemeSpans?.length).toBeGreaterThan(0);
 
-    // Mid-session switch to another kokoro voice ('zf_001'): first annotates current + next 3 (count=4),
-    // calls player.enqueue(firstBatch, { replaceFromId }) BEFORE player.setVoice!
+    // Mid-session switch to another kokoro voice ('zf_001'):
+    // 1. Pauses old voice immediately, annotates firstBatch (`idx .. idx + 6`),
+    // 2. Calls `player.setVoice` FIRST (purging stale `attachedAudio`),
+    // 3. Calls `player.enqueue(fullSlice, { replaceFromId })` so queue is NEVER truncated to 4 items,
+    // 4. Resumes `player.play()` immediately!
+    const fullQueueLenBefore = player.getQueue().length;
+    expect(fullQueueLenBefore).toBeGreaterThanOrEqual(25);
     callOrder.length = 0;
     ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_001' });
 
     await vi.waitFor(() => {
       expect(callOrder.length).toBeGreaterThanOrEqual(2);
     });
-    expect(callOrder[0]).toMatch(/^enqueue:replaceFrom=.*:count=4:hasPhonemes=true$/);
-    expect(callOrder[1]).toBe('setVoice:kokoro:zf_001');
+    expect(callOrder[0]).toBe('setVoice:kokoro:zf_001');
+    expect(callOrder[1]).toMatch(
+      new RegExp(`^enqueue:replaceFrom=.*:count=${fullQueueLenBefore}:hasPhonemes=true$`),
+    );
+    expect(player.getQueue().length).toBe(fullQueueLenBefore);
 
     ctl.dispose();
+  });
+
+  it('[v0.2.4] live-switches System <-> Kokoro voices mid-Reader (playing, paused & rapid 4-way taps), purges stale attached audio, and bypasses Capacitor custom-scheme Worker timeout', async () => {
+    // 1. Verify KokoroG2PClient immediately selects main-thread mode on Capacitor (`window.Capacitor.isNativePlatform()`) with 0 Worker spawns!
+    const winWithCap = window as Window & {
+      Capacitor?: { isNativePlatform?: () => boolean };
+    };
+    const prevCap = winWithCap.Capacitor;
+    const origUserAgent = navigator.userAgent;
+    let workerSpawnCount = 0;
+    const origWorker = globalThis.Worker;
+    (globalThis as { Worker?: unknown }).Worker = class {
+      constructor() {
+        workerSpawnCount += 1;
+      }
+    };
+    Object.defineProperty(navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15',
+      configurable: true,
+    });
+    winWithCap.Capacitor = { isNativePlatform: () => true };
+    try {
+      const capG2p = new KokoroG2PClient({ handshakeTimeoutMs: 5000 });
+      const t0 = performance.now();
+      const out = await capG2p.phonemize('你好，世界。', 'zh-CN', { voiceId: 'zf_018' });
+      expect(capG2p.getExecutionMode()).toBe('main');
+      expect(workerSpawnCount).toBe(0);
+      expect(performance.now() - t0).toBeLessThan(1500);
+      expect(out.phonemeIds.length).toBeGreaterThan(0);
+      capG2p.dispose();
+    } finally {
+      Object.defineProperty(navigator, 'userAgent', {
+        value: origUserAgent,
+        configurable: true,
+      });
+      if (prevCap === undefined) delete winWithCap.Capacitor;
+      else winWithCap.Capacitor = prevCap;
+      (globalThis as { Worker?: unknown }).Worker = origWorker;
+    }
+
+    // 2. Verify WebSpeechPlayer.setVoice purges stale `attached` WAVs so switching zf_001 -> zm_010 NEVER replays zf_001!
+    const origMediaPlay = HTMLMediaElement.prototype.play;
+    const origMediaPause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play = () => Promise.resolve();
+    HTMLMediaElement.prototype.pause = () => {};
+    try {
+      const webPlayer = new WebSpeechPlayer({ bufferingTimeoutOnlineMs: 500 });
+      await webPlayer.load({
+        bookId: 'b_luxun',
+        title: '呐喊',
+        author: '鲁迅',
+        chapterTitle: '故乡',
+        voice: { kind: 'kokoro', voiceId: 'zf_001' },
+        systemFallback: { kind: 'system', voiceId: null },
+        rate: 1.0,
+      });
+      webPlayer.enqueue([
+        {
+          id: '0:0-6',
+          section: 0,
+          start: 0,
+          end: 6,
+          blockIndex: 0,
+          text: '我冒了严寒，',
+          lang: 'zh-CN',
+          pauseAfterMs: 200,
+          phonemeIds: [[73, 127, 172, 4]],
+        },
+      ]);
+      webPlayer.attachAudio('0:0-6', { ref: 'blob:stale-zf001', durationMs: 900 });
+      webPlayer.play();
+      expect((await webPlayer.getState()).status).toBe('playing');
+
+      // Switch zf_001 -> zm_010: stale `blob:stale-zf001` MUST be purged -> enters `buffering` waiting for zm_010 WAV!
+      webPlayer.setVoice({ kind: 'kokoro', voiceId: 'zm_010' });
+      expect((await webPlayer.getState()).status).toBe('buffering');
+      webPlayer.stop();
+    } finally {
+      HTMLMediaElement.prototype.play = origMediaPlay;
+      HTMLMediaElement.prototype.pause = origMediaPause;
+    }
+
+    // 3. End-to-end ReadAloudController: live playing switch, paused switch, and rapid 4-way switch (`zf_001 -> zm_010 -> System -> zf_018`)!
+    const host = createMockPlatformHost({
+      platform: 'ios',
+      initialModelStatus: {
+        state: 'ready',
+        installedVoices: ['zf_001', 'zm_010', 'zf_018', 'af_maple'],
+      },
+    });
+    useSpeechModelStore.getState().setStatus(host.getModelStatus());
+    const player = createMockSpeechPlayer();
+
+    const g2p = new KokoroG2PClient();
+
+    const ctl = new ReadAloudController({
+      host,
+      player,
+      getSettings: () => DEFAULT_APP_SETTINGS,
+      getIsEink: () => false,
+      g2pClient: g2p,
+    });
+
+    await ctl.start({
+      bookId: 'b_luxun',
+      startLocator: { section: 0, offset: 0 },
+    });
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'system', voiceId: null });
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    // Advance 1 sentence mid-Reader, then rapidly tap `zf_001 -> zm_010 -> System -> zf_018`!
+    player.advanceToNextUtterance();
+    const activeMidId = useReadAloudStore.getState().activeUtterance!.id;
+
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_001' });
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zm_010' });
+    ctl.setVoice({ kind: 'system', voiceId: null });
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zf_018' });
+
+    await vi.waitFor(() => {
+      expect((player.currentUtterance()?.phonemeIds?.length ?? 0) > 0).toBe(true);
+      expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+    });
+    const playerStateAfterRapid = await player.getState();
+    expect(playerStateAfterRapid.voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+    // Player auto-resumed (`buffering` on native/mock waiting for WAV attachment, NOT stuck `paused`!)
+    expect(playerStateAfterRapid.status).toBe('buffering');
+    expect(player.currentUtterance()?.id).toBe(activeMidId);
+    // b_luxun fixture has 6 total sentences -> 5 remaining from sentence #1 (not truncated to 4!)
+    expect(player.getQueue().length).toBe(5);
+
+    // Simulate native KokoroSynthQueue attaching WAV for `activeMidId` -> transitions to `playing`!
+    player.attachAudio(activeMidId, { ref: 'file:///zf_018.wav', durationMs: 1200 });
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    // Now test Case 3: Pause playback -> switch `zf_018 -> System -> zm_010` while paused -> stays `paused`, then `togglePlayPause()` plays `zm_010`!
+    ctl.togglePlayPause();
+    expect(useReadAloudStore.getState().status).toBe('paused');
+    ctl.setVoice({ kind: 'system', voiceId: null });
+    expect(useReadAloudStore.getState().status).toBe('paused');
+    ctl.setVoice({ kind: 'kokoro', voiceId: 'zm_010' });
+
+    await vi.waitFor(async () => {
+      expect((await player.getState()).voice).toEqual({ kind: 'kokoro', voiceId: 'zm_010' });
+    });
+    expect(useReadAloudStore.getState().status).toBe('paused');
+
+    // Press Play -> starts buffering/playing `zm_010` immediately!
+    ctl.togglePlayPause();
+    expect((await player.getState()).status).toBe('buffering');
+    player.attachAudio(activeMidId, { ref: 'file:///zm_010.wav', durationMs: 1100 });
+    expect(useReadAloudStore.getState().status).toBe('playing');
+
+    ctl.dispose();
+    g2p.dispose();
   });
 });

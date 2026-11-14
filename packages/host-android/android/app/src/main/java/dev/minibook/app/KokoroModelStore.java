@@ -22,13 +22,19 @@ import org.json.JSONObject;
  */
 public final class KokoroModelStore {
     public static final String MODEL_ID = "kokoro-v1.1-zh";
-    public static final String DEFAULT_VARIANT = "onnx-q8";
+    public static final String VARIANT_Q8 = "onnx-q8";
+    public static final String VARIANT_FP32 = "onnx-fp32";
+    public static final String DEFAULT_VARIANT = VARIANT_Q8;
+    public static final long ONNX_Q8_BYTES = 127_356_597L;
+    public static final long ONNX_FP32_BYTES = 339_369_442L;
+    public static final int DEFAULT_VOICES_COUNT = 9;
     public static final int VOICE_BIN_BYTES = 522_240;
     public static final int VOICE_ROWS = 510;
     public static final int VOICE_DIM = 256;
     public static final int SAMPLE_RATE = 24_000;
     public static final int SAMPLES_PER_FRAME = 600; // 25 ms @ 24 kHz
-    public static final long DEFAULT_ESTIMATED_TOTAL_BYTES = 129_967_797L; // q8 + 5 default voices
+    public static final long DEFAULT_ESTIMATED_TOTAL_BYTES =
+        ONNX_Q8_BYTES + (long) DEFAULT_VOICES_COUNT * (long) VOICE_BIN_BYTES;
 
     private static final Pattern SAFE_REL_PATH = Pattern.compile("^[A-Za-z0-9._/-]+$");
     private static final Pattern SAFE_VOICE_ID = Pattern.compile("^[A-Za-z0-9_]{2,40}$");
@@ -94,27 +100,124 @@ public final class KokoroModelStore {
         return out;
     }
 
+    public static String onnxRelativePathForVariant(String variant) {
+        return VARIANT_FP32.equals(variant) ? "onnx/model.onnx" : "onnx/model_quantized.onnx";
+    }
+
+    public static long onnxSizeForVariant(String variant) {
+        return VARIANT_FP32.equals(variant) ? ONNX_FP32_BYTES : ONNX_Q8_BYTES;
+    }
+
     @Nullable
-    public JSONObject readInstalledMeta() {
+    public String readConfiguredPrecisionVariant() {
+        File settingsFile = new File(miniBookDataRoot, "settings.json");
+        if (!settingsFile.exists() || !settingsFile.isFile()) return null;
+        try {
+            byte[] bytes = Files.readAllBytes(settingsFile.toPath());
+            JSONObject obj = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+            String prec = obj.optString("kokoroPrecision", "");
+            if ("fp32".equals(prec)) return VARIANT_FP32;
+            if ("q8".equals(prec)) return VARIANT_Q8;
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    @Nullable
+    public JSONObject readRawInstalledMeta() {
         File metaFile = new File(getModelRoot(MODEL_ID), "installed.json");
         if (!metaFile.exists() || !metaFile.isFile()) return null;
         try {
             byte[] bytes = Files.readAllBytes(metaFile.toPath());
-            JSONObject obj = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
-            JSONArray files = obj.optJSONArray("files");
-            if (files == null || files.length() == 0) return null;
-            for (int i = 0; i < files.length(); i++) {
-                JSONObject f = files.optJSONObject(i);
-                if (f == null) return null;
-                String rel = f.optString("path", "");
-                long size = f.optLong("size", -1L);
-                if (rel.isEmpty() || size <= 0L) return null;
-                File disk = resolveInModelJail(MODEL_ID, rel);
-                if (!disk.exists() || !disk.isFile() || disk.length() != size) {
-                    return null;
+            return new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public String getActiveVariant() {
+        String configured = readConfiguredPrecisionVariant();
+        if (configured != null) return configured;
+        JSONObject raw = readRawInstalledMeta();
+        if (raw != null) {
+            String v = raw.optString("variant", "");
+            if (VARIANT_FP32.equals(v) || VARIANT_Q8.equals(v)) {
+                return v;
+            }
+        }
+        return DEFAULT_VARIANT;
+    }
+
+    @Nullable
+    public JSONObject readInstalledMeta() {
+        return readInstalledMetaForVariant(getActiveVariant());
+    }
+
+    @Nullable
+    public JSONObject readInstalledMetaForVariant(String targetVariant) {
+        JSONObject obj = readRawInstalledMeta();
+        if (obj == null) return null;
+        try {
+            String metaVariant = obj.optString("variant", DEFAULT_VARIANT);
+            if (targetVariant.equals(metaVariant)) {
+                JSONArray files = obj.optJSONArray("files");
+                if (files != null && files.length() > 0) {
+                    boolean allPresent = true;
+                    for (int i = 0; i < files.length(); i++) {
+                        JSONObject f = files.optJSONObject(i);
+                        if (f == null) {
+                            allPresent = false;
+                            break;
+                        }
+                        String rel = f.optString("path", "");
+                        long size = f.optLong("size", -1L);
+                        if (rel.isEmpty() || size <= 0L) {
+                            allPresent = false;
+                            break;
+                        }
+                        File disk = resolveInModelJail(MODEL_ID, rel);
+                        if (!disk.exists() || !disk.isFile() || disk.length() != size) {
+                            allPresent = false;
+                            break;
+                        }
+                    }
+                    if (allPresent) {
+                        return obj;
+                    }
                 }
             }
-            return obj;
+
+            // Also check multi-variant `variants` map so switching back between already-downloaded
+            // `onnx-q8` and `onnx-fp32` is instant (0 network bytes) with shared `voices/*.bin`.
+            JSONObject variantsObj = obj.optJSONObject("variants");
+            JSONObject varSpec = variantsObj != null ? variantsObj.optJSONObject(targetVariant) : null;
+            if (varSpec != null) {
+                String onnxRel = varSpec.optString("path", "");
+                long onnxSize = varSpec.optLong("size", -1L);
+                if (!onnxRel.isEmpty() && onnxSize > 0L) {
+                    File onnxDisk = resolveInModelJail(MODEL_ID, onnxRel);
+                    List<String> voicesOnDisk = detectInstalledVoicesOnDisk();
+                    if (onnxDisk.exists() && onnxDisk.isFile() && onnxDisk.length() == onnxSize && !voicesOnDisk.isEmpty()) {
+                        JSONObject synthesized = new JSONObject(obj.toString());
+                        synthesized.put("variant", targetVariant);
+                        JSONArray filesArr = new JSONArray();
+                        filesArr.put(new JSONObject(varSpec.toString()));
+                        String repo = obj.optString("repo", "onnx-community/Kokoro-82M-v1.1-zh-ONNX");
+                        String rev = obj.optString("revision", "");
+                        for (String v : voicesOnDisk) {
+                            JSONObject vf = new JSONObject();
+                            vf.put("path", "voices/" + v + ".bin");
+                            vf.put("size", VOICE_BIN_BYTES);
+                            vf.put("repo", repo);
+                            vf.put("revision", rev);
+                            filesArr.put(vf);
+                        }
+                        synthesized.put("files", filesArr);
+                        synthesized.put("voices", new JSONArray(voicesOnDisk));
+                        return synthesized;
+                    }
+                }
+            }
+            return null;
         } catch (Exception e) {
             return null;
         }
@@ -126,9 +229,13 @@ public final class KokoroModelStore {
     }
 
     public boolean isSelfTestPassed(String variant, String runtimeVersion, String osBuild) {
-        JSONObject meta = readInstalledMeta();
+        JSONObject meta = readRawInstalledMeta();
         if (meta == null) return false;
-        JSONObject st = meta.optJSONObject("selfTest");
+        JSONObject byVar = meta.optJSONObject("selfTests");
+        JSONObject st = byVar != null ? byVar.optJSONObject(variant) : null;
+        if (st == null) {
+            st = meta.optJSONObject("selfTest");
+        }
         if (st == null || !st.optBoolean("passed", false)) return false;
         return variant.equals(st.optString("variant", ""))
             && runtimeVersion.equals(st.optString("runtimeVersion", ""))
@@ -142,7 +249,7 @@ public final class KokoroModelStore {
         boolean passed,
         @Nullable String errorMessage
     ) {
-        JSONObject meta = readInstalledMeta();
+        JSONObject meta = readRawInstalledMeta();
         if (meta == null) return;
         try {
             JSONObject st = new JSONObject();
@@ -154,6 +261,10 @@ public final class KokoroModelStore {
                 st.put("error", errorMessage);
             }
             meta.put("selfTest", st);
+            JSONObject byVar = meta.optJSONObject("selfTests");
+            if (byVar == null) byVar = new JSONObject();
+            byVar.put(variant, st);
+            meta.put("selfTests", byVar);
             meta.put("backend", "ort-cpu");
             writeInstalledMeta(meta);
         } catch (Exception ignored) {}
@@ -200,7 +311,8 @@ public final class KokoroModelStore {
         double rtfEma,
         @Nullable JSONObject selfTestError
     ) {
-        JSONObject meta = readInstalledMeta();
+        String targetVariant = getActiveVariant();
+        JSONObject meta = readInstalledMetaForVariant(targetVariant);
         if (meta != null) {
             long installedBytes = 0L;
             JSONArray files = meta.optJSONArray("files");
@@ -215,7 +327,7 @@ public final class KokoroModelStore {
                 voicesArr = new JSONArray(detectInstalledVoicesOnDisk());
             }
             String state = selfTestError != null ? "error" : "ready";
-            String variant = meta.optString("variant", DEFAULT_VARIANT);
+            String variant = meta.optString("variant", targetVariant);
             String source = meta.has("source") && !meta.isNull("source") ? meta.optString("source") : null;
             return buildStatusJson(
                 state,
@@ -231,16 +343,59 @@ public final class KokoroModelStore {
             );
         }
 
-        File root = getModelRoot(MODEL_ID);
-        long diskBytes = sumDirBytes(root);
         List<String> installedVoices = detectInstalledVoicesOnDisk();
-        String state = diskBytes > 0L ? "paused" : "absent";
+        long voicesBytes = (long) installedVoices.size() * (long) VOICE_BIN_BYTES;
+        long expectedVoicesBytes = voicesBytes > 0L
+            ? voicesBytes
+            : (long) DEFAULT_VOICES_COUNT * (long) VOICE_BIN_BYTES;
+        long expectedOnnxBytes = onnxSizeForVariant(targetVariant);
+        long estimatedTotal = expectedOnnxBytes + expectedVoicesBytes;
+
+        File root = getModelRoot(MODEL_ID);
+        long partBytes = 0L;
+        boolean hasPartForVariant = false;
+        if (root.exists() && root.isDirectory()) {
+            try {
+                File onnxFile = resolveInModelJail(MODEL_ID, onnxRelativePathForVariant(targetVariant));
+                File partFile = new File(onnxFile.getPath() + ".part");
+                if (partFile.exists() && partFile.isFile()) {
+                    partBytes = Math.min(partFile.length(), expectedOnnxBytes);
+                    hasPartForVariant = partBytes > 0L;
+                }
+            } catch (IOException ignored) {}
+        }
+
+        JSONObject rawMeta = readRawInstalledMeta();
+        long prevInstalledBytes = 0L;
+        if (rawMeta != null) {
+            JSONArray prevFiles = rawMeta.optJSONArray("files");
+            if (prevFiles != null) {
+                for (int i = 0; i < prevFiles.length(); i++) {
+                    JSONObject f = prevFiles.optJSONObject(i);
+                    if (f != null) prevInstalledBytes += Math.max(0L, f.optLong("size", 0L));
+                }
+            }
+        }
+
+        long diskBytes = sumDirBytes(root);
+        // When switching precision (`q8 -> fp32`) after `q8` was already installed (`rawMeta != null`),
+        // report `paused` ONLY if `.part` exists for the new variant; otherwise `absent` (with `voicesBytes`
+        // already counted) so the UI knows the new variant's `.onnx` has not started downloading yet.
+        String state;
+        long doneBytes;
+        if (rawMeta != null) {
+            state = hasPartForVariant ? "paused" : "absent";
+            doneBytes = Math.min(voicesBytes + partBytes, estimatedTotal);
+        } else {
+            state = diskBytes > 0L ? "paused" : "absent";
+            doneBytes = Math.min(diskBytes, estimatedTotal);
+        }
         return buildStatusJson(
             state,
-            DEFAULT_VARIANT,
-            Math.min(diskBytes, DEFAULT_ESTIMATED_TOTAL_BYTES),
-            DEFAULT_ESTIMATED_TOTAL_BYTES,
-            0L,
+            targetVariant,
+            doneBytes,
+            estimatedTotal,
+            prevInstalledBytes,
             new JSONArray(installedVoices),
             null,
             null,

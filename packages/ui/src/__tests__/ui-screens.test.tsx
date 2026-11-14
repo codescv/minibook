@@ -248,8 +248,15 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
   });
 
   it('formats Kokoro voice labels accurately across locales (§7.2 & §8.2)', () => {
-    expect(formatKokoroVoiceLabel('zf_001', 'zh-CN')).toBe('Kokoro · 女声 01');
+    expect(formatKokoroVoiceLabel('zf_018', 'zh-CN')).toBe('Kokoro · 女声 18（温柔叙事 ★）');
+    expect(formatKokoroVoiceLabel('zf_018', 'en')).toBe('Kokoro · Female 18 · Warm ★');
+    expect(formatKokoroVoiceLabel('zf_004', 'zh-CN')).toBe('Kokoro · 女声 04（清亮播音 ★）');
+    expect(formatKokoroVoiceLabel('zf_028', 'zh-CN')).toBe('Kokoro · 女声 28（自然舒缓）');
+    expect(formatKokoroVoiceLabel('zf_001', 'zh-CN')).toBe('Kokoro · 女声 01（标准）');
     expect(formatKokoroVoiceLabel('zf_001', 'en')).toBe('Kokoro · Female 01');
+    expect(formatKokoroVoiceLabel('zm_010', 'zh-CN')).toBe('Kokoro · 男声 10（沉稳有声书 ★）');
+    expect(formatKokoroVoiceLabel('zm_029', 'en')).toBe('Kokoro · Male 29 · Warm');
+    expect(formatKokoroVoiceLabel('zf_002', 'zh-CN')).toBe('Kokoro · 女声 02');
     expect(formatKokoroVoiceLabel('zm_100', 'zh-CN')).toBe('Kokoro · 男声 100');
     expect(formatKokoroVoiceLabel('zm_009', 'en')).toBe('Kokoro · Male 09');
     expect(formatKokoroVoiceLabel('af_maple', 'en')).toBe('Kokoro · Maple (US)');
@@ -286,7 +293,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
 
     expect(await screen.findByTestId('tts-guide-on-device')).toBeInTheDocument();
     expect(await screen.findByTestId('kokoro-download-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('kokoro-status-text').textContent).toMatch(/124 MB · 5 voices/i);
+    expect(screen.getByTestId('kokoro-status-text').textContent).toMatch(/126 MB · 9 voices/i);
 
     // E-Ink progress throttling: 100 progress events from 1% to 100% over 10 s -> <= 20 DOM text updates (>= 5% step AND >= 3s interval)
     vi.useFakeTimers();
@@ -410,11 +417,12 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     );
     fireEvent.click(screen.getByTestId('kokoro-download-btn'));
     await waitFor(() => {
+      expect(screen.getByText(/Kokoro · Female 18 · Warm ★/i)).toBeInTheDocument();
       expect(screen.getByText(/Kokoro · Female 01/i)).toBeInTheDocument();
     });
     const useButtons = screen.getAllByRole('button', { name: 'Use' });
     fireEvent.click(useButtons[0]!);
-    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_001' });
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
 
     // [P2-2] Fetching an extra voice (`state: 'downloading'` while `installedVoices` is non-empty) keeps voice rows mounted with zero jump!
     act(() => {
@@ -719,5 +727,96 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     errRoot.unmount();
     errSpy.mockRestore();
     container.remove();
+  });
+
+  it('[v0.2.4] auto-selects newly fetched voice on 1-tap Get from 5-voice install, switches Android q8 <-> fp32 precision cleanly, and hides ONNX toggle on iOS', async () => {
+    // 1. Android with existing v0.2.3 5-voice `ready` install (`zf_018` NOT yet installed)
+    const c1 = document.createElement('div');
+    document.body.appendChild(c1);
+    const androidHost = createMockPlatformHost({
+      platform: 'android',
+      initialSettings: { einkMode: 'off' },
+      initialModelStatus: {
+        state: 'ready',
+        variant: 'onnx-q8',
+        bytesDone: 129_967_797,
+        bytesTotal: 129_967_797,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
+      },
+    });
+    const m1 = mountMiniBookApp(c1, androidHost, createMockSpeechPlayer());
+    await screen.findByRole('button', { name: /A Tale of Two Cities/i });
+    act(() => {
+      useRouteStore.getState().openBook('b_luxun');
+    });
+    await waitFor(() => {
+      expect(c1.querySelector('iframe.mb-reader-frame')).not.toBeNull();
+    });
+    act(() => {
+      useRouteStore.getState().setChromeOpen(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    fireEvent.click(await screen.findByTestId('tts-bar-voice-btn'));
+    fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
+
+    // Existing 5-voice install stays `ready` (`Ready · 124 MB`), precision row is shown on Android, and `zf_018` shows 1-tap `Get`!
+    expect(await screen.findByTestId('kokoro-status-text')).toHaveTextContent(/Ready · 124 MB/i);
+    expect(screen.getByTestId('kokoro-precision-row')).toBeInTheDocument();
+    const getZf018Btn = screen.getByTestId('kokoro-get-zf_018');
+    expect(getZf018Btn).toHaveTextContent('Get');
+
+    // 1-tap `Get` on `zf_018` downloads `zf_018` AND auto-activates `{ kind: 'kokoro', voiceId: 'zf_018' }`!
+    await act(async () => {
+      fireEvent.click(getZf018Btn);
+    });
+    await waitFor(() => {
+      expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+    });
+    expect(androidHost.getModelStatus().installedVoices).toContain('zf_018');
+    expect(androidHost.getModelStatus().installedVoices).toContain('zf_001');
+
+    // Switch precision `Standard · 124 MB` -> `HD FP32 · 324 MB`: upgrades to `onnx-fp32` while preserving all 6 voices!
+    const fp32Tab = screen.getByRole('tab', { name: /HD FP32 · 324 MB/i });
+    await act(async () => {
+      fireEvent.click(fp32Tab);
+    });
+    await waitFor(() => {
+      expect(androidHost.getModelStatus().variant).toBe('onnx-fp32');
+      expect(androidHost.getModelStatus().state).toBe('ready');
+    });
+    expect((await androidHost.settings.get()).kokoroPrecision).toBe('fp32');
+    expect(androidHost.getModelStatus().installedVoices).toContain('zf_018');
+
+    m1.unmount();
+    c1.remove();
+
+    // 2. iOS hides `kokoro-precision-row` and shows Siri/Premium & curated ★ studio voice guidance!
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const iosHost = createMockPlatformHost({
+      platform: 'ios',
+      initialSettings: { einkMode: 'off' },
+    });
+    const m2 = mountMiniBookApp(c2, iosHost, createMockSpeechPlayer());
+    await screen.findByRole('button', { name: /A Tale of Two Cities/i });
+    act(() => {
+      useRouteStore.getState().openBook('b_luxun');
+    });
+    await waitFor(() => {
+      expect(c2.querySelector('iframe.mb-reader-frame')).not.toBeNull();
+    });
+    act(() => {
+      useRouteStore.getState().setChromeOpen(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    fireEvent.click(await screen.findByTestId('tts-bar-voice-btn'));
+    expect(await screen.findByTestId('tts-guide-system')).toHaveTextContent(/Premium/i);
+    fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
+    expect(await screen.findByTestId('tts-guide-on-device')).toHaveTextContent(/Female 18 Warm ★/i);
+    expect(screen.queryByTestId('kokoro-precision-row')).toBeNull();
+
+    m2.unmount();
+    c2.remove();
   });
 });

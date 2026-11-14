@@ -86,7 +86,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
   let currentInfo: HostInfo = options?.initialInfo ?? {
     platform: 'desktop',
-    appVersion: '0.2.3',
+    appVersion: '0.2.4',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,
@@ -107,6 +107,8 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
   let lastKnownBackend: SpeechModelBackend | undefined;
   let lastKnownRtf: number | undefined;
   let lastSelfTestError: MiniBookError | null = null;
+  let activeModelVariant: 'onnx-fp32' | 'onnx-q8' = 'onnx-fp32';
+  let lastKnownPrecision: 'q8' | 'fp32' | undefined;
   const localModelListeners = new Set<(event: HostEvent) => void>();
 
   const kokoroEngine = new KokoroWebEngine({
@@ -146,6 +148,9 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
   });
 
   function enrichModelStatus(status: SpeechModelStatus): SpeechModelStatus {
+    if (status.variant === 'onnx-q8' || status.variant === 'onnx-fp32') {
+      activeModelVariant = status.variant;
+    }
     return {
       ...status,
       ...(lastKnownBackend !== undefined && !status.backend ? { backend: lastKnownBackend } : {}),
@@ -182,17 +187,26 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
       id: 'kokoro-v1.1-zh',
       opts?: {
         readonly voices?: readonly string[];
+        readonly variant?: 'onnx-fp32' | 'onnx-q8' | 'coreml';
         readonly source?: ModelDownloadSource;
         readonly mirrorBaseUrl?: string | null;
       },
     ) {
       lastSelfTestError = null;
+      const effectiveVariant: 'onnx-fp32' | 'onnx-q8' =
+        opts?.variant === 'onnx-q8'
+          ? 'onnx-q8'
+          : opts?.variant === 'onnx-fp32'
+            ? 'onnx-fp32'
+            : lastKnownPrecision === 'q8'
+              ? 'onnx-q8'
+              : 'onnx-fp32';
       const s = await client.request<SpeechModelStatus>(
         'POST',
         `/api/models/${encodeURIComponent(id)}/download`,
         {
           body: {
-            variant: 'onnx-fp32',
+            variant: effectiveVariant,
             ...(opts?.voices ? { voices: opts.voices } : {}),
             ...(opts?.source !== undefined ? { source: opts.source } : {}),
             ...(opts?.mirrorBaseUrl !== undefined ? { mirrorBaseUrl: opts.mirrorBaseUrl } : {}),
@@ -468,16 +482,23 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
     },
 
     settings: {
-      get(): Promise<AppSettings> {
-        return client.request<AppSettings>(ROUTES.settingsGet.method, ROUTES.settingsGet.path);
+      async get(): Promise<AppSettings> {
+        const s = await client.request<AppSettings>(ROUTES.settingsGet.method, ROUTES.settingsGet.path);
+        lastKnownPrecision = s.kokoroPrecision;
+        return s;
       },
 
-      update(patch: Partial<AppSettings>): Promise<AppSettings> {
-        return client.request<AppSettings>(
+      async update(patch: Partial<AppSettings>): Promise<AppSettings> {
+        const s = await client.request<AppSettings>(
           ROUTES.settingsUpdate.method,
           ROUTES.settingsUpdate.path,
           { body: patch },
         );
+        lastKnownPrecision = s.kokoroPrecision;
+        if (patch && 'kokoroPrecision' in patch) {
+          activeModelVariant = s.kokoroPrecision === 'q8' ? 'onnx-q8' : 'onnx-fp32';
+        }
+        return s;
       },
 
       async setSecret(name: string, value: string | null): Promise<void> {
@@ -507,10 +528,16 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
           if (!req.phonemeIds || req.phonemeIds.length === 0) {
             throw new MiniBookError('invalid-argument', 'Kokoro synthesis requires phonemeIds');
           }
+          const variant: 'onnx-fp32' | 'onnx-q8' =
+            lastKnownPrecision === 'q8'
+              ? 'onnx-q8'
+              : lastKnownPrecision === 'fp32'
+                ? 'onnx-fp32'
+                : activeModelVariant;
           const key = await computeSpeechCacheKey({
             engine: 'kokoro',
             voiceId: req.voiceId,
-            variant: 'onnx-fp32',
+            variant,
             text: req.text,
           });
           const audioPath = `/api/speech/audio/${key}`;
@@ -539,6 +566,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
           const out = await kokoroEngine.synthesize(
             {
               voiceId: req.voiceId,
+              variant,
               text: req.text,
               phonemeIds: req.phonemeIds,
               ...(req.phonemeSpeeds !== undefined ? { phonemeSpeeds: req.phonemeSpeeds } : {}),

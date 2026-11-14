@@ -55,12 +55,14 @@ export type KokoroWorkerRequest =
       readonly type: 'init';
       readonly id: number;
       readonly baseUrl: string;
+      readonly variant?: 'onnx-fp32' | 'onnx-q8';
       readonly selfTestVoiceId?: string;
     }
   | {
       readonly type: 'synth';
       readonly id: number;
       readonly baseUrl: string;
+      readonly variant?: 'onnx-fp32' | 'onnx-q8';
       readonly voiceId: string;
       readonly text: string;
       readonly phonemeIds: readonly (readonly number[])[];
@@ -212,15 +214,31 @@ async function runSelfTest(
   }
 }
 
-async function ensureInitialized(baseUrl: string, selfTestVoiceId?: string): Promise<SpeechModelBackend> {
-  if (session && activeBackend) {
+let activeVariant: 'onnx-fp32' | 'onnx-q8' | null = null;
+
+async function ensureInitialized(
+  baseUrl: string,
+  selfTestVoiceId?: string,
+  variant: 'onnx-fp32' | 'onnx-q8' = 'onnx-fp32',
+): Promise<SpeechModelBackend> {
+  if (session && activeBackend && activeVariant === variant) {
     return activeBackend;
+  }
+  if (session && activeVariant !== variant) {
+    await session.release().catch(() => undefined);
+    session = null;
+    activeBackend = null;
+    activeVariant = null;
   }
 
   const ort = await loadOrt();
-  const modelResp = await fetch(resolveApiUrl(baseUrl, '/api/models/kokoro-v1.1-zh/file/onnx/model.onnx'));
+  const relPath =
+    variant === 'onnx-q8'
+      ? '/api/models/kokoro-v1.1-zh/file/onnx/model_quantized.onnx'
+      : '/api/models/kokoro-v1.1-zh/file/onnx/model.onnx';
+  const modelResp = await fetch(resolveApiUrl(baseUrl, relPath));
   if (!modelResp.ok) {
-    throw new Error(`Kokoro model.onnx unavailable (HTTP ${modelResp.status})`);
+    throw new Error(`Kokoro ${relPath} unavailable (HTTP ${modelResp.status})`);
   }
   const modelBytes = new Uint8Array(await modelResp.arrayBuffer());
 
@@ -239,6 +257,7 @@ async function ensureInitialized(baseUrl: string, selfTestVoiceId?: string): Pro
       if (await runSelfTest(ort, candidateSession, baseUrl, testVoice)) {
         session = candidateSession;
         activeBackend = ep;
+        activeVariant = variant;
         return ep;
       }
       await candidateSession.release().catch(() => undefined);
@@ -272,7 +291,7 @@ if (isDedicatedWorkerScope) {
     if (!msg || typeof msg !== 'object') return;
     try {
     if (msg.type === 'init') {
-      const backend = await ensureInitialized(msg.baseUrl, msg.selfTestVoiceId);
+      const backend = await ensureInitialized(msg.baseUrl, msg.selfTestVoiceId, msg.variant ?? 'onnx-fp32');
       const reply: KokoroWorkerResponse = { type: 'ready', id: msg.id, backend };
       self.postMessage(reply);
       return;
@@ -280,7 +299,7 @@ if (isDedicatedWorkerScope) {
 
     if (msg.type === 'synth') {
       const t0 = performance.now();
-      const backend = await ensureInitialized(msg.baseUrl);
+      const backend = await ensureInitialized(msg.baseUrl, undefined, msg.variant ?? 'onnx-fp32');
       const ort = await loadOrt();
       const voiceFloats = await loadVoicePack(msg.baseUrl, msg.voiceId);
 

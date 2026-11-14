@@ -50,6 +50,7 @@ export interface OrtRuntimeLike {
 export interface KokoroSynthesizePayload {
   text: string;
   voiceId: string;
+  variant?: 'onnx-fp32' | 'onnx-q8' | undefined;
   rate?: number | undefined;
   phonemeIds: number[][];
   phonemeSpeeds?: number[] | undefined;
@@ -178,6 +179,8 @@ export class KokoroSynthesisCore {
       });
   }
 
+  private loadedVariant: 'onnx-fp32' | 'onnx-q8' | null = null;
+
   getBackend(): SpeechModelBackend {
     return this.backend;
   }
@@ -186,9 +189,25 @@ export class KokoroSynthesisCore {
     return this.rtfEma;
   }
 
-  async init(): Promise<SpeechModelBackend> {
-    if (this.session) return this.backend;
+  async init(variant: 'onnx-fp32' | 'onnx-q8' = 'onnx-fp32'): Promise<SpeechModelBackend> {
+    if (this.session && this.loadedVariant === variant) return this.backend;
+    if (this.session && this.loadedVariant !== variant) {
+      const old = this.session;
+      this.session = null;
+      this.loadedVariant = null;
+      this.initPromise = null;
+      try {
+        await old.release?.();
+      } catch {
+        // Ignore release error.
+      }
+    }
     if (this.initPromise) return this.initPromise;
+
+    const modelRelPath =
+      variant === 'onnx-q8'
+        ? '/api/models/kokoro-v1.1-zh/file/onnx/model_quantized.onnx'
+        : '/api/models/kokoro-v1.1-zh/file/onnx/model.onnx';
 
     this.initPromise = (async () => {
       const ort = await this.loadOrtFn();
@@ -203,7 +222,7 @@ export class KokoroSynthesisCore {
 
       const [hasWebGpu, modelBytes] = await Promise.all([
         this.probeWebGpuFn(),
-        this.fetchBinaryFn('/api/models/kokoro-v1.1-zh/file/onnx/model.onnx'),
+        this.fetchBinaryFn(modelRelPath),
       ]);
 
       const candidateProviders: Array<'webgpu' | 'wasm'> = hasWebGpu
@@ -221,6 +240,8 @@ export class KokoroSynthesisCore {
           await this.runSelfTest(ort, candidateSession);
           this.session = candidateSession;
           this.backend = provider;
+          this.loadedVariant = variant;
+          this.initPromise = null;
           return provider;
         } catch (err) {
           lastErr = err;
@@ -350,7 +371,7 @@ export class KokoroSynthesisCore {
   }
 
   async synthesize(payload: KokoroSynthesizePayload): Promise<KokoroSynthesizeOutput> {
-    await this.init();
+    await this.init(payload.variant ?? 'onnx-fp32');
     if (!this.ort || !this.session) {
       throw new Error('Kokoro session is not initialized');
     }

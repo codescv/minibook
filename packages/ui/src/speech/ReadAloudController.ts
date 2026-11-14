@@ -21,6 +21,7 @@ import {
   openBookWithHost,
   segmentSectionSafe,
 } from '../host/core-bridge';
+import { useSettingsStore } from '../host/HostContext';
 import { resolveLocale, translate } from '../i18n';
 import { AutoPageTurn, type AutoPageTurnViewAdapter } from './AutoPageTurn';
 import { KokoroG2PClient, isKokoroCompatibleLang } from './KokoroG2PClient';
@@ -102,6 +103,8 @@ export class ReadAloudController {
   private toppingUp = false;
   private suppressBackwardSnapForId: string | null = null;
   private voiceSwitchGeneration = 0;
+  private pendingVoiceSwitchResume: boolean | null = null;
+  private g2pPreloaded = false;
 
   private viewAdapter: AutoPageTurnViewAdapter | null = null;
   private manualTurnDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -127,13 +130,39 @@ export class ReadAloudController {
 
     this.unsubPlayer = this.player.subscribe((ev) => this.handlePlayerEvent(ev));
     if (this.host.speech.models || this.host.models) {
-      void useSpeechModelStore.getState().refreshFromHost(this.host);
+      void useSpeechModelStore
+        .getState()
+        .refreshFromHost(this.host)
+        .then((st) => {
+          if (st?.state === 'ready') {
+            this.preloadG2PIfNeeded();
+          }
+        });
     }
     this.unsubHost = this.host.subscribe((ev) => {
       if (ev.type === 'speech-model') {
         useSpeechModelStore.getState().setStatus(ev.status);
+        if (ev.status.state === 'ready') {
+          this.preloadG2PIfNeeded();
+        }
       }
     });
+  }
+
+  private preloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private preloadG2PIfNeeded(): void {
+    if (this.g2pPreloaded) return;
+    if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent ?? '')) {
+      return;
+    }
+    this.g2pPreloaded = true;
+    this.preloadTimer = setTimeout(() => {
+      this.preloadTimer = null;
+      void this.g2p.preload({ includeEnglish: false }).catch(() => {
+        this.g2pPreloaded = false;
+      });
+    }, 250);
   }
 
   attachViewAdapter(adapter: AutoPageTurnViewAdapter | null): void {
@@ -307,6 +336,8 @@ export class ReadAloudController {
   }): Promise<void> {
     if (!this.session) return;
 
+    this.voiceSwitchGeneration += 1;
+    this.pendingVoiceSwitchResume = null;
     this.utterances = [];
     this.utteranceById.clear();
     this.attachedDurations.clear();
@@ -394,15 +425,27 @@ export class ReadAloudController {
   togglePlayPause(): void {
     const st = useReadAloudStore.getState();
     if (!st.active) return;
-    if (st.status === 'playing' || st.status === 'buffering') {
+    if (
+      st.status === 'playing' ||
+      st.status === 'buffering' ||
+      this.pendingVoiceSwitchResume === true
+    ) {
+      if (this.pendingVoiceSwitchResume !== null) {
+        this.pendingVoiceSwitchResume = false;
+      }
       this.player.pause();
+      useReadAloudStore.setState({ status: 'paused' });
     } else {
+      if (this.pendingVoiceSwitchResume !== null) {
+        this.pendingVoiceSwitchResume = true;
+      }
       this.player.play();
     }
   }
 
   stop(): void {
     this.voiceSwitchGeneration += 1;
+    this.pendingVoiceSwitchResume = null;
     this.clearManualTurnTimer();
     this.autoPageTurn.reset();
     this.scheduler?.dispose();
@@ -523,68 +566,165 @@ export class ReadAloudController {
   setRate(nextRate: number): void {
     const clamped = Math.max(0.5, Math.min(3.0, Math.round(nextRate * 10) / 10));
     useReadAloudStore.setState({ rate: clamped });
+    useSettingsStore.getState().patchLocal({ speechRate: clamped });
     this.player.setRate(clamped);
     void this.host.settings.update({ speechRate: clamped }).catch(() => {});
   }
 
+  private static isSameVoiceRef(a: VoiceRef | null, b: VoiceRef): boolean {
+    if (!a || a.kind !== b.kind || a.voiceId !== b.voiceId) return false;
+    if (a.kind === 'system' && b.kind === 'system') return (a.engine ?? null) === (b.engine ?? null);
+    if ((a.kind === 'openai' && b.kind === 'openai') || (a.kind === 'qwen' && b.kind === 'qwen')) {
+      return a.model === b.model;
+    }
+    return true;
+  }
+
   setVoice(voice: VoiceRef): void {
     const st = useReadAloudStore.getState();
-    useReadAloudStore.setState({ voice, slowVoiceRtf: null, usingFallback: false });
     const gen = ++this.voiceSwitchGeneration;
+    if (!ReadAloudController.isSameVoiceRef(st.voice, voice)) {
+      this.attachedDurations.clear();
+    }
 
     const langKey = (st.bookLang?.split('-')[0] ?? 'default').toLowerCase();
-    const currentPrefs = this.getSettings().preferredVoices;
+    const nextPreferredVoices = {
+      ...this.getSettings().preferredVoices,
+      [langKey]: voice,
+      default: voice,
+    };
+    useSettingsStore.getState().patchLocal({ preferredVoices: nextPreferredVoices });
     void this.host.settings
-      .update({
-        preferredVoices: {
-          ...currentPrefs,
-          [langKey]: voice,
-          default: voice,
-        },
-      })
+      .update({ preferredVoices: nextPreferredVoices })
       .catch(() => {});
 
-    if (!st.activeUtterance) {
+    if (!st.active || !this.session || this.utterances.length === 0) {
+      this.pendingVoiceSwitchResume = null;
+      useReadAloudStore.setState({ voice, slowVoiceRtf: null, usingFallback: false });
       this.player.setVoice(voice);
       return;
     }
 
-    const curId = st.activeUtterance.id;
-    const idx = Math.max(0, this.utterances.findIndex((u) => u.id === curId));
+    const target = st.activeUtterance ?? this.utterances[0]!;
+    const idx = Math.max(0, this.utterances.findIndex((u) => u.id === target.id));
+    const wasPlaying =
+      this.pendingVoiceSwitchResume !== null
+        ? this.pendingVoiceSwitchResume
+        : st.status === 'playing' || st.status === 'buffering';
 
     if (voice.kind !== 'kokoro' || !voice.voiceId) {
+      this.pendingVoiceSwitchResume = null;
+      useReadAloudStore.setState({
+        voice,
+        ...(st.activeUtterance ? {} : { activeUtterance: target }),
+        slowVoiceRtf: null,
+        usingFallback: false,
+      });
       this.player.setVoice(voice);
-      this.configureSchedulerForVoice(voice, this.utterances.slice(idx), curId);
+      const slice = this.utterances.slice(idx);
+      this.configureSchedulerForVoice(voice, slice, target.id);
+      if (wasPlaying && useReadAloudStore.getState().status === 'paused') {
+        this.player.play();
+      }
       return;
     }
 
-    // TTS_V2_SPEC.md §7.5: When switching to a `kokoro` voice mid-session, first annotate
-    // the current + next 3 utterances, call `player.enqueue(firstBatch, { replaceFromId: curId })`
-    // + `player.setVoice(voice)`, and then annotate the remaining queued utterances in batches of 50 per macrotask.
+    // Switching to a `kokoro` voice mid-Reader:
+    // 1. Silence old playback immediately while remembering `wasPlaying` across rapid consecutive taps.
+    // 2. Annotate `firstBatch` (`[idx .. idx + 6)`), then call `player.setVoice(voice)` FIRST (purging
+    //    stale `attachedAudio`), then `player.enqueue(fullSlice, { replaceFromId: liveCur.id })` so the
+    //    native/web queue is NEVER truncated to 4 items, then `player.play()` if `shouldPlay`.
+    // 3. Annotate remaining utterances in chunks of 50 per macrotask with in-place `enqueue(chunk)` upserts.
+    this.pendingVoiceSwitchResume = wasPlaying;
+    if (this.host.info.capabilities.nativeSpeechQueue) {
+      this.scheduler?.configure(null);
+    }
+    if (wasPlaying) {
+      this.player.pause();
+    }
+    useReadAloudStore.setState({
+      voice,
+      ...(st.activeUtterance ? {} : { activeUtterance: target }),
+      status: wasPlaying ? 'buffering' : st.status,
+      slowVoiceRtf: null,
+      usingFallback: false,
+    });
+
     void (async () => {
-      const initialSlice = this.utterances.slice(idx, idx + 4);
+      const initialSlice = this.utterances.slice(idx, idx + 6);
       const firstBatch = await this.annotateForVoice(initialSlice, voice);
-      if (gen !== this.voiceSwitchGeneration) return;
+      if (
+        gen !== this.voiceSwitchGeneration ||
+        !useReadAloudStore.getState().active ||
+        !this.session
+      ) {
+        return;
+      }
 
       for (let i = 0; i < firstBatch.length; i++) {
         const u = firstBatch[i]!;
-        this.utterances[idx + i] = u;
+        if (idx + i < this.utterances.length) {
+          this.utterances[idx + i] = u;
+        }
         this.utteranceById.set(u.id, u);
       }
 
-      this.player.enqueue(firstBatch, { replaceFromId: curId });
-      this.player.setVoice(voice);
-      this.configureSchedulerForVoice(voice, this.utterances.slice(idx), curId);
+      const liveTarget = useReadAloudStore.getState().activeUtterance ?? target;
+      const liveIdx = Math.max(0, this.utterances.findIndex((u) => u.id === liveTarget.id));
+      if (!this.utterances[liveIdx]?.phonemeIds) {
+        const catchup = await this.annotateForVoice(
+          this.utterances.slice(liveIdx, liveIdx + 6),
+          voice,
+        );
+        if (
+          gen !== this.voiceSwitchGeneration ||
+          !useReadAloudStore.getState().active ||
+          !this.session
+        ) {
+          return;
+        }
+        for (let i = 0; i < catchup.length; i++) {
+          const u = catchup[i]!;
+          if (liveIdx + i < this.utterances.length) {
+            this.utterances[liveIdx + i] = u;
+          }
+          this.utteranceById.set(u.id, u);
+        }
+      }
 
-      let offset = idx + 4;
+      const liveCur = this.utterances[liveIdx] ?? target;
+      const shouldPlay = this.pendingVoiceSwitchResume ?? false;
+      this.pendingVoiceSwitchResume = null;
+
+      const fullSlice = this.utterances.slice(liveIdx);
+      this.player.setVoice(voice);
+      this.player.enqueue(fullSlice, { replaceFromId: liveCur.id });
+      this.configureSchedulerForVoice(voice, fullSlice, liveCur.id);
+      if (shouldPlay) {
+        this.player.play();
+      }
+
+      let offset = liveIdx + 6;
       while (offset < this.utterances.length) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        if (gen !== this.voiceSwitchGeneration) return;
+        if (
+          gen !== this.voiceSwitchGeneration ||
+          !useReadAloudStore.getState().active ||
+          !this.session
+        ) {
+          return;
+        }
 
         const rawChunk = this.utterances.slice(offset, offset + 50);
         if (rawChunk.length === 0) break;
         const annotatedChunk = await this.annotateForVoice(rawChunk, voice);
-        if (gen !== this.voiceSwitchGeneration) return;
+        if (
+          gen !== this.voiceSwitchGeneration ||
+          !useReadAloudStore.getState().active ||
+          !this.session
+        ) {
+          return;
+        }
 
         for (let i = 0; i < annotatedChunk.length; i++) {
           const u = annotatedChunk[i]!;
@@ -595,12 +735,18 @@ export class ReadAloudController {
         }
 
         this.player.enqueue(annotatedChunk);
-        const nowActiveId = useReadAloudStore.getState().activeUtterance?.id ?? curId;
+        const nowActiveId = useReadAloudStore.getState().activeUtterance?.id ?? liveCur.id;
         const nowIdx = Math.max(0, this.utterances.findIndex((u) => u.id === nowActiveId));
-        this.scheduler?.setQueue(this.utterances.slice(nowIdx), nowActiveId);
+        if (!this.host.info.capabilities.nativeSpeechQueue) {
+          this.scheduler?.setQueue(this.utterances.slice(nowIdx), nowActiveId);
+        }
         offset += 50;
       }
-    })().catch(() => {});
+    })().catch(() => {
+      if (gen === this.voiceSwitchGeneration) {
+        this.pendingVoiceSwitchResume = null;
+      }
+    });
   }
 
   setSleepTimer(config: SleepTimerConfig): void {
@@ -738,6 +884,10 @@ export class ReadAloudController {
   }
 
   dispose(): void {
+    if (this.preloadTimer !== null) {
+      clearTimeout(this.preloadTimer);
+      this.preloadTimer = null;
+    }
     this.stop();
     this.unsubPlayer?.();
     this.unsubPlayer = null;
@@ -761,13 +911,17 @@ export class ReadAloudController {
         out.push(u);
         continue;
       }
-      const res = await this.g2p.phonemize(u.text, u.lang, { voiceId: voice.voiceId });
-      out.push({
-        ...u,
-        phonemeIds: res.phonemeIds,
-        phonemeSpeeds: res.phonemeSpeeds,
-        phonemeSpans: res.phonemeSpans,
-      });
+      try {
+        const res = await this.g2p.phonemize(u.text, u.lang, { voiceId: voice.voiceId });
+        out.push({
+          ...u,
+          phonemeIds: res.phonemeIds,
+          phonemeSpeeds: res.phonemeSpeeds,
+          phonemeSpans: res.phonemeSpans,
+        });
+      } catch {
+        out.push(u);
+      }
     }
     return out;
   }
@@ -930,6 +1084,9 @@ export class ReadAloudController {
 
     switch (ev.type) {
       case 'speech-state':
+        if (this.pendingVoiceSwitchResume === true && ev.state.status === 'paused') {
+          break;
+        }
         useReadAloudStore.setState({
           status: ev.state.status,
           usingFallback: ev.state.usingFallback,

@@ -578,4 +578,140 @@ public class ModelDownloadManagerTest {
         assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
         mgr.shutdown();
     }
+
+    @Test
+    public void switchesBetweenOnnxQ8AndFp32PreservingVoicesAndKeepsLegacyFiveVoiceInstallReady() throws Exception {
+        byte[] q8Bytes = makeBytes(12 * 1024, 51);
+        byte[] fp32Bytes = makeBytes(24 * 1024, 53);
+        byte[] zf001Bytes = makeBytes(KokoroModelStore.VOICE_BIN_BYTES, 55);
+        byte[] zm010Bytes = makeBytes(KokoroModelStore.VOICE_BIN_BYTES, 57);
+        byte[] zf018Bytes = makeBytes(KokoroModelStore.VOICE_BIN_BYTES, 59);
+        String q8Sha = sha256(q8Bytes);
+        String fp32Sha = sha256(fp32Bytes);
+        String zf001Sha = sha256(zf001Bytes);
+        String zm010Sha = sha256(zm010Bytes);
+        String zf018Sha = sha256(zf018Bytes);
+
+        AtomicInteger voiceDownloadHits = new AtomicInteger(0);
+        MockWebServer srv = newServer();
+        srv.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String p = request.getPath() != null ? request.getPath() : "";
+                if (p.contains("model_quantized.onnx")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(q8Bytes));
+                }
+                if (p.contains("model.onnx")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(fp32Bytes));
+                }
+                voiceDownloadHits.incrementAndGet();
+                if (p.contains("zf_018.bin")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(zf018Bytes));
+                }
+                if (p.contains("zm_010.bin")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(zm010Bytes));
+                }
+                return new MockResponse().setResponseCode(200).setBody(new Buffer().write(zf001Bytes));
+            }
+        });
+
+        String baseUrl = srv.url("/").toString().replaceAll("/$", "");
+        List<String> allowHosts = Arrays.asList("localhost", "127.0.0.1");
+
+        // 1. Install legacy-style onnx-q8 with 2 voices (simulating v0.2.3 subset install)
+        CountDownLatch q8Ready = new CountDownLatch(1);
+        AtomicInteger unloadHooks = new AtomicInteger(0);
+        final CountDownLatch[] currentLatch = { q8Ready };
+        ModelDownloadManager mgr = new ModelDownloadManager(
+            null,
+            store,
+            st -> {
+                if ("ready".equals(st.optString("state"))) {
+                    currentLatch[0].countDown();
+                }
+            },
+            unloadHooks::incrementAndGet,
+            new long[] { 0L },
+            2_000,
+            2_000,
+            0L,
+            dir -> 200_000_000L,
+            true
+        );
+
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            Arrays.asList(
+                new ModelDownloadManager.FileSpec("onnx/model_quantized.onnx", q8Bytes.length, q8Sha, "repo", "rev1"),
+                new ModelDownloadManager.FileSpec("voices/zf_001.bin", zf001Bytes.length, zf001Sha, "repo", "rev1"),
+                new ModelDownloadManager.FileSpec("voices/zm_010.bin", zm010Bytes.length, zm010Sha, "repo", "rev1")
+            ),
+            Collections.singletonList(baseUrl),
+            allowHosts
+        ));
+        assertTrue(q8Ready.await(5, TimeUnit.SECONDS));
+        assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
+        assertEquals("onnx-q8", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("variant"));
+        assertEquals(2, voiceDownloadHits.get());
+
+        // 2. Fetch single new curated voice `zf_018` -> preserves existing voices without re-downloading them!
+        CountDownLatch extraVoiceReady = new CountDownLatch(1);
+        currentLatch[0] = extraVoiceReady;
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-q8",
+            Arrays.asList(
+                new ModelDownloadManager.FileSpec("onnx/model_quantized.onnx", q8Bytes.length, q8Sha, "repo", "rev1"),
+                new ModelDownloadManager.FileSpec("voices/zf_018.bin", zf018Bytes.length, zf018Sha, "repo", "rev1")
+            ),
+            Collections.singletonList(baseUrl),
+            allowHosts
+        ));
+        assertTrue(extraVoiceReady.await(5, TimeUnit.SECONDS));
+        assertEquals(3, voiceDownloadHits.get());
+        assertEquals(Arrays.asList("zf_001", "zf_018", "zm_010"), store.detectInstalledVoicesOnDisk());
+
+        // 3. Upgrade precision `onnx-q8` -> `onnx-fp32`: write settings.json `kokoroPrecision: "fp32"`,
+        // verify status transitions to `absent` for `onnx-fp32` while keeping `installedVoices` intact,
+        // then download `onnx-fp32` WITHOUT re-downloading any of the 3 voices!
+        AtomicFiles.writeAtomicFile(
+            new File(tempRoot, "settings.json"),
+            "{\"kokoroPrecision\":\"fp32\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        JSONObject beforeFp32Dl = mgr.getStatus(KokoroModelStore.MODEL_ID);
+        assertEquals("absent", beforeFp32Dl.optString("state"));
+        assertEquals("onnx-fp32", beforeFp32Dl.optString("variant"));
+        assertEquals(3, beforeFp32Dl.getJSONArray("installedVoices").length());
+
+        CountDownLatch fp32Ready = new CountDownLatch(1);
+        currentLatch[0] = fp32Ready;
+        mgr.startDownload(new ModelDownloadManager.DownloadRequest(
+            KokoroModelStore.MODEL_ID,
+            "onnx-fp32",
+            Collections.singletonList(
+                new ModelDownloadManager.FileSpec("onnx/model.onnx", fp32Bytes.length, fp32Sha, "repo", "rev1")
+            ),
+            Collections.singletonList(baseUrl),
+            allowHosts
+        ));
+        assertTrue(fp32Ready.await(5, TimeUnit.SECONDS));
+        assertEquals(3, voiceDownloadHits.get()); // 0 extra voice downloads!
+        assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
+        assertEquals("onnx-fp32", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("variant"));
+        assertTrue("Expected unloadLocalModels hook when active variant changed", unloadHooks.get() >= 1);
+
+        // 4. Switch back `fp32 -> q8` in settings.json: since `model_quantized.onnx` is still on disk,
+        // `getStatus` immediately reconciles to `ready` (`onnx-q8`) with 0 network requests!
+        AtomicFiles.writeAtomicFile(
+            new File(tempRoot, "settings.json"),
+            "{\"kokoroPrecision\":\"q8\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        JSONObject backToQ8 = mgr.getStatus(KokoroModelStore.MODEL_ID);
+        assertEquals("ready", backToQ8.optString("state"));
+        assertEquals("onnx-q8", backToQ8.optString("variant"));
+        assertEquals(3, backToQ8.getJSONArray("installedVoices").length());
+
+        mgr.shutdown();
+    }
 }

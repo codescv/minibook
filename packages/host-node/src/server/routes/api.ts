@@ -331,7 +331,11 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
   api.patch('/settings', async (c) => {
     try {
       const patch = (await c.req.json()) as Partial<AppSettings>;
-      return jsonSuccess(c, ctx.settingsRepo.update(patch ?? {}));
+      const updated = ctx.settingsRepo.update(patch ?? {});
+      if (patch && 'kokoroPrecision' in patch) {
+        ctx.models.reconcileForSettingsChange();
+      }
+      return jsonSuccess(c, updated);
     } catch (err) {
       return jsonFailure(c, err);
     }

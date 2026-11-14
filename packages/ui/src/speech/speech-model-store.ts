@@ -71,10 +71,50 @@ export function formatSteppedEinkPct(pct: number): string {
   return `[ ${stepEinkPct(pct)}% ]`;
 }
 
+const KOKORO_CURATED_STYLE_LABELS: Readonly<
+  Record<string, { readonly zh: string; readonly en: string; readonly ja: string }>
+> = {
+  zf_018: {
+    zh: 'Kokoro · 女声 18（温柔叙事 ★）',
+    en: 'Kokoro · Female 18 · Warm ★',
+    ja: 'Kokoro · 女性 18（やさしい語り ★）',
+  },
+  zf_004: {
+    zh: 'Kokoro · 女声 04（清亮播音 ★）',
+    en: 'Kokoro · Female 04 · Clear ★',
+    ja: 'Kokoro · 女性 04（クリア ★）',
+  },
+  zf_028: {
+    zh: 'Kokoro · 女声 28（自然舒缓）',
+    en: 'Kokoro · Female 28 · Soft',
+    ja: 'Kokoro · 女性 28（穏やか）',
+  },
+  zf_001: {
+    zh: 'Kokoro · 女声 01（标准）',
+    en: 'Kokoro · Female 01',
+    ja: 'Kokoro · 女性 01（標準）',
+  },
+  zm_010: {
+    zh: 'Kokoro · 男声 10（沉稳有声书 ★）',
+    en: 'Kokoro · Male 10 · Narrator ★',
+    ja: 'Kokoro · 男性 10（ナレーター ★）',
+  },
+  zm_029: {
+    zh: 'Kokoro · 男声 29（温和自然）',
+    en: 'Kokoro · Male 29 · Warm',
+    ja: 'Kokoro · 男性 29（温和）',
+  },
+};
+
 /**
- * Formats a Kokoro voice ID per `TTS_V2_SPEC.md` §7.2 & §8.2:
- * - `zf_001 .. zf_099` -> `Kokoro · 女声 01` (`zh-CN`) / `Kokoro · Female 01` (`en`) / `Kokoro · 女性 01` (`ja`)
- * - `zm_009 .. zm_100` -> `Kokoro · 男声 09 .. 100` / `Kokoro · Male 09 .. 100` / `Kokoro · 男性 09 .. 100`
+ * Formats a Kokoro voice ID per `TTS_V2_SPEC.md` §7.2 & §8.2, including descriptive
+ * studio style labels for curated Mandarin voices:
+ * - `zf_018` -> `Kokoro · 女声 18（温柔叙事 ★）` / `Kokoro · Female 18 · Warm ★`
+ * - `zf_004` -> `Kokoro · 女声 04（清亮播音 ★）` / `Kokoro · Female 04 · Clear ★`
+ * - `zf_028` -> `Kokoro · 女声 28（自然舒缓）` / `Kokoro · Female 28 · Soft`
+ * - `zf_001` -> `Kokoro · 女声 01（标准）` / `Kokoro · Female 01`
+ * - `zm_010` -> `Kokoro · 男声 10（沉稳有声书 ★）` / `Kokoro · Male 10 · Narrator ★`
+ * - `zm_029` -> `Kokoro · 男声 29（温和自然）` / `Kokoro · Male 29 · Warm`
  * - `af_maple` -> `Kokoro · Maple (US)`
  * - `af_sol` -> `Kokoro · Sol (US)`
  * - `bf_vale` -> `Kokoro · Vale (UK)`
@@ -83,11 +123,15 @@ export function formatKokoroVoiceLabel(voiceId: string, uiLocale = 'en'): string
   if (voiceId === 'af_maple') return 'Kokoro · Maple (US)';
   if (voiceId === 'af_sol') return 'Kokoro · Sol (US)';
   if (voiceId === 'bf_vale') return 'Kokoro · Vale (UK)';
+  const loc = uiLocale.toLowerCase();
+  const isZh = loc.startsWith('zh');
+  const isJa = loc.startsWith('ja');
+  const curated = KOKORO_CURATED_STYLE_LABELS[voiceId];
+  if (curated) {
+    return isZh ? curated.zh : isJa ? curated.ja : curated.en;
+  }
   const m = voiceId.match(/^(zf|zm)_(\d+)$/);
   if (m) {
-    const loc = uiLocale.toLowerCase();
-    const isZh = loc.startsWith('zh');
-    const isJa = loc.startsWith('ja');
     const gender =
       m[1] === 'zf'
         ? isZh
@@ -167,6 +211,7 @@ export class SpeechModelUiThrottle {
   private lastRepaintAtMs = -Infinity;
   private lastVoicesKey = '';
   private lastSource = '';
+  private lastVariant = '';
 
   shouldRepaint(next: SpeechModelStatus, isEink: boolean, nowMs = Date.now()): {
     repaint: boolean;
@@ -176,11 +221,13 @@ export class SpeechModelUiThrottle {
     const displayPct = isEink ? stepEinkPct(rawPct) : rawPct;
     const voicesKey = next.installedVoices.join(',');
     const sourceKey = next.source ?? '';
+    const variantKey = next.variant ?? '';
 
     if (
       this.lastState !== next.state ||
       this.lastVoicesKey !== voicesKey ||
       this.lastSource !== sourceKey ||
+      this.lastVariant !== variantKey ||
       next.state !== 'downloading'
     ) {
       this.lastState = next.state;
@@ -188,6 +235,7 @@ export class SpeechModelUiThrottle {
       this.lastRepaintAtMs = nowMs;
       this.lastVoicesKey = voicesKey;
       this.lastSource = sourceKey;
+      this.lastVariant = variantKey;
       return { repaint: true, displayPct };
     }
 

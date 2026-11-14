@@ -375,8 +375,24 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
       });
     });
     const moreVoicesBtn = page.getByTestId('kokoro-more-voices-btn');
-    if ((await moreVoicesBtn.count()) === 0) {
+    await expect(page.getByTestId('kokoro-precision-row')).toBeVisible();
+    // [v0.2.4] Verify 1-tap Get on `zf_018` in Reader VoiceSheet auto-selects `zf_018` live without leaving the book!
+    const getZf018 = page.getByTestId('kokoro-get-zf_018');
+    if ((await getZf018.count()) === 0) {
       await page.getByRole('button', { name: 'Next ›' }).click();
+    }
+    await expect(getZf018).toBeVisible();
+    await getZf018.click();
+    await expect
+      .poll(async () =>
+        page.evaluate(async () => (await window.__minibookTestHarness.speech.getState()).voice),
+      )
+      .toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+
+    while ((await moreVoicesBtn.count()) === 0) {
+      const nextBtn = page.getByRole('button', { name: 'Next ›' });
+      if ((await nextBtn.count()) === 0 || !(await nextBtn.isEnabled())) break;
+      await nextBtn.click();
     }
     await expect(moreVoicesBtn).toBeVisible();
     await assertEinkDomPurity(page, 'E-Ink VoiceSheet On-Device (Ready)');

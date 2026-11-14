@@ -61,7 +61,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.2.3';
+export const CAPACITOR_HOST_VERSION = '0.2.4';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
@@ -435,16 +435,40 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       id: SpeechModelId,
       opts?: {
         readonly voices?: readonly string[];
+        readonly variant?: SpeechModelVariant;
         readonly source?: ModelDownloadSource;
         readonly mirrorBaseUrl?: string | null;
       },
     ): Promise<SpeechModelStatus> {
       const settings = await store.getSettings();
-      const files = resolveManifestFilesForVariant(modelVariant, opts?.voices);
+      const effectiveVariant: SpeechModelVariant =
+        hostInfo.platform === 'ios'
+          ? 'coreml'
+          : opts?.variant === 'onnx-fp32' || opts?.variant === 'onnx-q8'
+            ? opts.variant
+            : settings.kokoroPrecision === 'fp32'
+              ? 'onnx-fp32'
+              : settings.kokoroPrecision === 'q8'
+                ? 'onnx-q8'
+                : modelVariant;
+      let voicesToRequest = opts?.voices;
+      if (voicesToRequest && voicesToRequest.length > 0) {
+        try {
+          const curStatus = await plugin.models.status({ id });
+          if (curStatus.installedVoices.length > 0) {
+            voicesToRequest = Array.from(
+              new Set([...curStatus.installedVoices, ...voicesToRequest]),
+            );
+          }
+        } catch {
+          // ignore status lookup failure; native downloader also merges installed voices
+        }
+      }
+      const files = resolveManifestFilesForVariant(effectiveVariant, voicesToRequest);
       const repo =
-        modelVariant === 'coreml' ? KOKORO_MANIFEST.coreml.repo : KOKORO_MANIFEST.onnx.repo;
+        effectiveVariant === 'coreml' ? KOKORO_MANIFEST.coreml.repo : KOKORO_MANIFEST.onnx.repo;
       const revision =
-        modelVariant === 'coreml'
+        effectiveVariant === 'coreml'
           ? KOKORO_MANIFEST.coreml.revision
           : KOKORO_MANIFEST.onnx.revision;
       const effectiveSource = opts?.source ?? settings.modelDownloadSource;
@@ -458,7 +482,7 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       void totalManifestBytesForVariant;
       return plugin.models.download({
         id,
-        variant: modelVariant,
+        variant: effectiveVariant,
         files,
         repo,
         revision,

@@ -154,10 +154,17 @@ export const zhCN: I18nDict = {
   ttsTabServer: 'Server',
   ttsGuideSystem:
     '调用手机或电脑自带的系统语音（iOS Siri 语音、Android 系统 TTS 及 MultiTTS）。无需下载、零空间占用，离线即点即读。',
+  ttsGuideSystemIos:
+    '调用 iPhone 自带系统语音，零空间占用、离线即读。提示：前往「iOS 设置 → 辅助功能 → 朗读内容 → 声音 → 中文」下载 Siri 或「高品质 (Premium)」语音包后，即可在此选用更高音质的苹果离线人声。',
   ttsGuideOnDevice:
     '下载约 {mb} MB 的 Kokoro-82M 端侧神经模型到本机，由设备芯片离线合成中英文自然人声。无需联网或配服务器，支持熄屏后台朗读与逐词高亮。',
+  ttsGuideOnDeviceIos:
+    '下载约 {mb} MB 的 Kokoro-82M（v1.1-zh 官方端侧模型）离线合成自然人声。推荐带 ★ 的精选音色（女声 18 温柔叙事 ★、女声 04 清亮播音 ★、男声 10 沉稳有声书 ★），音质明显优于默认 01；如需 20 倍参数量的大模型级音质，可在「Server」页连接 Mac 局域网 Qwen3-TTS（1.7B）或开启免费微软 Edge 语音。',
   ttsGuideServer:
     '连接电脑局域网部署的 AI 语音服务（如 Mac 运行 Qwen3-TTS / mlx-audio）、兼容 OpenAI 的自建/云端接口，或开启免费在线的微软 Edge 语音。',
+  modelQuality: '模型音质',
+  precisionQ8: '标准版 · 124 MB',
+  precisionFp32: '高清无损 · 324 MB',
   showAllSystemVoices: '显示全部系统语音（{n}）',
   showBookLangVoicesOnly: '仅显示当前书籍语言',
   kokoroSizeAndVoices: '{mb} MB · {count} 种音色',

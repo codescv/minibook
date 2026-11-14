@@ -101,11 +101,22 @@ export class KokoroG2PClient {
   private ensureInitialized(): void {
     if (this.mode !== 'uninitialized') return;
 
-    // In jsdom / Node without a custom workerFactory or when customLoadAsset is injected directly,
-    // check whether Worker can be spawned.
+    // In jsdom / Node without a custom workerFactory, when customLoadAsset is injected directly,
+    // or on native Capacitor custom schemes (`capacitor://localhost` / `Capacitor.isNativePlatform()`,
+    // where `new Worker(..., { type: 'module' })` stalls until handshakeTimeoutMs), run directly on
+    // the main thread (`< 15 ms` per sentence batch, zero 2s stall).
     const isJsdom =
       typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent ?? '');
-    if (!this.workerFactory && (typeof Worker === 'undefined' || isJsdom || this.customLoadAsset)) {
+    const isCapacitorNative =
+      typeof window !== 'undefined' &&
+      (window.location?.protocol === 'capacitor:' ||
+        Boolean(
+          (window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.(),
+        ));
+    if (
+      !this.workerFactory &&
+      (typeof Worker === 'undefined' || isJsdom || isCapacitorNative || this.customLoadAsset)
+    ) {
       this.mode = 'main';
       return;
     }

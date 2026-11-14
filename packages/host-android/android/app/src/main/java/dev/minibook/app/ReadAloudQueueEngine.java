@@ -4,6 +4,7 @@ import androidx.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -18,7 +19,7 @@ import org.json.JSONObject;
 public final class ReadAloudQueueEngine {
     public static final long ONLINE_FALLBACK_TIMEOUT_MS = 8_000L;
     public static final long OFFLINE_FALLBACK_TIMEOUT_MS = 2_000L;
-    public static final long LOCAL_SYNTH_FALLBACK_TIMEOUT_MS = 8_000L;
+    public static final long LOCAL_SYNTH_FALLBACK_TIMEOUT_MS = 20_000L;
     public static final int QUEUE_LOW_THRESHOLD = 20;
 
     public interface LocalSynth {
@@ -441,14 +442,16 @@ public final class ReadAloudQueueEngine {
     }
 
     public void enqueue(List<UtteranceItem> items, @Nullable String replaceFromId) {
-        if (replaceFromId != null && !replaceFromId.isEmpty()) {
+        int replacedAtOrBeforeIdx = -1;
+        boolean hasReplaceFrom = replaceFromId != null && !replaceFromId.isEmpty();
+        if (hasReplaceFrom) {
             int replaceIdx = findIndexById(replaceFromId);
             if (replaceIdx >= 0) {
+                if (replaceIdx <= currentIndex) {
+                    replacedAtOrBeforeIdx = replaceIdx;
+                }
                 while (queue.size() > replaceIdx) {
                     queue.remove(queue.size() - 1);
-                }
-                if (currentIndex >= queue.size()) {
-                    currentIndex = queue.size() - 1;
                 }
             }
         }
@@ -464,6 +467,12 @@ public final class ReadAloudQueueEngine {
             }
         }
 
+        if (replacedAtOrBeforeIdx >= 0) {
+            currentIndex = queue.isEmpty() ? -1 : Math.min(replacedAtOrBeforeIdx, queue.size() - 1);
+        } else if (currentIndex >= queue.size()) {
+            currentIndex = queue.size() - 1;
+        }
+
         int remaining = Math.max(0, queue.size() - Math.max(0, currentIndex));
         if (remaining > QUEUE_LOW_THRESHOLD) {
             queueLowEmitted = false;
@@ -473,13 +482,18 @@ public final class ReadAloudQueueEngine {
             currentIndex = 0;
         }
 
+        if (replacedAtOrBeforeIdx >= 0 && isAudible() && currentIndex >= 0 && currentIndex < queue.size()) {
+            startCurrentUtterance();
+            return;
+        }
+
         if ("buffering".equals(status) && currentIndex >= 0 && currentIndex < queue.size()
             && playbackGeneration == 0) {
             startCurrentUtterance();
             return;
         }
 
-        if ("ended-of-buffer".equals(status) && currentIndex + 1 < queue.size()) {
+        if (!hasReplaceFrom && "ended-of-buffer".equals(status) && currentIndex + 1 < queue.size()) {
             currentIndex += 1;
             if (autoContinueOnBufferTopUp) {
                 autoContinueOnBufferTopUp = false;
@@ -624,12 +638,31 @@ public final class ReadAloudQueueEngine {
         emitState();
     }
 
+    private static boolean voiceEquals(@Nullable VoiceSpec a, @Nullable VoiceSpec b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        return Objects.equals(a.kind, b.kind)
+            && Objects.equals(a.voiceId, b.voiceId)
+            && Objects.equals(a.engine, b.engine)
+            && Objects.equals(a.model, b.model);
+    }
+
     public void setVoice(VoiceSpec voice) {
         if (session == null) return;
+        boolean voiceChanged = !voiceEquals(session.voice, voice);
+        playbackGeneration++;
+        cancelFallbackTimer();
+        cancelLocalSynth();
+        ttsBackend.stop();
+        fileBackend.stop();
+        if (voiceChanged) {
+            for (UtteranceItem it : queue) {
+                it.audio = null;
+            }
+        }
         session.voice = voice;
         stickyFallbackActive = false;
         usingFallback = false;
-        cancelLocalSynth();
         if (isAudible()) {
             startCurrentUtterance();
         } else {

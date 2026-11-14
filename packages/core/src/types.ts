@@ -671,6 +671,7 @@ export type ModelDownloadSource = 'auto' | 'huggingface' | 'hf-mirror' | 'custom
 
 export type SpeechModelId = 'kokoro-v1.1-zh';
 export type SpeechModelVariant = 'onnx-fp32' | 'onnx-q8' | 'coreml';
+export type KokoroPrecision = 'q8' | 'fp32';
 export type SpeechModelState = 'absent' | 'downloading' | 'paused' | 'verifying' | 'ready' | 'error';
 export type SpeechModelBackend = 'webgpu' | 'wasm' | 'ort-cpu' | 'coreml-cpu';
 
@@ -690,11 +691,12 @@ export interface SpeechModelStatus {
 
 export interface SpeechModelsApi {
   status(id: SpeechModelId): Promise<SpeechModelStatus>;
-  /** Start or resume (idempotent unless source/mirror changes). Resolves once the job is accepted; progress arrives as HostEvent `'speech-model'`. */
+  /** Start or resume (idempotent unless source/mirror/variant changes). Resolves once the job is accepted; progress arrives as HostEvent `'speech-model'`. */
   download(
     id: SpeechModelId,
     opts?: {
       readonly voices?: readonly string[];
+      readonly variant?: SpeechModelVariant;
       readonly source?: ModelDownloadSource;
       readonly mirrorBaseUrl?: string | null;
     },
@@ -734,6 +736,8 @@ export interface AppSettings {
   readonly qwenServer: QwenServerConfig | null;
   readonly modelDownloadSource: ModelDownloadSource;
   readonly modelMirrorBaseUrl: string | null;
+  /** Optional ONNX model precision override (`'q8'` 124 MB vs `'fp32'` 324 MB); platform default applies when unset (`'q8'` on Android, `'fp32'` on desktop). */
+  readonly kokoroPrecision?: KokoroPrecision;
   readonly fallbackToSystemVoice: boolean;
 }
 
@@ -908,6 +912,10 @@ export function sanitizeAppSettings(
     typeof p.einkAutoNoticeShown === 'boolean'
       ? p.einkAutoNoticeShown
       : base.einkAutoNoticeShown;
+  const kokoroPrecision: KokoroPrecision | undefined =
+    p.kokoroPrecision === 'q8' || p.kokoroPrecision === 'fp32'
+      ? p.kokoroPrecision
+      : base.kokoroPrecision;
 
   return {
     theme,
@@ -939,6 +947,7 @@ export function sanitizeAppSettings(
       p.modelMirrorBaseUrl === null || typeof p.modelMirrorBaseUrl === 'string'
         ? p.modelMirrorBaseUrl
         : base.modelMirrorBaseUrl,
+    ...(kokoroPrecision !== undefined ? { kokoroPrecision } : {}),
     fallbackToSystemVoice:
       typeof p.fallbackToSystemVoice === 'boolean'
         ? p.fallbackToSystemVoice

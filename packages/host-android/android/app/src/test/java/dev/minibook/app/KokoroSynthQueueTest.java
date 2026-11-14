@@ -340,13 +340,186 @@ public class KokoroSynthQueueTest {
         engine.play();
         assertEquals(Collections.singletonList("u0"), spoken);
         assertEquals("buffering", engine.getStatus());
-        assertTrue(timerDelays.contains(8_000L));
+        assertTrue(timerDelays.contains(ReadAloudQueueEngine.LOCAL_SYNTH_FALLBACK_TIMEOUT_MS));
         assertFalse(timerDelays.contains(2_000L));
 
-        // Fire 8s timer -> falls back with local-synth-timeout
+        // Fire 20s local-synth timer -> falls back with local-synth-timeout
         timers.get(timers.size() - 1).run();
         assertTrue(events.stream().anyMatch(e -> e.contains("local-synth-timeout")));
         engine.stop();
         assertTrue(cancelCalls[0] >= 1);
+    }
+
+    @Test
+    public void liveSwitchesSystemAndKokoroVoicesInReaderPurgesStaleAudioAndSeparatesVariantCacheKeys() throws Exception {
+        // Seed extra curated voices zm_010 & zf_018 with distinct float values so style256[0] identifies the voice!
+        for (Object[] entry : new Object[][] { { "zm_010", 0.25f }, { "zf_018", 0.75f } }) {
+            String vid = (String) entry[0];
+            float val = (Float) entry[1];
+            ByteBuffer bb = ByteBuffer.allocate(KokoroModelStore.VOICE_BIN_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < KokoroModelStore.VOICE_ROWS * KokoroModelStore.VOICE_DIM; i++) {
+                bb.putFloat(val);
+            }
+            File vf = modelStore.resolveInModelJail(KokoroModelStore.MODEL_ID, "voices/" + vid + ".bin");
+            AtomicFiles.writeAtomicFile(vf, bb.array());
+        }
+
+        final List<Float> synthStyleSamples = new ArrayList<>();
+        KokoroInference trackingInf = new KokoroInference() {
+            @Override
+            public void ensureReady(KokoroModelStore store) {}
+            @Override
+            public SynthChunkResult synthesize(long[] unpaddedIds, float[] style256, float speed) {
+                synthStyleSamples.add(style256[0]);
+                float[] wave = new float[12_000];
+                for (int i = 0; i < wave.length; i++) wave[i] = (float) Math.sin(i * 0.05) * 0.4f;
+                long[] dur = new long[unpaddedIds.length + 2];
+                Arrays.fill(dur, 2L);
+                return new SynthChunkResult(wave, dur);
+            }
+            @Override
+            public void cancel() {}
+            @Override
+            public void close() {}
+        };
+
+        final List<String> spokenSystemIds = new ArrayList<>();
+        final List<String> playedWavPaths = new ArrayList<>();
+        final List<String> playedUtteranceIds = new ArrayList<>();
+        final ReadAloudQueueEngine.BackendCallback[] activeTtsCb = { null };
+        final ReadAloudQueueEngine.BackendCallback[] activeFileCb = { null };
+
+        ReadAloudQueueEngine.Scheduler sched = new ReadAloudQueueEngine.Scheduler() {
+            @Override
+            public long nowMs() { return 10_000L; }
+            @Override
+            public ReadAloudQueueEngine.CancelToken postDelayed(long delayMs, Runnable task) {
+                return () -> {};
+            }
+        };
+        ReadAloudQueueEngine.TtsBackend fakeTts = new ReadAloudQueueEngine.TtsBackend() {
+            @Override
+            public void speak(ReadAloudQueueEngine.UtteranceItem item, String voiceId, String enginePkg, float rate, ReadAloudQueueEngine.BackendCallback callback) {
+                spokenSystemIds.add(item.id);
+                activeTtsCb[0] = callback;
+                callback.onStarted();
+            }
+            @Override
+            public void playSilence(long durationMs, Runnable onDone) { onDone.run(); }
+            @Override
+            public void stop() { activeTtsCb[0] = null; }
+        };
+        ReadAloudQueueEngine.FileBackend fakeFile = new ReadAloudQueueEngine.FileBackend() {
+            @Override
+            public void playFile(ReadAloudQueueEngine.UtteranceItem item, ReadAloudQueueEngine.AttachedAudioSpec audio, float rate, ReadAloudQueueEngine.BackendCallback callback) {
+                playedUtteranceIds.add(item.id);
+                playedWavPaths.add(audio.path);
+                activeFileCb[0] = callback;
+                callback.onStarted();
+            }
+            @Override
+            public void playSilence(long durationMs, Runnable onDone) { onDone.run(); }
+            @Override
+            public void startBufferingKeepAlive() {}
+            @Override
+            public void stop() { activeFileCb[0] = null; }
+            @Override
+            public void setRate(float rate) {}
+        };
+
+        final ReadAloudQueueEngine[] engineRef = { null };
+        KokoroSynthQueue synthQueue = new KokoroSynthQueue(
+            modelStore,
+            trackingInf,
+            speechCacheDir,
+            new KokoroSynthQueue.QueueCallback() {
+                @Override
+                public void attachAudio(String utteranceId, String wavPath, long durationMs, List<ReadAloudQueueEngine.WordMarkSpec> marks) {
+                    engineRef[0].attachAudio(utteranceId, wavPath, durationMs, marks);
+                }
+                @Override
+                public void onSynthFailed(String utteranceId, String errorCode, String message) {}
+                @Override
+                public void onEngineSlow(double rtf) {}
+            },
+            Runnable::run
+        );
+
+        ReadAloudQueueEngine engine = new ReadAloudQueueEngine(
+            sched,
+            () -> true,
+            fakeTts,
+            fakeFile,
+            null,
+            new ReadAloudQueueEngine.EventListener() {
+                @Override
+                public void onEvent(String eventName, JSONObject payload) {}
+                @Override
+                public void onAudibleChanged(boolean audible) {}
+                @Override
+                public void onPlayerStateInvalidate() {}
+            }
+        );
+        engineRef[0] = engine;
+        engine.setLocalSynth(synthQueue);
+
+        // 1. Start on System voice at u0 -> finish u0 -> now speaking u1!
+        engine.load(new ReadAloudQueueEngine.SessionSpec(
+            "b1", "Book", "Author", "Ch1", null,
+            new ReadAloudQueueEngine.VoiceSpec("system", null, null, null),
+            new ReadAloudQueueEngine.VoiceSpec("system", null, null, null),
+            1.0f
+        ));
+        List<ReadAloudQueueEngine.UtteranceItem> rawQueue = new ArrayList<>();
+        for (int i = 0; i < 6; i++) {
+            rawQueue.add(new ReadAloudQueueEngine.UtteranceItem(
+                "u" + i, 0, i * 10, i * 10 + 8, 0, "句子" + i, "zh-CN", 100L, null, null, null
+            ));
+        }
+        engine.enqueue(rawQueue, null);
+        engine.play();
+        assertEquals(Collections.singletonList("u0"), spokenSystemIds);
+        activeTtsCb[0].onCompleted(); // advances to u1!
+        assertEquals(Arrays.asList("u0", "u1"), spokenSystemIds);
+
+        // 2. Live switch System -> Kokoro zf_001 on u1 (setVoice FIRST, then enqueue full slice from u1 with phonemeIds)
+        List<ReadAloudQueueEngine.UtteranceItem> annotatedFromU1 = new ArrayList<>();
+        for (int i = 1; i < 6; i++) {
+            annotatedFromU1.add(new ReadAloudQueueEngine.UtteranceItem(
+                "u" + i, 0, i * 10, i * 10 + 8, 0, "句子" + i, "zh-CN", 100L,
+                new long[][] { { 73L, 127L, 172L, (long) (10 + i) } },
+                new float[] { 1.0f },
+                null
+            ));
+        }
+        engine.setVoice(new ReadAloudQueueEngine.VoiceSpec("kokoro", "zf_001", null, null));
+        engine.enqueue(annotatedFromU1, "u1");
+        // Must play u1 (NOT clobbered back to u0!) with zf_001 WAV!
+        assertEquals(Collections.singletonList("u1"), playedUtteranceIds);
+        String zf001WavPath = playedWavPaths.get(0);
+        assertEquals(0.1f, synthStyleSamples.get(0), 1e-5f);
+
+        // 3. While all 5 lookahead WAVs for zf_001 are ALREADY attached on u1..u5, switch Kokoro zf_001 -> Kokoro zm_010!
+        synthStyleSamples.clear();
+        engine.setVoice(new ReadAloudQueueEngine.VoiceSpec("kokoro", "zm_010", null, null));
+        assertEquals(Arrays.asList("u1", "u1"), playedUtteranceIds);
+        String zm010WavPath = playedWavPaths.get(1);
+        assertFalse("Must NOT replay stale zf_001 WAV after switching to zm_010!", zf001WavPath.equals(zm010WavPath));
+        assertEquals(0.25f, synthStyleSamples.get(0), 1e-5f);
+
+        // 4. Pause -> switch zm_010 -> zf_018 while paused -> press Play -> plays zf_018 immediately on u1!
+        engine.pause();
+        synthStyleSamples.clear();
+        engine.setVoice(new ReadAloudQueueEngine.VoiceSpec("kokoro", "zf_018", null, null));
+        assertEquals(0.75f, synthStyleSamples.get(0), 1e-5f);
+        engine.play();
+        assertEquals(Arrays.asList("u1", "u1", "u1"), playedUtteranceIds);
+        String zf018WavPath = playedWavPaths.get(2);
+        assertFalse(zm010WavPath.equals(zf018WavPath));
+
+        // 5. Verify variant-keyed cache keys (`onnx-q8` vs `onnx-fp32`) never collide!
+        String keyQ8 = KokoroSynthQueue.computeCacheKey("onnx-q8", "zf_018", annotatedFromU1.get(0));
+        String keyFp32 = KokoroSynthQueue.computeCacheKey("onnx-fp32", "zf_018", annotatedFromU1.get(0));
+        assertFalse("onnx-q8 and onnx-fp32 cache keys MUST differ", keyQ8.equals(keyFp32));
     }
 }

@@ -45,18 +45,24 @@ export const KOKORO_SAMPLE_RATE = 24_000;
 export const KOKORO_SAMPLES_PER_FRAME = 600; // 25 ms @ 24 kHz
 
 export const KOKORO_DEFAULT_VOICES: readonly string[] = [
+  'zf_018',
+  'zf_004',
+  'zf_028',
   'zf_001',
   'zm_010',
+  'zm_029',
   'af_maple',
   'af_sol',
   'bf_vale',
 ];
 
 export const KOKORO_CURATED_VOICES: readonly string[] = [
+  'zf_018',
+  'zf_004',
+  'zf_028',
   'zf_001',
-  'zf_002',
-  'zm_009',
   'zm_010',
+  'zm_029',
   'af_maple',
   'af_sol',
   'bf_vale',

@@ -152,10 +152,17 @@ export const en = {
   ttsTabServer: 'Server',
   ttsGuideSystem:
     'Uses voices built into your phone or computer (iOS Siri, Android TTS & MultiTTS). No download or storage needed — works offline immediately.',
+  ttsGuideSystemIos:
+    'Uses built-in iPhone voices offline with zero app storage. Tip: Download Apple Siri or Premium Mandarin voices in iOS Settings → Accessibility → Spoken Content → Voices → Chinese, then select them here.',
   ttsGuideOnDevice:
     'Downloads the ~{mb} MB Kokoro-82M neural model onto this device for natural offline Chinese & English speech, lock-screen playback, and word highlighting.',
+  ttsGuideOnDeviceIos:
+    'Downloads the ~{mb} MB Kokoro-82M (v1.1-zh) neural model for offline speech. Try ★ curated studio voices (Female 18 Warm ★, Female 04 Clear ★, Male 10 Narrator ★) for noticeably richer timbre; for 20× larger models, use Server (Qwen3-TTS 1.7B on Mac GPU or free Edge voices).',
   ttsGuideServer:
     'Connects to a LAN AI voice server on your computer (e.g. Mac running Qwen3-TTS / mlx-audio), an OpenAI-compatible endpoint, or free online Microsoft Edge voices.',
+  modelQuality: 'Model quality',
+  precisionQ8: 'Standard · 124 MB',
+  precisionFp32: 'HD FP32 · 324 MB',
   showAllSystemVoices: 'Show all system voices ({n})',
   showBookLangVoicesOnly: 'Filter by book language',
   kokoroSizeAndVoices: '{mb} MB · {count} voices',

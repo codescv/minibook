@@ -217,7 +217,8 @@ body,
   align-items: center;
   justify-content: center;
   min-height: 38px;
-  padding: 0 8px;
+  padding: 0 6px;
+  white-space: nowrap;
   border: none;
   border-radius: var(--mb-radius-seg);
   background-color: transparent;
@@ -227,6 +228,12 @@ body,
   font-weight: var(--mb-ui-caption-weight);
   cursor: pointer;
   transition: var(--mb-transition-fast);
+}
+
+@media (max-width: 420px) {
+  .mb-segment-btn {
+    font-size: var(--mb-ui-caption-size);
+  }
 }
 
 .mb-segment-btn[data-active="true"] {
