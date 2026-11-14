@@ -16,6 +16,7 @@ import android.util.Base64;
 import android.view.View;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.Nullable;
+import androidx.core.content.FileProvider;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -25,19 +26,25 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -78,6 +85,8 @@ public class MiniBookPlugin extends Plugin {
 
     private static final ExecutorService STATIC_IO = Executors.newCachedThreadPool();
     private static final List<JSONObject> PENDING_INCOMING_FILES = new ArrayList<>();
+    private static final Set<String> SEEN_DROPIN_SIGNATURES = Collections.synchronizedSet(new HashSet<>());
+    public static final String USERBOOKS_PREFIX = "userbooks";
     @Nullable private static volatile MiniBookPlugin activeInstance;
 
     private final ExecutorService ioPool = Executors.newCachedThreadPool();
@@ -200,6 +209,72 @@ public class MiniBookPlugin extends Plugin {
         return new File(getContext().getFilesDir(), "MiniBookData");
     }
 
+    /**
+     * User-visible book directory exposed in Android system Files app via
+     * `Android/media/dev.minibook.app/Books/` and `MiniBookDocumentsProvider` (`v0.2.3`).
+     */
+    public static File getBooksExportRoot(Context context) {
+        try {
+            File[] mediaDirs = context.getExternalMediaDirs();
+            if (mediaDirs != null) {
+                for (File dir : mediaDirs) {
+                    if (dir != null) {
+                        File books = new File(dir, "Books");
+                        if (books.exists() || books.mkdirs() || books.isDirectory()) {
+                            return books;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            File extFiles = context.getExternalFilesDir("Books");
+            if (extFiles != null && (extFiles.exists() || extFiles.mkdirs() || extFiles.isDirectory())) {
+                return extFiles;
+            }
+        } catch (Throwable ignored) {}
+
+        File fallback = new File(context.getFilesDir(), "Books");
+        //noinspection ResultOfMethodCallIgnored
+        fallback.mkdirs();
+        return fallback;
+    }
+
+    private static final class JailedRoute {
+        final File baseRoot;
+        final String subPath;
+        final boolean isUserBooks;
+
+        JailedRoute(File baseRoot, String subPath, boolean isUserBooks) {
+            this.baseRoot = baseRoot;
+            this.subPath = subPath;
+            this.isUserBooks = isUserBooks;
+        }
+    }
+
+    private JailedRoute routeForPath(@Nullable String rawPath) {
+        return routeForPath(getContext(), rawPath);
+    }
+
+    static JailedRoute routeForPath(Context context, @Nullable String rawPath) {
+        if (rawPath == null) {
+            throw new IllegalArgumentException("Path is required");
+        }
+        String trimmed = rawPath.trim();
+        while (trimmed.startsWith("/")) {
+            trimmed = trimmed.substring(1);
+        }
+        if (trimmed.equals(USERBOOKS_PREFIX)) {
+            return new JailedRoute(getBooksExportRoot(context), "", true);
+        }
+        if (trimmed.startsWith(USERBOOKS_PREFIX + "/")) {
+            String sub = trimmed.substring((USERBOOKS_PREFIX + "/").length());
+            return new JailedRoute(getBooksExportRoot(context), sub, true);
+        }
+        return new JailedRoute(new File(context.getFilesDir(), "MiniBookData"), rawPath, false);
+    }
+
     @PluginMethod
     public void fsRead(PluginCall call) {
         final String path = call.getString("path");
@@ -208,9 +283,10 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
+                JailedRoute route = routeForPath(path);
                 AtomicFiles.BoundedReadResult result = AtomicFiles.readBounded(
-                    getMiniBookDataRoot(),
-                    path,
+                    route.baseRoot,
+                    route.subPath,
                     offset,
                     length
                 );
@@ -240,10 +316,11 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
+                JailedRoute route = routeForPath(path);
                 byte[] bytes = text != null
                     ? text.getBytes(StandardCharsets.UTF_8)
                     : Base64.decode(base64, Base64.DEFAULT);
-                AtomicFiles.writeAtomic(getMiniBookDataRoot(), path, bytes);
+                AtomicFiles.writeAtomic(route.baseRoot, route.subPath, bytes);
                 call.resolve(new JSObject());
             } catch (IllegalArgumentException e) {
                 call.reject(e.getMessage(), "invalid-argument", e);
@@ -264,8 +341,9 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
+                JailedRoute route = routeForPath(path);
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
-                AtomicFiles.append(getMiniBookDataRoot(), path, bytes);
+                AtomicFiles.append(route.baseRoot, route.subPath, bytes);
                 call.resolve(new JSObject());
             } catch (IllegalArgumentException e) {
                 call.reject(e.getMessage(), "invalid-argument", e);
@@ -280,12 +358,13 @@ public class MiniBookPlugin extends Plugin {
         final String path = call.getString("path", "");
         ioPool.execute(() -> {
             try {
-                List<AtomicFiles.Entry> entries = AtomicFiles.list(getMiniBookDataRoot(), path);
+                JailedRoute route = routeForPath(path);
+                List<AtomicFiles.Entry> entries = AtomicFiles.list(route.baseRoot, route.subPath);
                 JSArray arr = new JSArray();
                 for (AtomicFiles.Entry e : entries) {
                     JSObject item = new JSObject();
                     item.put("name", e.name);
-                    item.put("path", e.path);
+                    item.put("path", route.isUserBooks ? (USERBOOKS_PREFIX + "/" + e.path) : e.path);
                     item.put("size", e.size);
                     item.put("mtimeMs", e.mtimeMs);
                     item.put("isDirectory", e.isDirectory);
@@ -307,7 +386,8 @@ public class MiniBookPlugin extends Plugin {
         final String path = call.getString("path");
         ioPool.execute(() -> {
             try {
-                AtomicFiles.remove(getMiniBookDataRoot(), path);
+                JailedRoute route = routeForPath(path);
+                AtomicFiles.remove(route.baseRoot, route.subPath);
                 call.resolve(new JSObject());
             } catch (IllegalArgumentException e) {
                 call.reject(e.getMessage(), "invalid-argument", e);
@@ -322,7 +402,8 @@ public class MiniBookPlugin extends Plugin {
         final String path = call.getString("path", "");
         ioPool.execute(() -> {
             try {
-                AtomicFiles.Stat st = AtomicFiles.stat(getMiniBookDataRoot(), path);
+                JailedRoute route = routeForPath(path);
+                AtomicFiles.Stat st = AtomicFiles.stat(route.baseRoot, route.subPath);
                 JSObject res = new JSObject();
                 res.put("exists", st.exists);
                 if (st.exists) {
@@ -344,7 +425,8 @@ public class MiniBookPlugin extends Plugin {
         final String path = call.getString("path");
         ioPool.execute(() -> {
             try {
-                File target = AtomicFiles.resolveInJail(getMiniBookDataRoot(), path, false);
+                JailedRoute route = routeForPath(path);
+                File target = AtomicFiles.resolveInJail(route.baseRoot, route.subPath, false);
                 String localBase = getBridge() != null ? getBridge().getLocalUrl() : "https://localhost";
                 String abs = target.getAbsolutePath();
                 String url = localBase + "/_capacitor_file_" + (abs.startsWith("/") ? abs : "/" + abs);
@@ -355,6 +437,67 @@ public class MiniBookPlugin extends Plugin {
                 call.reject(e.getMessage(), "invalid-argument", e);
             } catch (IOException e) {
                 call.reject("fsFileUrl failed: " + e.getMessage(), "corrupt-book", e);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void fsShare(PluginCall call) {
+        final String path = call.getString("path");
+        final String title = call.getString("title");
+        final String mimeType = call.getString("mimeType");
+        if (path == null || path.trim().isEmpty()) {
+            call.reject("path is required", "invalid-argument");
+            return;
+        }
+
+        ioPool.execute(() -> {
+            try {
+                Context ctx = getContext();
+                JailedRoute route = routeForPath(ctx, path);
+                File target = AtomicFiles.resolveInJail(route.baseRoot, route.subPath, false);
+                if (!target.exists() || !target.isFile()) {
+                    call.reject("File not found: " + path, "not-found");
+                    return;
+                }
+                Uri contentUri = FileProvider.getUriForFile(
+                    ctx,
+                    ctx.getPackageName() + ".fileprovider",
+                    target
+                );
+                String effectiveMime = (mimeType != null && !mimeType.trim().isEmpty())
+                    ? mimeType.trim()
+                    : guessBookMimeType(target.getName());
+                String displayTitle = (title != null && !title.trim().isEmpty())
+                    ? title.trim()
+                    : target.getName();
+
+                mainHandler.post(() -> {
+                    try {
+                        Intent send = new Intent(Intent.ACTION_SEND);
+                        send.setType(effectiveMime);
+                        send.putExtra(Intent.EXTRA_STREAM, contentUri);
+                        send.putExtra(Intent.EXTRA_SUBJECT, displayTitle);
+                        send.setClipData(ClipData.newRawUri(displayTitle, contentUri));
+                        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                        Intent chooser = Intent.createChooser(send, displayTitle);
+                        Activity act = getActivity();
+                        if (act != null) {
+                            act.startActivity(chooser);
+                        } else {
+                            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            ctx.startActivity(chooser);
+                        }
+                        call.resolve(new JSObject());
+                    } catch (Exception e) {
+                        call.reject("Unable to share file: " + e.getMessage(), "unsupported", e);
+                    }
+                });
+            } catch (IllegalArgumentException e) {
+                call.reject(e.getMessage(), "invalid-argument", e);
+            } catch (Exception e) {
+                call.reject("fsShare failed: " + e.getMessage(), "corrupt-book", e);
             }
         });
     }
@@ -426,6 +569,7 @@ public class MiniBookPlugin extends Plugin {
         final String tempPath = call.getString("tempPath");
         final String bookId = call.getString("bookId");
         final String ext = call.getString("ext");
+        final String preferredName = call.getString("preferredName");
 
         if (tempPath == null || bookId == null || ext == null
             || !SAFE_BOOK_ID.matcher(bookId).matches()
@@ -437,15 +581,21 @@ public class MiniBookPlugin extends Plugin {
 
         ioPool.execute(() -> {
             try {
-                File root = getMiniBookDataRoot();
-                File src = AtomicFiles.resolveInJail(root, tempPath, false);
+                Context ctx = getContext();
+                JailedRoute srcRoute = routeForPath(ctx, tempPath);
+                File src = AtomicFiles.resolveInJail(srcRoute.baseRoot, srcRoute.subPath, false);
                 if (!src.exists() || !src.isFile()) {
                     call.reject("Staged file not found: " + tempPath, "not-found");
                     return;
                 }
-                String adoptedRel = "books/" + bookId + "/book." + ext;
-                File dst = AtomicFiles.resolveInJail(root, adoptedRel, false);
-                AtomicFiles.moveAtomically(src, dst);
+                File booksRoot = getBooksExportRoot(ctx);
+                File dst = adoptIntoBooksDirectory(
+                    src,
+                    booksRoot,
+                    (preferredName != null && !preferredName.trim().isEmpty()) ? preferredName : bookId,
+                    ext
+                );
+                String adoptedRel = USERBOOKS_PREFIX + "/" + dst.getName();
 
                 JSObject out = new JSObject();
                 out.put("path", adoptedRel);
@@ -457,6 +607,71 @@ public class MiniBookPlugin extends Plugin {
                 call.reject("importAdopt failed: " + e.getMessage(), "corrupt-book", e);
             }
         });
+    }
+
+    public static File adoptIntoBooksDirectory(
+        File src,
+        File booksRoot,
+        @Nullable String preferredName,
+        String ext
+    ) throws IOException {
+        if (!booksRoot.exists() && !booksRoot.mkdirs() && !booksRoot.isDirectory()) {
+            throw new IOException("Cannot create books directory: " + booksRoot);
+        }
+        File srcCanon = src.getCanonicalFile();
+        File rootCanon = booksRoot.getCanonicalFile();
+        String rootPrefix = rootCanon.getPath().endsWith(File.separator)
+            ? rootCanon.getPath()
+            : (rootCanon.getPath() + File.separator);
+        if (srcCanon.getPath().startsWith(rootPrefix)) {
+            // File already lives inside user-visible `booksRoot` (dropped in via system Files app):
+            // adopt in place without renaming or duplicating.
+            return srcCanon;
+        }
+        String cleanExt = "fb2.zip".equalsIgnoreCase(ext)
+            ? "fb2.zip"
+            : ext.replaceAll("[^a-zA-Z0-9]", "").toLowerCase(Locale.US);
+        if (cleanExt.isEmpty()) cleanExt = "epub";
+
+        String baseName = buildReadableBookFileName(preferredName, cleanExt);
+        String suffix = "." + cleanExt;
+        String stem = baseName.endsWith(suffix)
+            ? baseName.substring(0, baseName.length() - suffix.length())
+            : baseName;
+
+        File dst = AtomicFiles.resolveInJail(booksRoot, baseName, false);
+        int counter = 2;
+        while (dst.exists() && !dst.getCanonicalFile().equals(src.getCanonicalFile())) {
+            if (dst.isFile() && dst.length() == src.length() && filesHaveIdenticalSha256(src, dst)) {
+                break;
+            }
+            String candidateName = stem + " (" + counter + ")" + suffix;
+            dst = AtomicFiles.resolveInJail(booksRoot, candidateName, false);
+            counter++;
+        }
+
+        AtomicFiles.moveAtomically(src, dst);
+        return dst;
+    }
+
+    private static boolean filesHaveIdenticalSha256(File a, File b) {
+        try {
+            return Arrays.equals(sha256Bytes(a), sha256Bytes(b));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static byte[] sha256Bytes(File f) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = fis.read(buf)) != -1) {
+                md.update(buf, 0, n);
+            }
+        }
+        return md.digest();
     }
 
     @PluginMethod
@@ -536,12 +751,250 @@ public class MiniBookPlugin extends Plugin {
         return (last != null && !last.trim().isEmpty()) ? last.trim() : "book.epub";
     }
 
-    private static String sanitizeFileName(String raw) {
-        String cleaned = raw.replaceAll("[^a-zA-Z0-9._-]", "_");
-        if (cleaned.length() > 80) {
-            cleaned = cleaned.substring(cleaned.length() - 80);
+    public static String sanitizeFileName(@Nullable String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return "book.epub";
         }
-        return cleaned.isEmpty() ? "book.epub" : cleaned;
+        String normalized = Normalizer.normalize(raw.trim(), Normalizer.Form.NFC);
+        String lower = normalized.toLowerCase(Locale.US);
+        String ext = "";
+        if (lower.endsWith(".fb2.zip")) {
+            ext = "fb2.zip";
+            normalized = normalized.substring(0, normalized.length() - 8);
+        } else {
+            int dot = normalized.lastIndexOf('.');
+            if (dot > 0 && dot < normalized.length() - 1) {
+                String cand = normalized.substring(dot + 1);
+                if (cand.matches("^[a-zA-Z0-9]{1,12}$")) {
+                    ext = cand.toLowerCase(Locale.US);
+                    normalized = normalized.substring(0, dot);
+                }
+            }
+        }
+        String stem = sanitizeUnicodeStem(normalized, 120);
+        return ext.isEmpty() ? stem : (stem + "." + ext);
+    }
+
+    public static String buildReadableBookFileName(@Nullable String preferredName, String ext) {
+        String cleanExt = "fb2.zip".equalsIgnoreCase(ext)
+            ? "fb2.zip"
+            : ext.replaceAll("[^a-zA-Z0-9]", "").toLowerCase(Locale.US);
+        if (cleanExt.isEmpty()) cleanExt = "epub";
+
+        String raw = preferredName != null ? Normalizer.normalize(preferredName.trim(), Normalizer.Form.NFC) : "";
+        String lower = raw.toLowerCase(Locale.US);
+        String suffix = "." + cleanExt;
+        if (lower.endsWith(suffix)) {
+            raw = raw.substring(0, raw.length() - suffix.length());
+        } else if (lower.endsWith(".fb2.zip")) {
+            raw = raw.substring(0, raw.length() - 8);
+        } else {
+            int dot = raw.lastIndexOf('.');
+            if (dot > 0) {
+                String tail = raw.substring(dot + 1).toLowerCase(Locale.US);
+                if (tail.matches("^(epub|azw3|azw|mobi|prc|fb2|txt|md|markdown)$")) {
+                    raw = raw.substring(0, dot);
+                }
+            }
+        }
+        String stem = sanitizeUnicodeStem(raw, 120);
+        return stem + "." + cleanExt;
+    }
+
+    private static String sanitizeUnicodeStem(String raw, int maxCodePoints) {
+        StringBuilder sb = new StringBuilder(raw.length());
+        boolean lastWasSpace = false;
+        int i = 0;
+        while (i < raw.length()) {
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp <= 0x1F || cp == 0x7F || "/\\:*?\"<>|".indexOf(cp) >= 0) {
+                if (!lastWasSpace && sb.length() > 0) {
+                    sb.append(' ');
+                    lastWasSpace = true;
+                }
+                continue;
+            }
+            if (Character.isWhitespace(cp)) {
+                if (!lastWasSpace && sb.length() > 0) {
+                    sb.append(' ');
+                    lastWasSpace = true;
+                }
+                continue;
+            }
+            int type = Character.getType(cp);
+            boolean allowed =
+                Character.isLetterOrDigit(cp)
+                || type == Character.NON_SPACING_MARK
+                || type == Character.COMBINING_SPACING_MARK
+                || "._-()[]'’·—《》「」（），：、！!".indexOf(cp) >= 0;
+            if (allowed) {
+                sb.appendCodePoint(cp);
+                lastWasSpace = false;
+            } else if (!lastWasSpace && sb.length() > 0) {
+                sb.append(' ');
+                lastWasSpace = true;
+            }
+        }
+
+        String collapsed = sb.toString().replaceAll("\\.\\.+", ".").trim();
+        while (collapsed.startsWith(".") || collapsed.startsWith(" ")) {
+            collapsed = collapsed.substring(1);
+        }
+        while (collapsed.endsWith(".") || collapsed.endsWith(" ")) {
+            collapsed = collapsed.substring(0, collapsed.length() - 1);
+        }
+        if (collapsed.codePointCount(0, collapsed.length()) > maxCodePoints) {
+            int endOffset = collapsed.offsetByCodePoints(0, maxCodePoints);
+            collapsed = collapsed.substring(0, endOffset).trim();
+            while (collapsed.endsWith(".")) {
+                collapsed = collapsed.substring(0, collapsed.length() - 1).trim();
+            }
+        }
+        return collapsed.isEmpty() ? "book" : collapsed;
+    }
+
+    public static String guessBookMimeType(String fileName) {
+        String lower = fileName.toLowerCase(Locale.US);
+        if (lower.endsWith(".epub")) return "application/epub+zip";
+        if (lower.endsWith(".azw3") || lower.endsWith(".azw")) return "application/vnd.amazon.mobi8-ebook";
+        if (lower.endsWith(".mobi") || lower.endsWith(".prc")) return "application/x-mobipocket-ebook";
+        if (lower.endsWith(".fb2")) return "application/x-fictionbook+xml";
+        if (lower.endsWith(".fb2.zip")) return "application/zip";
+        if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "text/markdown";
+        if (lower.endsWith(".txt")) return "text/plain";
+        return "application/octet-stream";
+    }
+
+    public static boolean isSupportedBookFileName(String fileName) {
+        String lower = fileName.toLowerCase(Locale.US);
+        return lower.endsWith(".epub")
+            || lower.endsWith(".azw3")
+            || lower.endsWith(".azw")
+            || lower.endsWith(".mobi")
+            || lower.endsWith(".prc")
+            || lower.endsWith(".fb2")
+            || lower.endsWith(".fb2.zip")
+            || lower.endsWith(".txt")
+            || lower.endsWith(".md")
+            || lower.endsWith(".markdown");
+    }
+
+    /**
+     * Scans `getBooksExportRoot()` for newly dropped-in ebook files (e.g. copied into
+     * `Android/media/dev.minibook.app/Books` or added via `MiniBookDocumentsProvider` in the
+     * system Files app) and stages them into `incoming-file` / `PENDING_INCOMING_FILES`.
+     */
+    public static void scanDroppedInUserBooks(Context context) {
+        final Context appCtx = context.getApplicationContext();
+        STATIC_IO.execute(() -> {
+            try {
+                File booksRoot = getBooksExportRoot(appCtx);
+                File[] children = booksRoot.listFiles();
+                if (children == null || children.length == 0) return;
+
+                File dataRoot = new File(appCtx.getFilesDir(), "MiniBookData");
+                Set<String> adoptedPaths = collectKnownAdoptedUserBookPaths(dataRoot);
+
+                List<JSONObject> staged = new ArrayList<>();
+                for (File child : children) {
+                    if (!child.isFile()) continue;
+                    String name = child.getName();
+                    if (name.startsWith(".") || !isSupportedBookFileName(name)) continue;
+                    long size = child.length();
+                    if (size <= 0L) continue;
+
+                    String virtualPath = USERBOOKS_PREFIX + "/" + name;
+                    if (adoptedPaths.contains(virtualPath)) continue;
+
+                    String sig = name + ":" + size + ":" + child.lastModified();
+                    if (!SEEN_DROPIN_SIGNATURES.add(sig)) continue;
+
+                    JSONObject obj = new JSONObject();
+                    obj.put("tempPath", virtualPath);
+                    obj.put("name", name);
+                    obj.put("size", size);
+                    staged.add(obj);
+                }
+
+                if (staged.isEmpty()) return;
+
+                MiniBookPlugin live = activeInstance;
+                if (live != null && live.hasListeners("incoming-file")) {
+                    JSObject ev = new JSObject();
+                    JSArray arr = new JSArray();
+                    for (JSONObject f : staged) {
+                        arr.put(toJSObject(f));
+                    }
+                    ev.put("files", arr);
+                    live.notifyListeners("incoming-file", ev, false);
+                } else {
+                    synchronized (PENDING_INCOMING_FILES) {
+                        PENDING_INCOMING_FILES.addAll(staged);
+                    }
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
+    static Set<String> collectKnownAdoptedUserBookPaths(File dataRoot) {
+        Set<String> known = new HashSet<>();
+        File libFile = new File(dataRoot, "library.json");
+        if (libFile.isFile()) {
+            try {
+                String raw = readSmallUtf8File(libFile);
+                JSONArray arr = new JSONArray(raw);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject item = arr.optJSONObject(i);
+                    if (item != null) {
+                        String bp = item.optString("bookPath", "");
+                        if (!bp.isEmpty()) known.add(bp);
+                        JSONArray aliases = item.optJSONArray("aliasPaths");
+                        if (aliases != null) {
+                            for (int j = 0; j < aliases.length(); j++) {
+                                String alias = aliases.optString(j, "");
+                                if (!alias.isEmpty()) known.add(alias);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        File booksDir = new File(dataRoot, "books");
+        File[] dirs = booksDir.listFiles();
+        if (dirs != null) {
+            for (File d : dirs) {
+                if (!d.isDirectory()) continue;
+                File idx = new File(d, "index.json");
+                if (!idx.isFile()) continue;
+                try {
+                    JSONObject obj = new JSONObject(readSmallUtf8File(idx));
+                    String bp = obj.optString("bookPath", "");
+                    if (!bp.isEmpty()) known.add(bp);
+                    JSONArray aliases = obj.optJSONArray("aliasPaths");
+                    if (aliases != null) {
+                        for (int j = 0; j < aliases.length(); j++) {
+                            String alias = aliases.optString(j, "");
+                            if (!alias.isEmpty()) known.add(alias);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return known;
+    }
+
+    private static String readSmallUtf8File(File file) throws IOException {
+        int cap = (int) Math.min(file.length(), 2L * 1024L * 1024L);
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(Math.max(256, cap));
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = fis.read(buf)) != -1) {
+                bos.write(buf, 0, n);
+            }
+        }
+        return bos.toString("UTF-8");
     }
 
     // -------------------------------------------------------------------------

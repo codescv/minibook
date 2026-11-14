@@ -516,72 +516,57 @@ describe('ModelStore downloader, mirror fallback, HTTP 206 resume & SHA-256 veri
     expect(postResumeEvents.every((e) => e.status.source === 'huggingface.co')).toBe(true);
   });
 
-  it('never drops verifying -> downloading transition between file 1 and file 2 within <1s throttle window', async () => {
+  it('emits downloading continuously across multiple files and verifying at most once before ready', async () => {
     const voiceBytes = makeFakeBytes(4 * 1024, 81);
     const modelBytes = makeFakeBytes(8 * 1024, 83);
     const manifest = makeTestManifest(modelBytes, voiceBytes);
     const orderedManifest = [manifest[1]!, manifest[0]!];
 
-    let file2Started!: () => void;
-    const file2StartedPromise = new Promise<void>((r) => {
-      file2Started = r;
-    });
-    const fakeFetch: typeof fetch = (input, init) => {
+    const fakeFetch: typeof fetch = (input) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
-      if (url.pathname.includes('zf_001.bin')) {
-        return Promise.resolve(
-          new Response(Buffer.from(voiceBytes), {
-            status: 200,
-            headers: { 'Content-Length': String(voiceBytes.byteLength) },
-          }),
-        );
-      }
-      // File 2 stalls before sending first byte until aborted!
-      file2Started();
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          init?.signal?.addEventListener('abort', () => {
-            try {
-              controller.error(new DOMException('Aborted', 'AbortError'));
-            } catch {
-              // ignore
-            }
-          });
-        },
-      });
+      const body = url.pathname.includes('zf_001.bin') ? voiceBytes : modelBytes;
       return Promise.resolve(
-        new Response(stream, {
+        new Response(Buffer.from(body), {
           status: 200,
-          headers: { 'Content-Length': String(modelBytes.byteLength) },
+          headers: { 'Content-Length': String(body.byteLength) },
         }),
       );
     };
 
-    // Constant `now()` guarantees 0ms elapsed between `verifying` (file 1) and `downloading` (file 2).
+    let clock = 1_000_000;
     const store = new ModelStore({
       dataDir: tempDir,
       getSettings: () => ({ ...DEFAULT_APP_SETTINGS, modelDownloadSource: 'auto' }),
       emit: (e) => events.push(e),
       fetchImpl: fakeFetch,
       retryDelaysMs: [0],
-      now: () => 1_000_000,
+      now: () => {
+        clock += 200;
+        return clock;
+      },
       sourceEnvForTests: { timeZone: 'Asia/Shanghai', locale: 'zh-CN' },
       resolveFilesForTests: () => orderedManifest,
       minFreeMarginBytes: 0,
     });
 
     await store.download(KOKORO_MODEL_ID, { voices: ['zf_001'] });
-    await file2StartedPromise;
-    await new Promise((r) => setTimeout(r, 20));
+    await store.waitForIdle();
 
-    const states = events
-      .filter((e): e is Extract<HostEvent, { type: 'speech-model' }> => e.type === 'speech-model')
-      .map((e) => e.status.state);
-    // Must see: downloading -> verifying (file 1) -> downloading (file 2, NOT throttled!)
-    const verifyIdx = states.indexOf('verifying');
-    expect(verifyIdx).toBeGreaterThanOrEqual(0);
-    expect(states[verifyIdx + 1]).toBe('downloading');
+    const modelEvents = events.filter(
+      (e): e is Extract<HostEvent, { type: 'speech-model' }> => e.type === 'speech-model',
+    );
+    const states = modelEvents.map((e) => e.status.state);
+    const verifyIndices = states
+      .map((s, idx) => (s === 'verifying' ? idx : -1))
+      .filter((idx) => idx >= 0);
 
-    await store.pause(KOKORO_MODEL_ID);
+    expect(verifyIndices.length).toBe(1);
+    const verifyIdx = verifyIndices[0]!;
+    expect(states.slice(0, verifyIdx).every((s) => s === 'downloading')).toBe(true);
+    expect(states.slice(verifyIdx + 1)).not.toContain('downloading');
+    expect(modelEvents[verifyIdx]!.status.bytesDone).toBe(
+      modelEvents[verifyIdx]!.status.bytesTotal,
+    );
+    expect(states[states.length - 1]).toBe('ready');
   });
 });

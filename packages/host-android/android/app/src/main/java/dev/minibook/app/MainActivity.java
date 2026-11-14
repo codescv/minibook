@@ -59,6 +59,7 @@ public class MainActivity extends BridgeActivity {
         einkDetected = EinkDetector.detect(this).eink;
 
         MiniBookPlugin.handleIncomingIntent(this, getIntent());
+        MiniBookPlugin.scanDroppedInUserBooks(this);
         requestNotificationPermissionIfNeeded();
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -221,6 +222,7 @@ public class MainActivity extends BridgeActivity {
             ViewCompat.requestApplyInsets(getWindow().getDecorView());
         }
         syncSafeAreaCssVars();
+        MiniBookPlugin.scanDroppedInUserBooks(this);
     }
 
     @Override

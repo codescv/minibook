@@ -6,6 +6,7 @@ import { App, type AppProps } from './app/App';
 import { AppErrorBoundary, type AppErrorBoundaryProps } from './app/ErrorBoundary';
 import { useRouteStore } from './app/routes';
 import { useSettingsStore } from './host/HostContext';
+import { syncDocumentLang } from './i18n';
 import { useImportStore } from './library/ImportController';
 import { useReadAloudStore } from './speech/ReadAloudController';
 import { useSpeechModelStore } from './speech/speech-model-store';
@@ -22,6 +23,7 @@ export function mountMiniBookApp(
   if (typeof window !== 'undefined') {
     window.__minibookMounted = false;
   }
+  syncDocumentLang();
   useRouteStore.getState().reset();
   useSettingsStore.getState().reset();
   useImportStore.getState().reset();
@@ -109,7 +111,7 @@ export {
   formatModelErrorInfo,
   getSpeechModelsApi,
 } from './speech/speech-model-store';
-export { QWEN_PRESETS, type QwenPresetItem } from './settings/SettingsScreen';
+export { QWEN_PRESETS, type QwenPresetItem } from './speech/VoiceSheet';
 export { AutoPageTurn, type AutoPageTurnViewAdapter } from './speech/AutoPageTurn';
 export {
   computePaginationGeometry,
@@ -123,11 +125,17 @@ export {
   SectionFrameManager,
   FRAME_CSP_CONTENT,
   resolveFrameSandboxAttribute,
+  normalizeAndDetectSectionLang,
   type FilledFrameUnit,
   type FrameGestureCallbacks,
 } from './reader/SectionFrame';
 export { ResourceUrlScope } from './reader/ResourceUrls';
-export { buildFrameUserStylesheet, computeBookLineHeight } from './reader/user-stylesheet';
+export {
+  buildFrameUserStylesheet,
+  computeBookLineHeight,
+  resolveBookSerifStack,
+  resolveBookSansStack,
+} from './reader/user-stylesheet';
 export { RefreshController, type RefreshControllerDeps } from './eink/RefreshController';
 export { PagedList, type PagedListProps } from './eink/PagedList';
 export { FlashOverlay } from './eink/FlashOverlay';
@@ -157,4 +165,12 @@ export {
   computeEffectiveVolumeKeyPaging,
   resolveActiveThemeColors,
 } from './theme/theme-manager';
-export { resolveLocale, translate, useT, type SupportedLocale, type I18nKey } from './i18n';
+export {
+  resolveLocale,
+  localeToHtmlLang,
+  syncDocumentLang,
+  translate,
+  useT,
+  type SupportedLocale,
+  type I18nKey,
+} from './i18n';

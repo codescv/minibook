@@ -61,7 +61,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.2.2';
+export const CAPACITOR_HOST_VERSION = '0.2.3';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
@@ -262,7 +262,7 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       } catch {
         if (ticket) {
           await ticket.abort().catch(() => undefined);
-        } else {
+        } else if (!picked.tempPath.startsWith('userbooks/')) {
           await plugin.fs.remove({ path: picked.tempPath }).catch(() => undefined);
         }
       }
@@ -527,7 +527,9 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
           },
           async abort(): Promise<void> {
             tickets.delete(ticketId);
-            await plugin.fs.remove({ path: tempPath! }).catch(() => undefined);
+            if (!tempPath!.startsWith('userbooks/')) {
+              await plugin.fs.remove({ path: tempPath! }).catch(() => undefined);
+            }
             await plugin.fs.remove({ path: stagedDerivedPath }).catch(() => undefined);
           },
         };
@@ -577,6 +579,15 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
 
       async markOpened(id: BookId, openedAt?: number): Promise<void> {
         await store.markOpened(id, openedAt);
+      },
+
+      async shareFile(id: BookId): Promise<void> {
+        const target = await store.getShareTarget(id);
+        await plugin.fs.share({
+          path: target.path,
+          title: target.title,
+          mimeType: target.mimeType,
+        });
       },
 
       coverUrl(id: BookId): string | null {

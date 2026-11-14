@@ -2,6 +2,7 @@ package dev.minibook.app;
 
 import androidx.annotation.Nullable;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -170,6 +171,9 @@ public final class AtomicFiles {
     }
 
     public static void moveAtomically(File src, File dst) throws IOException {
+        if (src.getCanonicalFile().equals(dst.getCanonicalFile())) {
+            return;
+        }
         File parent = dst.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs() && !parent.isDirectory()) {
             throw new IOException("Failed to create parent directory: " + parent);
@@ -181,8 +185,52 @@ public final class AtomicFiles {
                 StandardCopyOption.REPLACE_EXISTING,
                 StandardCopyOption.ATOMIC_MOVE
             );
-        } catch (AtomicMoveNotSupportedException e) {
+            return;
+        } catch (AtomicMoveNotSupportedException ignored) {
+            // Fall through to non-atomic or cross-mount copy+rename
+        } catch (IOException ignored) {
+            // Cross-device link (EXDEV) between internal filesDir and externalMediaDirs -> copy+sync+rename below
+        }
+
+        try {
             Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            return;
+        } catch (IOException ignored) {
+            // Cross-filesystem move fallback: stream-copy to sibling .tmp, fsync, atomic rename, delete src
+        }
+
+        File tmp = new File(
+            parent,
+            "." + dst.getName() + ".tmp." + Thread.currentThread().getId() + "." + System.nanoTime()
+        );
+        try {
+            try (FileInputStream fis = new FileInputStream(src);
+                 FileOutputStream fos = new FileOutputStream(tmp, false)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = fis.read(buf)) != -1) {
+                    fos.write(buf, 0, n);
+                }
+                fos.flush();
+                fos.getFD().sync();
+            }
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    dst.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                );
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            src.delete();
+        } finally {
+            if (tmp.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+            }
         }
     }
 

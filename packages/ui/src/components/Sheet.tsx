@@ -15,6 +15,7 @@ export interface SheetProps {
   readonly onClose: (coveredHalfScreen: boolean) => void;
   readonly popoverOnDesktop?: boolean;
   readonly listSheet?: boolean;
+  readonly className?: string;
   readonly children: ReactNode;
 }
 
@@ -31,6 +32,7 @@ export function Sheet({
   onClose,
   popoverOnDesktop = true,
   listSheet = false,
+  className,
   children,
 }: SheetProps): ReactElement | null {
   const isEink = useIsEink();
@@ -233,7 +235,7 @@ export function Sheet({
       />
       <section
         ref={sheetRef}
-        className="mb-sheet"
+        className={className ? `mb-sheet ${className}` : 'mb-sheet'}
         data-state={phase}
         role={isClosing ? undefined : 'dialog'}
         aria-modal={isClosing ? undefined : 'true'}

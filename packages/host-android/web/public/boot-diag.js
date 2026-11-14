@@ -1,6 +1,13 @@
 /* clang-format off */
 (function () {
   if (typeof window === 'undefined') return;
+  try {
+    var navLang = (typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en').toLowerCase();
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.lang =
+        navLang.indexOf('zh') === 0 ? 'zh-Hans' : navLang.indexOf('ja') === 0 ? 'ja' : 'en';
+    }
+  } catch (_) {}
   var hadNativeArrays =
     Array.isArray(window.__minibookBootErrors) && Array.isArray(window.__minibookCSPViolations);
   var bootErrors = (window.__minibookBootErrors = window.__minibookBootErrors || []);

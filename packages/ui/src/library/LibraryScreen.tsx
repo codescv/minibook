@@ -322,6 +322,31 @@ export function LibraryScreen({ readAloud }: LibraryScreenProps): ReactElement {
               </div>
             </div>
 
+            {host.library.shareFile && (
+              <button
+                type="button"
+                className="mb-list-row"
+                data-testid="book-info-share-btn"
+                onClick={() => {
+                  const shareFn = host.library.shareFile;
+                  if (!shareFn) return;
+                  void shareFn(infoBook.id)
+                    .catch((err: unknown) => {
+                      const msg =
+                        err instanceof Error && err.message ? err.message : t('errorCorrupt');
+                      useRouteStore.getState().showNotice(msg);
+                    })
+                    .finally(() => {
+                      useRouteStore.getState().closeSheetWithRefresh();
+                    });
+                }}
+              >
+                <span>
+                  {host.info.platform === 'desktop' ? t('downloadBookFile') : t('shareBookFile')}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               className="mb-list-row"

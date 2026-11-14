@@ -8,6 +8,7 @@ import {
   encodeMonoPcm16Wav,
   memoryByteSource,
   openBook,
+  sanitizeReadableBookFileName,
   type HostEvent,
   type InspectedBook,
   type SpeechEvent,
@@ -35,6 +36,7 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
   readonly pendingImports: NativePickedFile[] = [];
   readonly pickedFiles: NativePickedFile[] = [];
   readonly fsReadCalls: Array<{ path: string; offset: number; length: number }> = [];
+  readonly sharedFiles: Array<{ path: string; title?: string; mimeType?: string }> = [];
   readonly speechLog: string[] = [];
   keepScreenOnCalls: boolean[] = [];
   immersiveCalls: boolean[] = [];
@@ -179,17 +181,54 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
     return { url: `https://localhost/_capacitor_file_/MiniBookData/${this.normalize(opts.path)}` };
   }
 
+  async fsShare(opts: { path: string; title?: string; mimeType?: string }) {
+    const p = this.normalize(opts.path);
+    if (!this.files.has(p)) throw new Error(`File not found: ${p}`);
+    this.sharedFiles.push({
+      path: p,
+      ...(opts.title !== undefined ? { title: opts.title } : {}),
+      ...(opts.mimeType !== undefined ? { mimeType: opts.mimeType } : {}),
+    });
+  }
+
   async importPick(_opts: { multiple: boolean }) {
     return { files: [...this.pickedFiles] };
   }
 
-  async importAdopt(opts: { tempPath: string; bookId: string; ext: string }) {
+  async importAdopt(opts: {
+    tempPath: string;
+    bookId: string;
+    ext: string;
+    preferredName?: string;
+  }) {
     const src = this.normalize(opts.tempPath);
     const bytes = this.files.get(src);
     if (!bytes) throw new Error(`Missing staged file: ${src}`);
-    const dest = `books/${opts.bookId}/book.${opts.ext}`;
+    if (src.startsWith('userbooks/')) {
+      return { path: src, size: bytes.byteLength };
+    }
+    const baseName = sanitizeReadableBookFileName(opts.preferredName || opts.bookId, opts.ext);
+    const suffix = `.${opts.ext}`;
+    const stem = baseName.endsWith(suffix)
+      ? baseName.slice(0, baseName.length - suffix.length)
+      : baseName;
+    let dest = `userbooks/${baseName}`;
+    let counter = 2;
+    while (this.files.has(dest) && dest !== src) {
+      const existing = this.files.get(dest)!;
+      if (
+        existing.byteLength === bytes.byteLength &&
+        existing.every((b, idx) => b === bytes[idx])
+      ) {
+        break;
+      }
+      dest = `userbooks/${stem} (${counter})${suffix}`;
+      counter += 1;
+    }
     this.files.set(dest, bytes);
-    this.files.delete(src);
+    if (dest !== src) {
+      this.files.delete(src);
+    }
     return { path: dest, size: bytes.byteLength };
   }
 
@@ -844,5 +883,205 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
 
     unsubHost();
     unsubPlayer();
+  });
+
+  it('[v0.2.3] adopts human-readable CJK userbooks/<Title>.<ext>, auto-migrates legacy books/<id>/book.<ext>, shares via fsShare, and removes both userbooks + metadata', async () => {
+    const bridge = new InMemoryNativeBridge();
+    // Seed a legacy v0.2.2 book (`books/b_legacy_luxun/book.txt` without `bookPath`)
+    const legacyBytes = new TextEncoder().encode('我冒了严寒，回到相隔二千余里，别了二十余年的故乡去。');
+    bridge.files.set('books/b_legacy_luxun/book.txt', legacyBytes);
+    const legacyInspected: InspectedBook = {
+      ...makeSampleInspected(),
+      meta: {
+        ...makeSampleInspected().meta,
+        title: '呐喊',
+        authors: ['鲁迅'],
+        language: 'zh-CN',
+        format: 'txt',
+      },
+      cover: null,
+    };
+    bridge.files.set(
+      'books/b_legacy_luxun/index.json',
+      new TextEncoder().encode(
+        JSON.stringify({
+          id: 'b_legacy_luxun',
+          meta: legacyInspected.meta,
+          index: legacyInspected.index,
+          fileName: 'nahan.txt',
+          fileExt: 'txt',
+          size: legacyBytes.byteLength,
+          derivedTextSize: 0,
+          hasCover: false,
+          coverExt: null,
+          coverMime: null,
+          addedAt: 1_760_000_000_000,
+          openedAt: null,
+          finished: false,
+        }),
+      ),
+    );
+    bridge.files.set(
+      'books/b_legacy_luxun/state.json',
+      new TextEncoder().encode(JSON.stringify({ position: null, bookmarks: [] })),
+    );
+
+    const plugin = wrapNativeBridge(bridge);
+    const host = createCapacitorPlatformHost({
+      plugin,
+      platform: 'ios',
+      fetchImpl: null,
+    });
+
+    // Startup `library.list()` automatically migrates legacy `books/b_legacy_luxun/book.txt` -> `userbooks/呐喊.txt`!
+    const initialBooks = await host.library.list();
+    expect(initialBooks.some((b) => b.id === 'b_legacy_luxun' && b.title === '呐喊')).toBe(true);
+    expect(bridge.files.has('userbooks/呐喊.txt')).toBe(true);
+    expect(bridge.files.has('books/b_legacy_luxun/book.txt')).toBe(false);
+
+    // Import two distinct CJK books with the same title `三体` -> `userbooks/三体.txt` and `userbooks/三体 (2).txt`
+    const raw1 = new TextEncoder().encode('叶文洁仰望红岸基地的天线。');
+    const t1 = await host.library.beginImport({
+      name: '三体.txt',
+      size: raw1.byteLength,
+      bytes: memoryByteSource(raw1),
+    });
+    const inspectedSanti: InspectedBook = {
+      ...makeSampleInspected(),
+      meta: {
+        ...makeSampleInspected().meta,
+        title: '三体',
+        authors: ['刘慈欣'],
+        language: 'zh-CN',
+        format: 'txt',
+      },
+    };
+    const b1 = await host.library.commitImport(t1, inspectedSanti);
+    expect(bridge.files.has('userbooks/三体.txt')).toBe(true);
+
+    const raw2 = new TextEncoder().encode('罗辑面向黑暗森林。');
+    const t2 = await host.library.beginImport({
+      name: '三体2.txt',
+      size: raw2.byteLength,
+      bytes: memoryByteSource(raw2),
+    });
+    const b2 = await host.library.commitImport(t2, inspectedSanti);
+    expect(bridge.files.has('userbooks/三体 (2).txt')).toBe(true);
+
+    // Share file invokes native `fsShare` with exact `userbooks/` path & title
+    await host.library.shareFile!(b1.id);
+    expect(bridge.sharedFiles).toEqual([
+      {
+        path: 'userbooks/三体.txt',
+        title: '三体',
+        mimeType: 'text/plain; charset=utf-8',
+      },
+    ]);
+
+    // Storage usage counts both `books/` metadata and `userbooks/` book files
+    const usage = await host.settings.storageUsage!();
+    expect(usage.booksBytes).toBeGreaterThan(raw1.byteLength + raw2.byteLength);
+
+    // Removing b1 deletes BOTH `userbooks/三体.txt` AND `books/<b1.id>/index.json` while keeping `三体 (2).txt`
+    await host.library.remove(b1.id);
+    expect(bridge.files.has('userbooks/三体.txt')).toBe(false);
+    expect(bridge.files.has(`books/${b1.id}/index.json`)).toBe(false);
+    expect(bridge.files.has('userbooks/三体 (2).txt')).toBe(true);
+    expect(b2.id).not.toBe(b1.id);
+  });
+
+  it('[v0.2.3] adopts Files-app drop-ins in place when filename != title, heals renamed files without losing state, tracks duplicate aliasPaths, and deletes cleanly', async () => {
+    const bridge = new InMemoryNativeBridge();
+    const plugin = wrapNativeBridge(bridge);
+    const host = createCapacitorPlatformHost({
+      plugin,
+      platform: 'ios',
+      fetchImpl: null,
+    });
+
+    // 1. User drops `santi.txt` (filename != metadata title `三体`) into `Files -> Books`
+    const dropBytes = new TextEncoder().encode('汪淼觉得自己最近遇到的事情有些奇怪。');
+    bridge.files.set('userbooks/santi.txt', dropBytes);
+
+    const dropTicket = await host.library.beginImport({
+      name: 'santi.txt',
+      size: dropBytes.byteLength,
+      bytes: memoryByteSource(dropBytes),
+      sourceRef: 'userbooks/santi.txt',
+    });
+    const inspectedSanti: InspectedBook = {
+      ...makeSampleInspected(),
+      meta: {
+        ...makeSampleInspected().meta,
+        title: '三体',
+        authors: ['刘慈欣'],
+        language: 'zh-CN',
+        format: 'txt',
+      },
+    };
+    const imported = await host.library.commitImport(dropTicket, inspectedSanti);
+    expect(imported.title).toBe('三体');
+    expect(imported.openedAt).toBeNull();
+    // Adopted IN PLACE: `userbooks/santi.txt` exists, ZERO duplicate `userbooks/三体.txt`!
+    expect(bridge.files.has('userbooks/santi.txt')).toBe(true);
+    expect(bridge.files.has('userbooks/三体.txt')).toBe(false);
+
+    // Save reading progress at offset 12
+    await host.state.savePosition(imported.id, {
+      section: 0,
+      offset: 12,
+      fraction: 0.5,
+      snippet: '有些奇怪',
+      updatedAt: 1_770_000_000_000,
+    });
+
+    // 2. User renames `userbooks/santi.txt` -> `userbooks/刘慈欣-三体.txt` in system Files app!
+    bridge.files.delete('userbooks/santi.txt');
+    bridge.files.set('userbooks/刘慈欣-三体.txt', dropBytes);
+
+    // Even BEFORE a background drop-in scan runs, `library.get` + `byteSource` + `shareFile` heal `bookPath` immediately!
+    const healedDetail = await host.library.get(imported.id);
+    expect(healedDetail?.fileName).toBe('刘慈欣-三体.txt');
+    const chunk = await host.files.byteSource(imported.id, 'book').read(0, dropBytes.byteLength);
+    expect(new TextDecoder().decode(chunk)).toContain('汪淼');
+    expect((await host.state.getPosition(imported.id))?.offset).toBe(12);
+
+    // Also test cold-relaunch scan path when renamed again (`刘慈欣-三体.txt` -> `三体精校版.txt`)
+    bridge.files.delete('userbooks/刘慈欣-三体.txt');
+    bridge.files.set('userbooks/三体精校版.txt', dropBytes);
+    const rescanTicket = await host.library.beginImport({
+      name: '三体精校版.txt',
+      size: dropBytes.byteLength,
+      bytes: memoryByteSource(dropBytes),
+      sourceRef: 'userbooks/三体精校版.txt',
+    });
+    const healedViaScan = await host.library.commitImport(rescanTicket, inspectedSanti);
+    expect(healedViaScan.fileName).toBe('三体精校版.txt');
+    expect(healedViaScan.openedAt).toBe(1_770_000_000_000); // openedAt NOT bumped by passive scan!
+    expect(bridge.files.has('userbooks/三体精校版.txt')).toBe(true);
+
+    // 3. User ALSO drops an identical copy `userbooks/santi-backup.txt` alongside `三体精校版.txt`
+    bridge.files.set('userbooks/santi-backup.txt', dropBytes);
+    const dupTicket = await host.library.beginImport({
+      name: 'santi-backup.txt',
+      size: dropBytes.byteLength,
+      bytes: memoryByteSource(dropBytes),
+      sourceRef: 'userbooks/santi-backup.txt',
+    });
+    await host.library.commitImport(dupTicket, inspectedSanti);
+    // Neither file is deleted on import, and `aliasPaths` is recorded in `index.json` + `library.json`
+    expect(bridge.files.has('userbooks/三体精校版.txt')).toBe(true);
+    expect(bridge.files.has('userbooks/santi-backup.txt')).toBe(true);
+    const idxJson = JSON.parse(
+      new TextDecoder().decode(bridge.files.get(`books/${imported.id}/index.json`)!),
+    ) as { bookPath: string; aliasPaths?: string[] };
+    expect(idxJson.bookPath).toBe('userbooks/三体精校版.txt');
+    expect(idxJson.aliasPaths).toEqual(['userbooks/santi-backup.txt']);
+
+    // 4. Deleting the book in the app removes BOTH primary `bookPath` AND `aliasPaths` so nothing resurrects on relaunch!
+    await host.library.remove(imported.id);
+    expect(bridge.files.has('userbooks/三体精校版.txt')).toBe(false);
+    expect(bridge.files.has('userbooks/santi-backup.txt')).toBe(false);
+    expect(bridge.files.has(`books/${imported.id}/index.json`)).toBe(false);
   });
 });

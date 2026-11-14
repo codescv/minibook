@@ -456,5 +456,62 @@ describe('@minibook/host-node server, SQLite, HTTP 206 Range & RestPlatformHost'
     expect(workerRuns).toBe(1);
     expect(synth2.cached).toBe(true);
     expect(synth2.ref).toBe(synth1.ref);
+
+    // [v0.2.3] Stage + commit a CJK book and verify GET /api/books/:id/download returns attachment with UTF-8 filename*
+    const cjkBookBytes = new TextEncoder().encode('第一章 科学边界\n\n我们在这里说话，没有觉得奇怪，还会继续前进。');
+    const ticket = await host.library.beginImport({
+      name: '三体.txt',
+      size: cjkBookBytes.byteLength,
+      bytes: {
+        size: cjkBookBytes.byteLength,
+        read: async (off, len) => cjkBookBytes.subarray(off, off + len),
+      },
+    });
+    const committed = await host.library.commitImport(ticket, {
+      meta: {
+        title: '三体',
+        authors: ['刘慈欣'],
+        language: 'zh-CN',
+        identifier: null,
+        format: 'txt',
+        direction: 'ltr',
+        fixedLayout: false,
+      },
+      cover: null,
+      index: {
+        kind: 'txt',
+        encoding: 'utf-8',
+        meta: {
+          title: '三体',
+          authors: ['刘慈欣'],
+          language: 'zh-CN',
+          identifier: null,
+          format: 'txt',
+          direction: 'ltr',
+          fixedLayout: false,
+        },
+        toc: [],
+        spine: [{ index: 0, linear: true, sizeHint: cjkBookBytes.byteLength }],
+        chapters: [
+          {
+            index: 0,
+            title: '第一章',
+            byteStart: 0,
+            byteEnd: cjkBookBytes.byteLength,
+            charCount: 30,
+            hasHeadingLine: true,
+          },
+        ],
+      },
+    });
+    const dlResp = await app.request(
+      `http://127.0.0.1/api/books/${encodeURIComponent(committed.id)}/download`,
+    );
+    expect(dlResp.status).toBe(200);
+    const cd = dlResp.headers.get('content-disposition') ?? '';
+    expect(cd).toContain('attachment;');
+    expect(cd).toContain(`filename*=UTF-8''${encodeURIComponent('三体.txt')}`);
+    expect(new Uint8Array(await dlResp.arrayBuffer())).toEqual(cjkBookBytes);
+    await host.library.shareFile!(committed.id);
   });
 });

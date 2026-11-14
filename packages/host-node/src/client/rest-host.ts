@@ -86,7 +86,7 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
 
   let currentInfo: HostInfo = options?.initialInfo ?? {
     platform: 'desktop',
-    appVersion: '0.2.2',
+    appVersion: '0.2.3',
     capabilities: {
       nativeSpeechQueue: false,
       volumeKeyPaging: false,
@@ -338,6 +338,26 @@ export function createRestPlatformHost(options?: CreateRestPlatformHostOptions):
           `/api/library/${encodeURIComponent(id)}/opened`,
           { body: openedAt !== undefined ? { openedAt } : {} },
         );
+      },
+
+      async shareFile(id: BookId): Promise<void> {
+        const downloadUrl = client.resolveUrl(`/api/books/${encodeURIComponent(id)}/download`);
+        if (typeof document !== 'undefined') {
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = '';
+          a.rel = 'noopener';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          return;
+        }
+        const fetchFn = options?.fetchImpl ?? fetch;
+        const res = await fetchFn(downloadUrl, { method: 'HEAD' });
+        if (!res.ok) {
+          throw new MiniBookError('not-found', `Download failed (${res.status}) for ${id}`);
+        }
       },
 
       coverUrl(id: BookId): string | null {

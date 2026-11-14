@@ -8,6 +8,7 @@ import {
   PlayIcon,
   SkipNextIcon,
   SkipPrevIcon,
+  WaveformIcon,
 } from '../components/icons';
 import { useT } from '../i18n';
 import { useReadAloudStore, type ReadAloudController } from './ReadAloudController';
@@ -152,10 +153,23 @@ export function ReadAloudBar({ controller, isEink, bookId }: ReadAloudBarProps):
       <button
         type="button"
         className="mb-tts-speed-pill"
-        aria-label={`${t('voiceAndSpeed')}: ${rate.toFixed(1)}x`}
+        aria-label={`${t('speed')}: ${rate.toFixed(1)}x`}
         onClick={() => useRouteStore.getState().openSheet('voice')}
       >
         {rate.toFixed(1)}×
+      </button>
+
+      <button
+        type="button"
+        className="mb-tts-voice-pill"
+        data-testid="tts-bar-voice-btn"
+        data-active={activeSheet === 'voice' ? 'true' : undefined}
+        aria-label={t('voiceAndSpeed')}
+        aria-expanded={activeSheet === 'voice'}
+        onClick={() => useRouteStore.getState().openSheet('voice')}
+      >
+        <WaveformIcon />
+        <span>{t('voice')}</span>
       </button>
 
       <IconButton

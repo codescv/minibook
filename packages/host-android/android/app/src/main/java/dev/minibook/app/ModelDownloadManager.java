@@ -656,28 +656,31 @@ public final class ModelDownloadManager {
 
                     long doneSum = 0L;
                     for (long v : bytesByPath.values()) doneSum += v;
-                    JSONObject verifying = KokoroModelStore.buildStatusJson(
-                        "verifying",
-                        req.variant,
-                        doneSum,
-                        totalBytes,
-                        0L,
-                        new JSONArray(store.detectInstalledVoicesOnDisk()),
-                        lastSourceHost[0],
-                        null,
-                        null,
-                        null
-                    );
-                    synchronized (stateLock) {
-                        currentStatus = verifying;
-                    }
-                    emitImmediate(verifying);
 
                     String sha = computeSha256(partFile);
                     if (generation.get() != myGen) return;
                     if (sha.equalsIgnoreCase(f.sha256)) {
                         AtomicFiles.moveAtomically(partFile, finalFile);
                         bytesByPath.put(f.path, f.size);
+                        long updatedSum = 0L;
+                        for (long v : bytesByPath.values()) updatedSum += v;
+                        JSONObject dlStatus = KokoroModelStore.buildStatusJson(
+                            "downloading",
+                            req.variant,
+                            Math.min(updatedSum, totalBytes),
+                            totalBytes,
+                            0L,
+                            new JSONArray(store.detectInstalledVoicesOnDisk()),
+                            lastSourceHost[0],
+                            null,
+                            null,
+                            null
+                        );
+                        synchronized (stateLock) {
+                            if (generation.get() != myGen) return;
+                            currentStatus = dlStatus;
+                        }
+                        emitThrottled(dlStatus);
                         break;
                     }
 
@@ -707,6 +710,24 @@ public final class ModelDownloadManager {
             }
 
             if (generation.get() != myGen) return;
+
+            // Emit verifying at most ONCE after all files in the plan have finished downloading.
+            JSONObject verifying = KokoroModelStore.buildStatusJson(
+                "verifying",
+                req.variant,
+                totalBytes,
+                totalBytes,
+                0L,
+                new JSONArray(store.detectInstalledVoicesOnDisk()),
+                lastSourceHost[0],
+                null,
+                null,
+                null
+            );
+            synchronized (stateLock) {
+                currentStatus = verifying;
+            }
+            emitImmediate(verifying);
 
             // Write installed.json atomically
             Set<String> voices = new LinkedHashSet<>(store.detectInstalledVoicesOnDisk());
@@ -806,7 +827,7 @@ public final class ModelDownloadManager {
             Request.Builder rb = new Request.Builder()
                 .url(url)
                 .header("Accept-Encoding", "identity")
-                .header("User-Agent", "MiniBook/0.2.2");
+                .header("User-Agent", "MiniBook/0.2.3");
             if (offset > 0L) {
                 rb.header("Range", "bytes=" + offset + "-");
             }

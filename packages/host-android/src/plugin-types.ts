@@ -93,12 +93,20 @@ export interface NativeAdoptRequest {
   readonly bookId: string;
   /** Canonical extension without leading dot (e.g. `'epub'`, `'azw3'`, `'mobi'`, `'fb2'`, `'txt'`, `'md'`). */
   readonly ext: string;
+  /** Optional human-readable book filename or title (preserves Unicode CJK characters in Files app). */
+  readonly preferredName?: string;
 }
 
 export interface NativeAdoptResponse {
-  /** Adopted relative path, e.g. `'books/<bookId>/book.<ext>'`. */
+  /** Adopted relative path, e.g. `'userbooks/<ReadableName>.<ext>'` or `'books/<bookId>/book.<ext>'`. */
   readonly path: string;
   readonly size: number;
+}
+
+export interface NativeFsShareRequest {
+  readonly path: string;
+  readonly title?: string;
+  readonly mimeType?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +290,7 @@ export interface MiniBookPlugin {
     remove(opts: { readonly path: string }): Promise<void>;
     stat(opts: { readonly path: string }): Promise<NativeFsStatResponse>;
     fileUrl(opts: { readonly path: string }): Promise<{ readonly url: string }>;
+    share(opts: NativeFsShareRequest): Promise<void>;
   };
 
   readonly import: {
@@ -362,6 +371,7 @@ export interface MiniBookNativeBridge {
   fsRemove(opts: { path: string }): Promise<void>;
   fsStat(opts: { path: string }): Promise<NativeFsStatResponse>;
   fsFileUrl(opts: { path: string }): Promise<{ url: string }>;
+  fsShare(opts: NativeFsShareRequest): Promise<void>;
 
   // import
   importPick(opts: { multiple: boolean }): Promise<{ files: NativePickedFile[] }>;
@@ -435,6 +445,7 @@ export function wrapNativeBridge(bridge: MiniBookNativeBridge): MiniBookPlugin {
       remove: (opts) => bridge.fsRemove(opts),
       stat: (opts) => bridge.fsStat(opts),
       fileUrl: (opts) => bridge.fsFileUrl(opts),
+      share: (opts) => bridge.fsShare(opts),
     },
     import: {
       async pick(opts) {

@@ -9,6 +9,7 @@
 import {
   MiniBookError,
   mimeFromPath,
+  sanitizeReadableBookFileName,
   type DeviceInfo,
   type KeyPolicy,
   type SleepTimerConfig,
@@ -281,6 +282,28 @@ export function createWebFallbackMiniBookBridge(): MiniBookNativeBridge {
       return { url };
     },
 
+    async fsShare(opts: { path: string; title?: string; mimeType?: string }): Promise<void> {
+      const p = normalizeRelPath(opts.path);
+      const data = files.get(p);
+      if (!data) {
+        throw new MiniBookError('not-found', `File not found: ${p}`);
+      }
+      if (typeof document !== 'undefined' && typeof URL !== 'undefined') {
+        const copy = new Uint8Array(data.byteLength);
+        copy.set(data);
+        const blob = new Blob([copy.buffer], { type: opts.mimeType ?? mimeFromPath(p) });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = p.split('/').pop() || opts.title || 'book';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    },
+
     async importPick(opts: { multiple: boolean }): Promise<{ files: NativePickedFile[] }> {
       if (typeof document === 'undefined') return { files: [] };
       return new Promise<{ files: NativePickedFile[] }>((resolvePick) => {
@@ -327,13 +350,35 @@ export function createWebFallbackMiniBookBridge(): MiniBookNativeBridge {
       if (!data) {
         throw new MiniBookError('not-found', `Staged file not found: ${srcPath}`);
       }
-      const destPath = `books/${opts.bookId}/book.${opts.ext}`;
+      if (srcPath.startsWith('userbooks/')) {
+        return { path: srcPath, size: data.byteLength };
+      }
+      const baseName = sanitizeReadableBookFileName(opts.preferredName || opts.bookId, opts.ext);
+      const suffix = `.${opts.ext.toLowerCase() === 'fb2.zip' ? 'fb2.zip' : opts.ext.toLowerCase()}`;
+      const stem = baseName.endsWith(suffix)
+        ? baseName.slice(0, baseName.length - suffix.length)
+        : baseName;
+      let candidate = `userbooks/${baseName}`;
+      let counter = 2;
+      while (files.has(candidate) && candidate !== srcPath) {
+        const existing = files.get(candidate)!;
+        if (
+          existing.byteLength === data.byteLength &&
+          existing.every((b, idx) => b === data[idx])
+        ) {
+          break;
+        }
+        candidate = `userbooks/${stem} (${counter})${suffix}`;
+        counter += 1;
+      }
       revokeBlobFor(srcPath);
-      revokeBlobFor(destPath);
-      files.set(destPath, data);
-      files.delete(srcPath);
-      mtimes.set(destPath, Date.now());
-      return { path: destPath, size: data.byteLength };
+      revokeBlobFor(candidate);
+      files.set(candidate, data);
+      if (srcPath !== candidate) {
+        files.delete(srcPath);
+      }
+      mtimes.set(candidate, Date.now());
+      return { path: candidate, size: data.byteLength };
     },
 
     async importConsumePending(): Promise<{ files: NativePickedFile[] }> {

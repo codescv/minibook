@@ -528,43 +528,10 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
         tr: expect.not.stringMatching(/^none$/),
       });
 
-    await page.locator('[data-setting-row="on-device-neural-voice"]').click();
-    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toBeVisible();
-
-    const sheetTransition = await page
-      .locator('.mb-sheet')
-      .evaluate((el) => window.getComputedStyle(el).transitionDuration);
-    expect(parseFloat(sheetTransition)).toBeGreaterThan(0);
-
-    await page.evaluate(() => {
-      window.__minibookTestHarness?.host.setModelStatus({
-        state: 'downloading',
-        bytesDone: 30_000_000,
-        bytesTotal: 100_000_000,
-        source: 'hf-mirror.com',
-      });
-    });
-    await expect(page.getByTestId('kokoro-status-text')).toContainText('via hf-mirror.com');
-
-    await page.getByRole('tab', { name: 'Hugging Face' }).click();
-    await expect(page.getByTestId('kokoro-status-text')).toContainText('via huggingface.co');
-
-    // Pull down sheet from top grabber zone (sheetBox.y + 10) -> tracks dy mid-gesture and closes on release >= 56px
-    const sheetBox = await page.locator('.mb-sheet').boundingBox();
-    expect(sheetBox).not.toBeNull();
-    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 10);
-    await page.mouse.down();
-    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 50, { steps: 4 });
-    const midPullTransform = await page
-      .locator('.mb-sheet')
-      .evaluate((el) => (el as HTMLElement).style.transform);
-    expect(midPullTransform).toContain('translate3d(');
-    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 90, { steps: 4 });
-    await page.mouse.up();
-    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Back' }).click();
 
-    // 2. Open multi-page book (`b_long40k`) and test 1:1 intra-chapter drag + cancelled drag spring-back
+    // 2. Open multi-page book (`b_long40k`), summon ReadAloudBar -> VoiceSheet -> On-Device tab:
+    //    verify sheet transition, live mirror switch, 0px vertical layout shift across download states, and grabber pull-to-dismiss!
     await page.goto('/?book=b_long40k&theme=paper');
     await page.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
 
@@ -578,6 +545,83 @@ test.describe('Multicol Pagination, Constant Vertical Geometry & 4-Layer Securit
         }),
       )
       .toBe(true);
+
+    // Tap center to summon Reader chrome -> start Read Aloud -> click Voice pill in ReadAloudBar (verify fits inside 393px with zero overflow)
+    await page.mouse.click(196, 420);
+    await page.getByRole('button', { name: 'Read aloud' }).click();
+    const ttsBarBox = await page.locator('.mb-tts-bar').boundingBox();
+    expect(ttsBarBox).not.toBeNull();
+    expect(ttsBarBox!.width).toBeLessThanOrEqual(365);
+    const barScrollOverflow = await page
+      .locator('.mb-tts-bar')
+      .evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(barScrollOverflow).toBeLessThanOrEqual(0);
+
+    await page.getByTestId('tts-bar-voice-btn').click();
+    await expect(page.getByRole('dialog', { name: 'Voice and speed' })).toBeVisible();
+
+    const sheetTransition = await page
+      .locator('.mb-sheet')
+      .evaluate((el) => window.getComputedStyle(el).transitionDuration);
+    expect(parseFloat(sheetTransition)).toBeGreaterThan(0);
+
+    await page.getByRole('tab', { name: 'On-Device' }).click();
+    const waitSheetIdle = () => page.waitForTimeout(320);
+    await waitSheetIdle();
+
+    // Measure Y coordinate of `kokoro-download-from-row` below the progress bar across ALL states (`absent -> downloading -> paused -> downloading -> verifying -> ready`) -> MUST shift by 0px!
+    const getBelowY = () =>
+      page
+        .getByTestId('kokoro-download-from-row')
+        .evaluate((el) => Math.round(el.getBoundingClientRect().top * 100) / 100);
+    const baseBelowY = await getBelowY();
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'downloading',
+        bytesDone: 30_000_000,
+        bytesTotal: 100_000_000,
+        source: 'hf-mirror.com',
+      });
+    });
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('via hf-mirror.com');
+    expect(await getBelowY()).toBe(baseBelowY);
+
+    await page.getByRole('tab', { name: 'Hugging Face' }).click();
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('via huggingface.co');
+
+    for (const st of [
+      { state: 'paused' as const, bytesDone: 45_000_000, bytesTotal: 100_000_000 },
+      { state: 'downloading' as const, bytesDone: 85_000_000, bytesTotal: 100_000_000, source: 'huggingface.co' },
+      { state: 'verifying' as const, bytesDone: 100_000_000, bytesTotal: 100_000_000 },
+      {
+        state: 'ready' as const,
+        bytesDone: 100_000_000,
+        bytesTotal: 100_000_000,
+        installedBytes: 100_000_000,
+        installedVoices: ['zf_001'],
+      },
+    ]) {
+      await page.evaluate((patch) => {
+        window.__minibookTestHarness?.host.setModelStatus(patch);
+      }, st);
+      expect(await getBelowY()).toBe(baseBelowY);
+    }
+
+    // Pull down sheet from top grabber zone (sheetBox.y + 10) -> tracks dy mid-gesture and closes on release >= 56px
+    const sheetBox = await page.locator('.mb-sheet').boundingBox();
+    expect(sheetBox).not.toBeNull();
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 50, { steps: 4 });
+    const midPullTransform = await page
+      .locator('.mb-sheet')
+      .evaluate((el) => (el as HTMLElement).style.transform);
+    expect(midPullTransform).toContain('translate3d(');
+    await page.mouse.move(sheetBox!.x + sheetBox!.width / 2, sheetBox!.y + 90, { steps: 4 });
+    await page.mouse.up();
+    await expect(page.getByRole('dialog', { name: 'Voice and speed' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Stop Read Aloud' }).click();
 
     // Drag left by 120px and hold BEFORE mouse.up -> verify scrollLeft == 120 (both Page 0 and Page 1 visible simultaneously!)
     await page.mouse.move(300, 420);

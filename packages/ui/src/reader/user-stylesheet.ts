@@ -2,11 +2,45 @@ import type { AppSettings } from '@minibook/core';
 import type { PaginationGeometry } from './Paginator';
 import { resolveActiveThemeColors } from '../theme/theme-manager';
 
-const SERIF_STACK =
-  '"Literata", "Georgia", "Bitstream Charter", "Charter", "Songti SC", "STSong", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Noto Serif CJK JP", serif';
+const SERIF_STACK_ZH_HANS =
+  '"Literata", "Georgia", "Bitstream Charter", "Charter", "Songti SC", "STSongti-SC-Regular", "STSong", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "PingFang SC", "PingFang TC", "Heiti SC", serif';
 
-const SANS_STACK =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Roboto", system-ui, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif';
+const SERIF_STACK_ZH_HANT =
+  '"Literata", "Georgia", "Bitstream Charter", "Charter", "Songti TC", "STSongti-TC-Regular", "STSong", "Noto Serif CJK TC", "Noto Serif TC", "Source Han Serif TC", "PingFang TC", "PingFang SC", "Heiti TC", serif';
+
+const SERIF_STACK_JA =
+  '"Literata", "Georgia", "Bitstream Charter", "Charter", "Hiragino Mincho ProN", "Hiragino Mincho", "YuMincho", "Yu Mincho", "Noto Serif CJK JP", "Noto Serif JP", "Source Han Serif JP", "Hiragino Sans", "PingFang SC", serif';
+
+const SANS_STACK_ZH_HANS =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "PingFang TC", "Heiti SC", "Inter", "Roboto", system-ui, "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif';
+
+const SANS_STACK_ZH_HANT =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "PingFang SC", "Heiti TC", "Inter", "Roboto", system-ui, "Noto Sans CJK TC", "Noto Sans TC", "Source Han Sans TC", sans-serif';
+
+const SANS_STACK_JA =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Inter", "Roboto", system-ui, "Noto Sans CJK JP", "Noto Sans JP", "Source Han Sans JP", "PingFang SC", sans-serif';
+
+export function resolveBookSerifStack(bookLang: string | null | undefined): string {
+  const tag = (bookLang ?? '').trim().toLowerCase();
+  if (/^(?:ja(?=$|[-_])|jpn\b)/.test(tag)) {
+    return SERIF_STACK_JA;
+  }
+  if (/^zh[-_](?:tw|hk|mo|hant)\b/.test(tag)) {
+    return SERIF_STACK_ZH_HANT;
+  }
+  return SERIF_STACK_ZH_HANS;
+}
+
+export function resolveBookSansStack(bookLang: string | null | undefined): string {
+  const tag = (bookLang ?? '').trim().toLowerCase();
+  if (/^(?:ja(?=$|[-_])|jpn\b)/.test(tag)) {
+    return SANS_STACK_JA;
+  }
+  if (/^zh[-_](?:tw|hk|mo|hant)\b/.test(tag)) {
+    return SANS_STACK_ZH_HANT;
+  }
+  return SANS_STACK_ZH_HANS;
+}
 
 export function computeBookLineHeight(
   preset: AppSettings['lineSpacing'],
@@ -35,12 +69,15 @@ export function buildFrameUserStylesheet(options: {
   const indent = isCjk ? '2em' : '1.5em';
   const maxMediaHeight = Math.max(80, geom.contentHeight - Math.round(2 * geom.fontSizePx));
 
+  const serifStack = resolveBookSerifStack(bookLang);
+  const sansStack = resolveBookSansStack(bookLang);
+
   const fontRule =
     settings.fontFamily === 'sans'
-      ? `font-family: ${SANS_STACK} !important;`
+      ? `font-family: ${sansStack} !important;`
       : settings.fontFamily === 'serif'
-        ? `font-family: ${SERIF_STACK} !important;`
-        : `font-family: ${SERIF_STACK};`;
+        ? `font-family: ${serifStack} !important;`
+        : `font-family: ${serifStack};`;
 
   const justifyRule = settings.justify
     ? `text-align: justify; hyphens: auto; -webkit-hyphens: auto; line-break: strict; text-justify: inter-character;`

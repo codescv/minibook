@@ -16,16 +16,20 @@
   --m-safe-bottom: env(safe-area-inset-bottom, 0px);
   --m-safe-left: env(safe-area-inset-left, 0px);
 
-  /* Typography Stacks (PRODUCT_DESIGN.md §5 & UI_SPEC.md §3.1) */
+  /* Typography Stacks (PRODUCT_DESIGN.md §5 & UI_SPEC.md §3.1)
+   * Place PingFang SC / Heiti SC BEFORE generic serif/sans-serif so iOS WebKit
+   * never falls through to Japanese Hiragino Mincho ProN / Hiragino Sans on
+   * Simplified Chinese text when Songti SC is not pre-installed. */
   --mb-font-serif: "Literata", "Georgia", "Bitstream Charter", "Charter",
-    "Songti SC", "STSong", "Noto Serif CJK SC", "Noto Serif SC",
-    "Source Han Serif SC", "Noto Serif CJK JP", serif;
-  --mb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
-    "Roboto", system-ui, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC",
-    "Source Han Sans SC", sans-serif;
+    "Songti SC", "STSongti-SC-Regular", "STSong", "Noto Serif CJK SC",
+    "Noto Serif SC", "Source Han Serif SC", "PingFang SC", "PingFang TC",
+    "Heiti SC", serif;
+  --mb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "PingFang SC", "PingFang TC", "Heiti SC", "Inter", "Roboto", system-ui,
+    "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
   --mb-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display",
-    "SF Pro Text", "Inter", "Roboto", system-ui, "PingFang SC",
-    "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+    "SF Pro Text", "PingFang SC", "PingFang TC", "Heiti SC", "Inter",
+    "Roboto", system-ui, "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
   --mb-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
   /* UI Type Scale (strictly 3 sizes: 28px · 16px · 12px + 11px bare-page caption) */
@@ -130,4 +134,18 @@
     --mb-book-font-size: 19px;
     --mb-reader-margin-x: 48px;
   }
+}
+
+:root:lang(ja) {
+  --mb-font-serif: "Literata", "Georgia", "Bitstream Charter", "Charter",
+    "Hiragino Mincho ProN", "Hiragino Mincho", "YuMincho", "Yu Mincho",
+    "Noto Serif CJK JP", "Noto Serif JP", "Source Han Serif JP",
+    "Hiragino Sans", "PingFang SC", serif;
+  --mb-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Inter", "Roboto",
+    system-ui, "Noto Sans CJK JP", "Noto Sans JP", "PingFang SC", sans-serif;
+  --mb-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Inter",
+    "Roboto", system-ui, "Noto Sans CJK JP", "Noto Sans JP", "PingFang SC",
+    sans-serif;
 }

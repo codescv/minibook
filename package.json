@@ -1,7 +1,7 @@
 {
   "name": "minibook-monorepo",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "MiniBook (Books) — minimalist cross-platform Ebook Reader (.epub, .azw3/KF8, .mobi, .fb2, .txt, .md) with Read Aloud (TTS) and Android E-Ink Mode. 100% TypeScript core, zero native Node addons.",
   "license": "MIT",
   "type": "module",

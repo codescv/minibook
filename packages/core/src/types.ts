@@ -1015,7 +1015,47 @@ export interface LibraryApi {
   remove(id: BookId): Promise<void>;
   setFinished(id: BookId, finished: boolean): Promise<void>;
   markOpened?(id: BookId, openedAt?: EpochMs): Promise<void>;
+  shareFile?(id: BookId): Promise<void>;
   coverUrl(id: BookId): string | null;
+}
+
+/**
+ * Produces a safe, human-readable filename (`<Title>.<ext>`) preserving Unicode
+ * CJK ideographs, Kana, Hangul, Latin letters/digits, spaces, and book punctuation
+ * (`《》「」（）()[]-_.'·—`), while stripping path separators, NUL/control bytes,
+ * leading/trailing dots, and Windows/POSIX forbidden characters.
+ */
+export function sanitizeReadableBookFileName(preferredName: string, ext: string): string {
+  const cleanExt =
+    ext.toLowerCase() === 'fb2.zip'
+      ? 'fb2.zip'
+      : ext.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'epub';
+
+  let stem = (preferredName ?? '').normalize('NFC').trim();
+  const suffixLower = `.${cleanExt}`;
+  if (stem.toLowerCase().endsWith(suffixLower)) {
+    stem = stem.slice(0, stem.length - suffixLower.length);
+  } else {
+    const knownExtMatch = stem.match(/\.(epub|azw3|azw|mobi|prc|fb2\.zip|fb2|txt|md|markdown)$/i);
+    if (knownExtMatch) {
+      stem = stem.slice(0, stem.length - knownExtMatch[0].length);
+    }
+  }
+
+  stem = stem
+    .replace(/[\u0000-\u001F\u007F/\\:*?"<>|]/g, ' ')
+    .replace(/\.\.+/g, '.')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+
+  const codePoints = Array.from(stem);
+  if (codePoints.length > 120) {
+    stem = codePoints.slice(0, 120).join('').replace(/[.\s]+$/g, '');
+  }
+  if (!stem) {
+    stem = 'book';
+  }
+  return `${stem}.${cleanExt}`;
 }
 
 export interface FilesApi {

@@ -3,6 +3,7 @@
  */
 import {
   MiniBookError,
+  sanitizeReadableBookFileName,
   type AppSettings,
   type BookmarkInput,
   type ModelDownloadSource,
@@ -170,7 +171,44 @@ export function createApiRoutes(ctx: NodeHostContext): Hono {
     }
   });
 
-  // --- Binary Range serving (`/api/books/:id/file` & `/api/books/:id/cover`) ---
+  // --- Binary Range serving (`/api/books/:id/file`, `/api/books/:id/download` & `/api/books/:id/cover`) ---
+  api.on(['GET', 'HEAD'], '/books/:id/download', async (c) => {
+    const id = c.req.param('id');
+    const rec = ctx.booksRepo.get(id);
+    if (!rec) {
+      return new Response('Book not found', { status: 404 });
+    }
+    const filePath = ctx.storage.resolveBookFilePath(id, rec.fileExt, 'book');
+    if (!filePath) {
+      return new Response('Book file not found', { status: 404 });
+    }
+    const readableName = sanitizeReadableBookFileName(
+      rec.title || rec.fileName,
+      rec.fileExt,
+    );
+    const asciiFallback = readableName
+      .replace(/[^\x20-\x7E]/g, '_')
+      .replace(/["\\]/g, '_');
+    const encodedName = encodeURIComponent(readableName);
+    const resp = await serveFileWithRange({
+      method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
+      filePath,
+      rangeHeader: c.req.header('range'),
+      ifNoneMatchHeader: c.req.header('if-none-match'),
+      etagSeed: `${id}-download`,
+      cacheControl: 'private, max-age=0, must-revalidate',
+    });
+    const headers = new Headers(resp.headers);
+    headers.set(
+      'Content-Disposition',
+      `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`,
+    );
+    return new Response(resp.body, {
+      status: resp.status,
+      headers,
+    });
+  });
+
   api.on(['GET', 'HEAD'], '/books/:id/file', (c) => {
     const id = c.req.param('id');
     const partParam = c.req.query('part');

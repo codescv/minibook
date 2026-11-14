@@ -715,6 +715,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   public fullRefreshCallCount = 0;
   public fullRefreshResult = true;
   public externalOpenedUrls: string[] = [];
+  public sharedBookIds: BookId[] = [];
 
   constructor(options?: MockPlatformHostOptions) {
     const platform = options?.platform ?? 'desktop';
@@ -723,7 +724,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: options?.appVersion ?? '0.2.2',
+      appVersion: options?.appVersion ?? '0.2.3',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,
@@ -1024,6 +1025,9 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       const existing = this.books.get(id);
       if (!existing) return;
       this.books.set(id, { ...existing, openedAt });
+    },
+    shareFile: async (id) => {
+      this.sharedBookIds.push(id);
     },
     coverUrl: (id) => {
       const b = this.books.get(id);

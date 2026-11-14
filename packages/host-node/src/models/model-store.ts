@@ -693,11 +693,22 @@ export class ModelStore {
 
         const nextFile = manifestFiles.find((f) => !processedPaths.has(f.path));
         if (!nextFile) {
-          // All requested files done!
+          // All requested files done! Emit `verifying` at most ONCE right before manifest commit.
           const installedBytes = manifestFiles.reduce((s, f) => s + f.size, 0);
           const installedVoices = targetVoices.filter((v) =>
             existsSync(join(this.kokoroRoot, `voices/${v}.bin`)),
           );
+          this.statusState = {
+            id: KOKORO_MODEL_ID,
+            state: 'verifying',
+            variant,
+            bytesDone: installedBytes,
+            bytesTotal: installedBytes,
+            installedBytes: 0,
+            installedVoices,
+            ...(lastSourceHost ? { source: lastSourceHost } : {}),
+          };
+          this.emitStatusImmediate();
           const meta: InstalledMetadata = {
             revision: KOKORO_MANIFEST.onnx.revision,
             variant,
@@ -759,14 +770,22 @@ export class ModelStore {
           },
           onVerifying: () => {
             if (signal.aborted || this.jobGeneration !== myGen) return;
+            // Keep state = 'downloading' continuously across per-file SHA-256 checks
+            // so multi-file downloads never oscillate `downloading <-> verifying`.
+            completedBytesByPath.set(nextFile.path, nextFile.size);
+            let sum = 0;
+            for (const mf of manifestFiles) {
+              sum += completedBytesByPath.get(mf.path) ?? 0;
+            }
             this.statusState = {
               ...this.statusState,
-              state: 'verifying',
+              state: 'downloading',
               variant,
+              bytesDone: Math.min(sum, bytesTotal),
               bytesTotal,
               ...(lastSourceHost ? { source: lastSourceHost } : {}),
             };
-            this.emitStatusImmediate();
+            this.emitStatusThrottled();
           },
         });
 
@@ -987,7 +1006,7 @@ export class ModelStore {
         for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
           const reqHeaders: Record<string, string> = {
             'Accept-Encoding': 'identity',
-            'User-Agent': 'MiniBook/0.2.2',
+            'User-Agent': 'MiniBook/0.2.3',
           };
           if (offset > 0) {
             reqHeaders['Range'] = `bytes=${offset}-`;

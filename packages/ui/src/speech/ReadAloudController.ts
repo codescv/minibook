@@ -233,7 +233,7 @@ export class ReadAloudController {
     });
 
     useRouteStore.getState().setChromeOpen(false);
-    useRouteStore.getState().setReadAloudBarOpen(!this.getIsEink());
+    useRouteStore.getState().setReadAloudBarOpen(true);
   }
 
   private pickStartUtterance(options: {
@@ -402,6 +402,7 @@ export class ReadAloudController {
   }
 
   stop(): void {
+    this.voiceSwitchGeneration += 1;
     this.clearManualTurnTimer();
     this.autoPageTurn.reset();
     this.scheduler?.dispose();
@@ -538,6 +539,7 @@ export class ReadAloudController {
         preferredVoices: {
           ...currentPrefs,
           [langKey]: voice,
+          default: voice,
         },
       })
       .catch(() => {});
@@ -598,7 +600,7 @@ export class ReadAloudController {
         this.scheduler?.setQueue(this.utterances.slice(nowIdx), nowActiveId);
         offset += 50;
       }
-    })();
+    })().catch(() => {});
   }
 
   setSleepTimer(config: SleepTimerConfig): void {
@@ -982,7 +984,7 @@ export class ReadAloudController {
       }
 
       case 'queue-low':
-        void this.topUpNextSection();
+        void this.topUpNextSection().catch(() => {});
         break;
 
       case 'speech-fallback': {

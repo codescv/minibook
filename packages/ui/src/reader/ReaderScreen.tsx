@@ -814,7 +814,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
 
   const handleStartReadAloud = useCallback(
     (fromSelectionLocator?: Locator) => {
-      if (!session) return;
+      const sess = session ?? sessionRef.current;
       const curActive = frameManagerRef.current?.getActive();
       const pageRange = curActive ? computePageRange(curActive, pageIndex) : null;
       void readAloud.start({
@@ -824,8 +824,8 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
           ? { pageEndOffset: pageRange.endOffset }
           : {}),
         preferContaining: fromSelectionLocator !== undefined,
-        sharedSession: session,
-        chapterTitle: currentChapterTitle || session.meta.title,
+        ...(sess ? { sharedSession: sess } : {}),
+        ...(sess ? { chapterTitle: currentChapterTitle || sess.meta.title } : {}),
       });
     },
     [session, readAloud, bookId, pageIndex, currentFirstLoc, currentChapterTitle],

@@ -108,6 +108,75 @@ function stripExecutableNodes(root: ParentNode): void {
   }
 }
 
+const JAPANESE_KANA_GLOBAL_RE =
+  /[\u3041-\u3096\u309D-\u309F\u30A1-\u30FA\u30FD-\u30FF\u31F0-\u31FF]/g;
+const CJK_HAN_GLOBAL_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
+const ASCII_LATIN_GLOBAL_RE = /[A-Za-z]/g;
+
+function detectDominantCjkLang(sampleText: string): 'ja' | 'zh-Hans' | null {
+  const snippet = sampleText.slice(0, 4096);
+  const kanaCount = snippet.match(JAPANESE_KANA_GLOBAL_RE)?.length ?? 0;
+  const hanCount = snippet.match(CJK_HAN_GLOBAL_RE)?.length ?? 0;
+  const latinCount = snippet.match(ASCII_LATIN_GLOBAL_RE)?.length ?? 0;
+
+  // Distinguish genuine Japanese prose from Chinese text containing an occasional loan `の`
+  if (kanaCount >= 3 && kanaCount * 8 >= hanCount && hanCount + kanaCount > latinCount) {
+    return 'ja';
+  }
+  if (hanCount >= 1 && kanaCount === 0 && hanCount >= latinCount) {
+    return 'zh-Hans';
+  }
+  if (hanCount >= 8 && hanCount > latinCount && kanaCount * 8 < hanCount) {
+    return 'zh-Hans';
+  }
+  return null;
+}
+
+export function normalizeAndDetectSectionLang(
+  rawLang: string | null | undefined,
+  sampleText: string,
+): string | null {
+  const trimmed = (rawLang ?? '').trim();
+  const lower = trimmed.toLowerCase();
+  if (lower && lower !== 'und' && lower !== 'mul' && lower !== 'zxx' && lower !== 'unknown') {
+    if (/^(?:ja(?=$|[-_])|jpn\b)/.test(lower)) {
+      return 'ja';
+    }
+    if (/^zh[-_](?:tw|hk|mo|hant)\b/.test(lower)) {
+      return 'zh-Hant';
+    }
+    if (/^(?:zh(?=$|[-_])|zho\b|chi\b)/.test(lower)) {
+      return 'zh-Hans';
+    }
+    if (/^(?:ko(?=$|[-_])|kor\b)/.test(lower)) {
+      return 'ko';
+    }
+    // Many Chinese/Japanese EPUBs exported from Calibre or Sigil carry a default `lang="en"`:
+    // when the actual section text is predominantly CJK, override so WebKit/CSS uses CJK fonts & 2em indent.
+    const cjkOverride = detectDominantCjkLang(sampleText);
+    if (cjkOverride && sampleText.slice(0, 4096).match(CJK_HAN_GLOBAL_RE)?.length) {
+      const hanLen = sampleText.slice(0, 4096).match(CJK_HAN_GLOBAL_RE)?.length ?? 0;
+      const kanaLen = sampleText.slice(0, 4096).match(JAPANESE_KANA_GLOBAL_RE)?.length ?? 0;
+      if (hanLen + kanaLen >= 6) {
+        return cjkOverride;
+      }
+    }
+    return trimmed;
+  }
+  const detected = detectDominantCjkLang(sampleText);
+  if (detected) {
+    return detected;
+  }
+  const snippet = sampleText.slice(0, 4096);
+  if ((snippet.match(JAPANESE_KANA_GLOBAL_RE)?.length ?? 0) > 0) {
+    return 'ja';
+  }
+  if ((snippet.match(CJK_HAN_GLOBAL_RE)?.length ?? 0) > 0) {
+    return 'zh-Hans';
+  }
+  return null;
+}
+
 function parseBookXhtml(xhtml: string, lang: string | null, dir: 'ltr' | 'rtl'): Document {
   const langAttr = lang ? ` xml:lang="${lang}" lang="${lang}"` : '';
   const wrapped = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"${langAttr} dir="${dir}"><head></head><body>${xhtml}</body></html>`;
@@ -646,9 +715,14 @@ export class SectionFrameManager {
       })(),
     ]);
 
+    const effectiveLang = normalizeAndDetectSectionLang(
+      options.sectionDoc.lang,
+      options.sectionDoc.text.text,
+    );
+
     const parsed = parseBookXhtml(
       options.sectionDoc.xhtml,
-      options.sectionDoc.lang,
+      effectiveLang,
       options.sectionDoc.dir,
     );
     stripExecutableNodes(parsed);
@@ -659,6 +733,9 @@ export class SectionFrameManager {
     resources.applyToRoot(parsed.documentElement);
 
     const adoptedRoot = frameDoc.adoptNode(parsed.documentElement);
+    if (effectiveLang) {
+      adoptedRoot.setAttribute('lang', effectiveLang);
+    }
     let head = adoptedRoot.querySelector('head');
     if (!head) {
       head = frameDoc.createElement('head');
@@ -681,7 +758,7 @@ export class SectionFrameManager {
       settings: options.settings,
       isEink: options.isEink,
       geom,
-      bookLang: options.sectionDoc.lang,
+      bookLang: effectiveLang,
       ...(options.sectionDoc.isCoverLike !== undefined
         ? { isCoverLike: options.sectionDoc.isCoverLike }
         : {}),
@@ -751,7 +828,7 @@ export class SectionFrameManager {
             settings: nextSettings,
             isEink: nextEink,
             geom: nextGeom,
-            bookLang: options.sectionDoc.lang,
+            bookLang: effectiveLang,
             ...(options.sectionDoc.isCoverLike !== undefined
               ? { isCoverLike: options.sectionDoc.isCoverLike }
               : {}),

@@ -177,6 +177,12 @@
   appearance: none !important;
 }
 
+:root[data-eink="1"] input::placeholder,
+:root[data-eink="true"] input::placeholder {
+  color: #000000 !important;
+  opacity: 1 !important;
+}
+
 :root[data-eink="1"] input::-webkit-outer-spin-button,
 :root[data-eink="1"] input::-webkit-inner-spin-button,
 :root[data-eink="1"] input::-webkit-search-cancel-button,

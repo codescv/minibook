@@ -504,49 +504,44 @@ public class ModelDownloadManagerTest {
     }
 
     @Test
-    public void neverDropsVerifyingToDownloadingTransitionWithinOneSecondWindow() throws Exception {
+    public void multiFileDownloadEmitsSingleVerifyingAtEndWithZeroOscillation() throws Exception {
+        byte[] metaBytes = makeBytes(256, 37);
         byte[] voiceBytes = makeBytes(4 * 1024, 41);
         byte[] modelBytes = makeBytes(8 * 1024, 43);
+        String metaSha = sha256(metaBytes);
         String voiceSha = sha256(voiceBytes);
         String modelSha = sha256(modelBytes);
 
         List<ModelDownloadManager.FileSpec> files = Arrays.asList(
+            new ModelDownloadManager.FileSpec("config.json", metaBytes.length, metaSha, "repo", "rev1"),
             new ModelDownloadManager.FileSpec("voices/zf_001.bin", voiceBytes.length, voiceSha, "repo", "rev1"),
             new ModelDownloadManager.FileSpec("onnx/model_quantized.onnx", modelBytes.length, modelSha, "repo", "rev1")
         );
 
         MockWebServer srv = newServer();
-        CountDownLatch file2Requested = new CountDownLatch(1);
-        CountDownLatch releaseFile2 = new CountDownLatch(1);
         srv.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
-                if (request.getPath().contains("zf_001.bin")) {
+                String path = request.getPath();
+                if (path != null && path.contains("config.json")) {
+                    return new MockResponse().setResponseCode(200).setBody(new Buffer().write(metaBytes));
+                }
+                if (path != null && path.contains("zf_001.bin")) {
                     return new MockResponse().setResponseCode(200).setBody(new Buffer().write(voiceBytes));
                 }
-                file2Requested.countDown();
-                try {
-                    releaseFile2.await(5, TimeUnit.SECONDS);
-                } catch (InterruptedException ignored) {}
                 return new MockResponse().setResponseCode(200).setBody(new Buffer().write(modelBytes));
             }
         });
 
         List<JSONObject> events = Collections.synchronizedList(new ArrayList<>());
-        CountDownLatch postVerifyDownloading = new CountDownLatch(1);
+        CountDownLatch readyLatch = new CountDownLatch(1);
         ModelDownloadManager mgr = new ModelDownloadManager(
             null,
             store,
             st -> {
                 events.add(st);
-                boolean sawVerifying = false;
-                for (JSONObject ev : events) {
-                    String s = ev.optString("state");
-                    if ("verifying".equals(s)) sawVerifying = true;
-                    else if (sawVerifying && "downloading".equals(s)) {
-                        postVerifyDownloading.countDown();
-                        break;
-                    }
+                if ("ready".equals(st.optString("state"))) {
+                    readyLatch.countDown();
                 }
             },
             null,
@@ -566,13 +561,21 @@ public class ModelDownloadManagerTest {
             Collections.singletonList("localhost")
         ));
 
-        assertTrue(file2Requested.await(3, TimeUnit.SECONDS));
-        assertTrue(
-            "verifying -> downloading transition for file 2 must be emitted immediately (<1s)",
-            postVerifyDownloading.await(500, TimeUnit.MILLISECONDS)
-        );
-        releaseFile2.countDown();
-        mgr.pause(KokoroModelStore.MODEL_ID);
+        assertTrue(readyLatch.await(5, TimeUnit.SECONDS));
+        int verifyCount = 0;
+        boolean sawVerify = false;
+        for (JSONObject ev : events) {
+            String s = ev.optString("state");
+            if ("verifying".equals(s)) {
+                verifyCount++;
+                sawVerify = true;
+                assertEquals(ev.optLong("bytesTotal"), ev.optLong("bytesDone"));
+            } else if (sawVerify) {
+                assertFalse("Must never oscillate verifying -> downloading", "downloading".equals(s));
+            }
+        }
+        assertEquals("Expected verifying emitted exactly once after all files finish", 1, verifyCount);
+        assertEquals("ready", mgr.getStatus(KokoroModelStore.MODEL_ID).optString("state"));
         mgr.shutdown();
     }
 }

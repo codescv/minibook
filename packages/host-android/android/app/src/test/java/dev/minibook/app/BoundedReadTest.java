@@ -134,4 +134,80 @@ public class BoundedReadTest {
         assertEquals(2048L, MiniBookPlugin.extractSafeLong(obj, "strVal", -1L));
         assertEquals(42, MiniBookPlugin.extractSafeInt(obj, "missing", 42));
     }
+
+    @Test
+    public void preservesCjkFileNamesDisambiguatesCollisionsAndJailsDocumentsProvider() throws Exception {
+        assertEquals("三体.epub", MiniBookPlugin.sanitizeFileName("三体.epub"));
+        assertEquals("《呐喊》（鲁迅）.azw3", MiniBookPlugin.buildReadableBookFileName("《呐喊》（鲁迅）", "azw3"));
+        assertEquals("吾輩は猫である.epub", MiniBookPlugin.buildReadableBookFileName("吾輩は猫である.epub", "epub"));
+        assertEquals("book.epub", MiniBookPlugin.buildReadableBookFileName("...///...", "epub"));
+
+        File booksDir = new File(tempRoot, "Books");
+        File staged1 = new File(tempRoot, "tmp/s1.epub");
+        AtomicFiles.writeAtomicFile(staged1, "book-content-one".getBytes(StandardCharsets.UTF_8));
+        File adopted1 = MiniBookPlugin.adoptIntoBooksDirectory(staged1, booksDir, "三体", "epub");
+        assertEquals("三体.epub", adopted1.getName());
+        assertTrue(adopted1.exists());
+        assertFalse(staged1.exists());
+
+        // Different content with same title disambiguates to `三体 (2).epub`
+        File staged2 = new File(tempRoot, "tmp/s2.epub");
+        AtomicFiles.writeAtomicFile(staged2, "book-content-two-different".getBytes(StandardCharsets.UTF_8));
+        File adopted2 = MiniBookPlugin.adoptIntoBooksDirectory(staged2, booksDir, "三体.epub", "epub");
+        assertEquals("三体 (2).epub", adopted2.getName());
+
+        // Identical SHA-256 content replaces `三体.epub` in-place (zero duplicate `(3)`!)
+        File stagedSame = new File(tempRoot, "tmp/s_same.epub");
+        AtomicFiles.writeAtomicFile(stagedSame, "book-content-one".getBytes(StandardCharsets.UTF_8));
+        File adoptedSame = MiniBookPlugin.adoptIntoBooksDirectory(stagedSame, booksDir, "三体", "epub");
+        assertEquals("三体.epub", adoptedSame.getName());
+
+        // MiniBookDocumentsProvider resolves valid document IDs and blocks path traversal
+        File resolvedRoot = MiniBookDocumentsProvider.resolveDocumentFile(booksDir, "root");
+        assertEquals(booksDir.getCanonicalFile(), resolvedRoot);
+        File resolvedBook = MiniBookDocumentsProvider.resolveDocumentFile(booksDir, "userbooks/三体.epub");
+        assertEquals(adopted1.getCanonicalFile(), resolvedBook);
+        assertEquals("userbooks/三体.epub", MiniBookDocumentsProvider.documentIdForFile(booksDir, adopted1));
+
+        for (String badDocId : new String[] {
+            "userbooks/../../outside.txt",
+            "../outside.txt",
+            "books/b_1/index.json",
+            "userbooks/sub/\0bad.epub"
+        }) {
+            try {
+                MiniBookDocumentsProvider.resolveDocumentFile(booksDir, badDocId);
+                fail("Expected FileNotFoundException for bad documentId: " + badDocId);
+            } catch (java.io.FileNotFoundException expected) {
+                // expected
+            }
+        }
+    }
+
+    @Test
+    public void adoptIntoBooksDirectory_keepsDropInInPlaceAndReadsAliasPaths() throws Exception {
+        File booksRoot = new File(tempRoot, "AndroidMediaBooks");
+        assertTrue(booksRoot.mkdirs());
+        File dropIn = new File(booksRoot, "santi.epub");
+        Files.write(dropIn.toPath(), "santi-bytes".getBytes(StandardCharsets.UTF_8));
+
+        // Drop-in already inside `booksRoot` with filename != title (`三体.epub`) stays `santi.epub` in place!
+        File adopted = MiniBookPlugin.adoptIntoBooksDirectory(dropIn, booksRoot, "三体.epub", "epub");
+        assertEquals(dropIn.getCanonicalFile(), adopted.getCanonicalFile());
+        assertTrue(new File(booksRoot, "santi.epub").exists());
+        assertFalse(new File(booksRoot, "三体.epub").exists());
+
+        // Verify `collectKnownAdoptedUserBookPaths` includes both `bookPath` and `aliasPaths`
+        File dataRoot = new File(tempRoot, "MiniBookData");
+        File bookMetaDir = new File(dataRoot, "books/b_santi");
+        assertTrue(bookMetaDir.mkdirs());
+        Files.write(
+            new File(bookMetaDir, "index.json").toPath(),
+            "{\"id\":\"b_santi\",\"bookPath\":\"userbooks/santi.epub\",\"aliasPaths\":[\"userbooks/santi-copy.epub\"]}"
+                .getBytes(StandardCharsets.UTF_8)
+        );
+        java.util.Set<String> known = MiniBookPlugin.collectKnownAdoptedUserBookPaths(dataRoot);
+        assertTrue(known.contains("userbooks/santi.epub"));
+        assertTrue(known.contains("userbooks/santi-copy.epub"));
+    }
 }

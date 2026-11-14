@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_APP_SETTINGS } from '@minibook/core';
 import {
   computeKeyPolicyVolumePaging,
@@ -7,11 +7,20 @@ import {
   createMockSpeechPlayer,
   formatKokoroVoiceLabel,
   mountMiniBookApp,
+  normalizeAndDetectSectionLang,
   registerPageableHandler,
+  resolveBookSansStack,
+  resolveBookSerifStack,
+  syncDocumentLang,
+  useReadAloudStore,
   useRouteStore,
 } from '../index';
 
 describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
   it('mounts Library cover tiles, hides search when <= 1 screen, and shows search on large shelves', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -26,12 +35,18 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     expect(screen.getByText('62%')).toBeInTheDocument();
     expect(screen.getByText('Finished ✓')).toBeInTheDocument();
 
-    // Right-click opens Book info / Mark as finished / Remove… sheet
+    // Right-click opens Book info / Share or Download file / Mark as finished / Remove… sheet
     const tile = screen.getByRole('button', { name: /A Tale of Two Cities/i });
     fireEvent.contextMenu(tile);
     expect(await screen.findByRole('dialog', { name: /Book info/i })).toBeInTheDocument();
+    expect(screen.getByTestId('book-info-share-btn')).toHaveTextContent(/Download file/i);
     expect(screen.getByText(/Mark as finished/i)).toBeInTheDocument();
     expect(screen.getByText(/Remove…/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('book-info-share-btn'));
+    await waitFor(() => {
+      expect(host.sharedBookIds).toEqual(['b_dickens']);
+    });
 
     mounted.unmount();
     container.remove();
@@ -52,8 +67,8 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     container2.remove();
   });
 
-  it('keeps Settings strictly <= 13 honest rows and gates rows by host capabilities and E-Ink mode', async () => {
-    // 1. Desktop Normal Mode: 10 rows (no volume keys, no E-Ink refresh/boldness)
+  it('keeps Settings focused on READING and ABOUT only (zero TTS rows in Settings) and gates rows by host capabilities and E-Ink mode', async () => {
+    // 1. Desktop Normal Mode: 4 rows (READING: eink-mode, keep-screen-on; ABOUT: storage, version-licenses)
     const c1 = document.createElement('div');
     document.body.appendChild(c1);
     const desktopHost = createMockPlatformHost({
@@ -73,20 +88,14 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     expect(desktopRows).toEqual([
       'eink-mode',
       'keep-screen-on',
-      'voice',
-      'on-device-neural-voice',
-      'edge-voices',
-      'local-gpu-server',
-      'custom-server',
-      'fallback-system',
       'storage',
       'version-licenses',
     ]);
-    expect(desktopRows.length).toBeLessThanOrEqual(13);
+    expect(c1.textContent).not.toContain('READ ALOUD');
     m1.unmount();
     c1.remove();
 
-    // 2. Android E-Ink Mode: 12 rows (volume keys + full refresh + text boldness shown; keep-screen-on hidden)
+    // 2. Android E-Ink Mode: 6 rows (volume keys + full refresh + text boldness shown; keep-screen-on hidden; zero TTS rows)
     const c2 = document.createElement('div');
     document.body.appendChild(c2);
     const androidEinkHost = createMockPlatformHost({
@@ -109,44 +118,20 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
       'volume-keys',
       'full-refresh',
       'text-boldness',
-      'voice',
-      'on-device-neural-voice',
-      'edge-voices',
-      'local-gpu-server',
-      'custom-server',
-      'fallback-system',
       'storage',
       'version-licenses',
     ]);
-    expect(einkRows.length).toBeLessThanOrEqual(13);
 
-    // Distinct union of all settings rows across both modes is EXACTLY 13!
+    // Distinct union of all settings rows across both modes is 7 (READING 5 + ABOUT 2)
     const allDistinctRows = new Set([...desktopRows, ...einkRows]);
-    expect(allDistinctRows.size).toBe(13);
+    expect(allDistinctRows.size).toBe(7);
 
     // E-Ink toggles use 2px-bordered On/Off group (`role="group"`), zero switch sliders
     expect(c2.querySelectorAll('[role="switch"]')).toHaveLength(0);
-    expect(c2.querySelectorAll('.mb-eink-toggle-group').length).toBeGreaterThanOrEqual(3);
+    expect(c2.querySelectorAll('.mb-eink-toggle-group').length).toBeGreaterThanOrEqual(1);
 
     m2.unmount();
     c2.remove();
-
-    // 3. Capability gating: when host.speech.models is absent (onDeviceNeuralSpeech: false), on-device-neural-voice is hidden!
-    const c3 = document.createElement('div');
-    document.body.appendChild(c3);
-    const noModelsHost = createMockPlatformHost({
-      platform: 'desktop',
-      capabilities: { onDeviceNeuralSpeech: false },
-      initialSettings: { einkMode: 'off' },
-    });
-    const m3 = mountMiniBookApp(c3, noModelsHost, createMockSpeechPlayer());
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('settings-screen')).toBeInTheDocument();
-    });
-    expect(c3.querySelector('[data-setting-row="on-device-neural-voice"]')).toBeNull();
-    m3.unmount();
-    c3.remove();
   });
 
   it('unwinds LIFO back stack via window.__minibookHandleBack accurately', async () => {
@@ -236,8 +221,8 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
 
       expect(
         computeKeyPolicyVolumePaging(einkSettings, androidHost, {
-          screen: 'settings',
-          activeSheet: 'settings-voice',
+          screen: 'reader',
+          activeSheet: 'voice',
           imagePreviewUrl: null,
           goToPercentOpen: false,
           textInputFocused: false,
@@ -272,7 +257,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     expect(formatKokoroVoiceLabel('bf_vale', 'en')).toBe('Kokoro · Vale (UK)');
   });
 
-  it('renders On-device neural voice sheet states, 2-tap Delete confirmation, and E-Ink stepped progress throttling (§7.2 & §8.2)', async () => {
+  it('renders guided On-Device Kokoro tab inside Reader VoiceSheet, 2-tap Delete confirmation, and E-Ink stepped progress throttling (§7.2 & §8.2)', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const host = createMockPlatformHost({
@@ -282,13 +267,24 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     });
     const mounted = mountMiniBookApp(container, host, createMockSpeechPlayer());
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('settings-screen')).toBeInTheDocument();
+    // Open Chinese book ('b_luxun') -> start Read Aloud -> tap Voice button in ReadAloudBar -> switch to On-Device tab
+    act(() => {
+      useRouteStore.getState().openBook('b_luxun');
     });
+    await waitFor(() => {
+      expect(container.querySelector('iframe.mb-reader-frame')).not.toBeNull();
+    });
+    act(() => {
+      useRouteStore.getState().setChromeOpen(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    const barVoiceBtn = await screen.findByTestId('tts-bar-voice-btn');
+    fireEvent.click(barVoiceBtn);
 
-    // Open On-device neural voice sheet (starts in 'absent')
-    fireEvent.click(container.querySelector('[data-setting-row="on-device-neural-voice"]')!);
+    expect(await screen.findByTestId('tts-guide-system')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
+
+    expect(await screen.findByTestId('tts-guide-on-device')).toBeInTheDocument();
     expect(await screen.findByTestId('kokoro-download-btn')).toBeInTheDocument();
     expect(screen.getByTestId('kokoro-status-text').textContent).toMatch(/124 MB · 5 voices/i);
 
@@ -335,6 +331,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
         host.setModelStatus({ state: 'verifying' });
       });
       expect(screen.getByTestId('kokoro-status-text').textContent).toBe('Checking…');
+      expect(screen.getByTestId('kokoro-progress-track')).toBeInTheDocument();
 
       act(() => {
         host.setModelStatus({
@@ -382,7 +379,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     container.remove();
   });
 
-  it('supports VoiceSheet 1-tap Kokoro Get download and Local GPU server preset/test/save flow (§7.3 & §7.4)', async () => {
+  it('[v0.2.3] supports guided 3-tab VoiceSheet (System / On-Device / Server: LAN GPU, OpenAI API, Edge Online) with descriptive placeholders and immediate Save & Use activation', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const host = createMockPlatformHost({
@@ -392,66 +389,165 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     const speech = createMockSpeechPlayer();
     const mounted = mountMiniBookApp(container, host, speech);
 
-    // 1. Configure Local GPU Server in Settings
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('settings-screen')).toBeInTheDocument();
-    });
-    fireEvent.click(container.querySelector('[data-setting-row="local-gpu-server"]')!);
-
-    expect(await screen.findByTestId('qwen-mac-script-hint')).toHaveTextContent(
-      /scripts\/mac-gpu-tts-server\.sh/i,
-    );
-    // Cycle preset stepper -> switches to 1.7B preset
-    fireEvent.click(screen.getByRole('button', { name: 'Next preset' }));
-    expect(screen.getByDisplayValue(/Qwen3-TTS-12Hz-1\.7B/i)).toBeInTheDocument();
-
-    // Test connection button
-    fireEvent.click(screen.getByTestId('qwen-test-btn'));
-    expect(await screen.findByTestId('qwen-test-status')).toHaveTextContent(/OK ·/i);
-
-    // Save Local GPU Server
-    const urlInput = screen.getByLabelText('Server URL');
-    fireEvent.change(urlInput, { target: { value: 'http://192.168.1.20:8000' } });
-    fireEvent.click(screen.getByTestId('qwen-save-btn'));
-
-    await waitFor(() => {
-      expect(
-        container.querySelector('[data-setting-row="local-gpu-server"]')?.textContent,
-      ).toContain('Vivian');
-    });
-
-    // 2. Open Chinese book ('b_luxun') -> start Read Aloud -> open VoiceSheet
+    // Open Chinese book ('b_luxun') -> start Read Aloud -> open VoiceSheet via ReadAloudBar `Voice` button
     act(() => {
       useRouteStore.getState().openBook('b_luxun');
     });
     await waitFor(() => {
-      expect(container.querySelector('.mb-reader')).not.toBeNull();
+      expect(container.querySelector('iframe.mb-reader-frame')).not.toBeNull();
     });
     act(() => {
       useRouteStore.getState().setChromeOpen(true);
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    fireEvent.click(await screen.findByTestId('tts-bar-voice-btn'));
+
+    // 1. On-Device tab: guide card + Download -> Kokoro voices appear and `Use` activates zf_001!
+    fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
+    expect(screen.getByTestId('tts-guide-on-device')).toHaveTextContent(/Kokoro-82M/i);
+    expect(screen.getByLabelText('Custom mirror').getAttribute('placeholder')).toMatch(
+      /https:\/\/hf-mirror\.com/i,
+    );
+    fireEvent.click(screen.getByTestId('kokoro-download-btn'));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Voice and speed/i })).toBeInTheDocument();
+      expect(screen.getByText(/Kokoro · Female 01/i)).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole('button', { name: /Voice and speed/i }));
+    const useButtons = screen.getAllByRole('button', { name: 'Use' });
+    fireEvent.click(useButtons[0]!);
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_001' });
 
-    // Initially Kokoro is 'absent' -> shows 1-tap download row with 'Get' AND Local GPU 'Vivian'
-    const dlRow = await screen.findByTestId('voice-sheet-kokoro-download');
-    expect(dlRow.textContent).toMatch(/On-device neural voice/i);
-    expect(screen.getByRole('option', { name: /Vivian/i })).toBeInTheDocument();
+    // [P2-2] Fetching an extra voice (`state: 'downloading'` while `installedVoices` is non-empty) keeps voice rows mounted with zero jump!
+    act(() => {
+      host.setModelStatus({
+        state: 'downloading',
+        bytesDone: 50_000,
+        bytesTotal: 100_000,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001'],
+        source: 'hf-mirror.com',
+      });
+    });
+    expect(screen.getByText(/Kokoro · Female 01/i)).toBeInTheDocument();
+    act(() => {
+      host.setModelStatus({
+        state: 'ready',
+        bytesDone: 100_000,
+        bytesTotal: 100_000,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001', 'zm_010'],
+      });
+    });
 
-    // Tap 'Get' inside VoiceSheet -> downloads Kokoro and replaces download row with installed zh Kokoro voices!
-    const getBtn = dlRow.querySelector('button')!;
-    fireEvent.click(getBtn);
+    // 2. Server tab -> LAN GPU (Qwen/MLX): descriptive placeholders on every field + Test + Save & Use activates qwen immediately!
+    fireEvent.click(screen.getByRole('tab', { name: 'Server' }));
+    expect(screen.getByTestId('tts-guide-server')).toBeInTheDocument();
+    expect(screen.getByTestId('qwen-mac-script-hint')).toHaveTextContent(
+      /scripts\/mac-gpu-tts-server\.sh/i,
+    );
+    expect(screen.getByTestId('qwen-url-input').getAttribute('placeholder')).toMatch(
+      /http:\/\/192\.168\.1\.10:8000/i,
+    );
+    expect(screen.getByTestId('qwen-model-input').getAttribute('placeholder')).toMatch(
+      /Qwen3-TTS/i,
+    );
+    expect(screen.getByTestId('qwen-voice-input').getAttribute('placeholder')).toMatch(/Vivian/i);
+    expect(screen.getByTestId('qwen-instruct-input').getAttribute('placeholder')).toMatch(
+      /Optional:/i,
+    );
+
+    // Expand advanced voice clone fields -> verify descriptive placeholders on Ref Audio & Ref Text too!
+    fireEvent.click(screen.getByTestId('qwen-clone-toggle'));
+    expect(screen.getByTestId('qwen-ref-audio-input').getAttribute('placeholder')).toMatch(
+      /cloning/i,
+    );
+    expect(screen.getByTestId('qwen-ref-text-input').getAttribute('placeholder')).toMatch(
+      /transcript/i,
+    );
+
+    // Cycle preset stepper -> switches to 1.7B preset
+    fireEvent.click(screen.getByRole('button', { name: 'Next preset' }));
+    expect(screen.getByDisplayValue(/Qwen3-TTS-12Hz-1\.7B/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('qwen-test-btn'));
+    expect(await screen.findByTestId('qwen-test-status')).toHaveTextContent(/OK ·/i);
+
+    fireEvent.change(screen.getByTestId('qwen-url-input'), {
+      target: { value: 'http://192.168.1.20:8000' },
+    });
+    fireEvent.click(screen.getByTestId('qwen-save-btn'));
     await waitFor(() => {
-      expect(screen.queryByTestId('voice-sheet-kokoro-download')).toBeNull();
-      expect(screen.getByRole('option', { name: /Kokoro · Female 01/i })).toBeInTheDocument();
+      expect(useReadAloudStore.getState().voice?.kind).toBe('qwen');
+      expect(useReadAloudStore.getState().voice?.voiceId).toBe('Vivian');
+    });
+
+    // 3. Server tab -> OpenAI API sub-tab: descriptive placeholders + Save & Use activates openai immediately!
+    fireEvent.click(screen.getByRole('tab', { name: 'OpenAI API' }));
+    expect(screen.getByTestId('openai-url-input').getAttribute('placeholder')).toMatch(
+      /https:\/\/api\.openai\.com/i,
+    );
+    expect(screen.getByTestId('openai-model-input').getAttribute('placeholder')).toMatch(/tts-1/i);
+    expect(screen.getByTestId('openai-voice-input').getAttribute('placeholder')).toMatch(/alloy/i);
+    expect(screen.getByTestId('openai-key-input').getAttribute('placeholder')).toMatch(/sk-/i);
+
+    fireEvent.change(screen.getByTestId('openai-url-input'), {
+      target: { value: 'http://127.0.0.1:9090' },
+    });
+    fireEvent.change(screen.getByTestId('openai-voice-input'), {
+      target: { value: 'nova' },
+    });
+    fireEvent.click(screen.getByTestId('openai-save-btn'));
+    await waitFor(() => {
+      expect(useReadAloudStore.getState().voice).toEqual({
+        kind: 'openai',
+        voiceId: 'nova',
+        model: 'tts-1',
+      });
     });
 
     mounted.unmount();
     container.remove();
+  });
+
+  it('[v0.2.3] resolves language-aware CJK font stacks (PingFang SC before serif, zero Japanese Hiragino leak on zh) and auto-detects section lang', () => {
+    const zhSerif = resolveBookSerifStack('zh-CN');
+    expect(zhSerif.indexOf('"PingFang SC"')).toBeGreaterThan(0);
+    expect(zhSerif.indexOf('"PingFang SC"')).toBeLessThan(zhSerif.lastIndexOf('serif'));
+    expect(zhSerif).not.toContain('Hiragino Mincho');
+    expect(zhSerif).not.toContain('Noto Serif CJK JP');
+
+    const jaSerif = resolveBookSerifStack('ja-JP');
+    expect(jaSerif.indexOf('"Hiragino Mincho ProN"')).toBeGreaterThan(0);
+    expect(jaSerif.indexOf('"Hiragino Mincho ProN"')).toBeLessThan(
+      jaSerif.indexOf('"PingFang SC"'),
+    );
+
+    const hantSerif = resolveBookSerifStack('zh-TW');
+    expect(hantSerif.indexOf('"Songti TC"')).toBeGreaterThan(0);
+    expect(hantSerif.indexOf('"PingFang TC"')).toBeLessThan(hantSerif.indexOf('"PingFang SC"'));
+
+    const zhSans = resolveBookSansStack('zh-Hans');
+    expect(zhSans.indexOf('"PingFang SC"')).toBeLessThan(zhSans.indexOf('system-ui'));
+
+    expect(normalizeAndDetectSectionLang('zh-CN', '')).toBe('zh-Hans');
+    expect(normalizeAndDetectSectionLang('zh-HK', '')).toBe('zh-Hant');
+    expect(normalizeAndDetectSectionLang('ja-JP', '')).toBe('ja');
+    expect(
+      normalizeAndDetectSectionLang(null, '我们在这里说话，没有觉得奇怪，还会继续前进。'),
+    ).toBe('zh-Hans');
+    // Mis-tagged Calibre/Sigil `lang="en"` Chinese EPUB & Chinese text with occasional `の` override to `zh-Hans`
+    expect(
+      normalizeAndDetectSectionLang('en', '第一章 科学边界\n汪淼觉得自己最近遇到的事情有些奇怪。'),
+    ).toBe('zh-Hans');
+    expect(
+      normalizeAndDetectSectionLang('en', '我们在这里说话の没有觉得奇怪，还会继续前进。'),
+    ).toBe('zh-Hans');
+    expect(normalizeAndDetectSectionLang('en', 'It was the best of times, it was the worst of times.')).toBe('en');
+    expect(normalizeAndDetectSectionLang('und', '吾輩は猫である。名前はまだ無い。')).toBe('ja');
+    expect(normalizeAndDetectSectionLang(null, 'It was the best of times.')).toBeNull();
+
+    expect(syncDocumentLang('zh-CN')).toBe('zh-Hans');
+    expect(document.documentElement.lang).toBe('zh-Hans');
+    expect(syncDocumentLang('en')).toBe('en');
   });
 
   it('[v0.2.1] live-switches active Kokoro download from hf-mirror.com to huggingface.co when clicking Hugging Face and supports Sheet grabber pull-down-to-dismiss', async () => {
@@ -483,10 +579,21 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     const libLayer = container.querySelector('.mb-screen-layer.mb-screen-library');
     expect(libLayer).not.toBeNull();
     expect(libLayer?.getAttribute('aria-hidden')).toBe('true');
-    expect(libLayer?.hasAttribute('inert')).toBe(true);
+    expect(libLayer?.hasAttribute('inert')).toBe('' === '' ? true : false);
 
-    // Open On-device neural voice sheet -> initially shows 'via hf-mirror.com'
-    fireEvent.click(container.querySelector('[data-setting-row="on-device-neural-voice"]')!);
+    // Return to Reader -> open VoiceSheet -> On-Device tab -> initially shows 'via hf-mirror.com'
+    act(() => {
+      useRouteStore.getState().openBook('b_dickens');
+    });
+    await waitFor(() => {
+      expect(container.querySelector('iframe.mb-reader-frame')).not.toBeNull();
+    });
+    act(() => {
+      useRouteStore.getState().setChromeOpen(true);
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    fireEvent.click(await screen.findByTestId('tts-bar-voice-btn'));
+    fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
     expect(await screen.findByTestId('kokoro-status-text')).toHaveTextContent(/via hf-mirror\.com/i);
 
     // Click 'Hugging Face' in 'Download from' Segmented control -> clears custom mirror URL and live-switches active download to huggingface.co!
@@ -498,8 +605,8 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     await waitFor(() => {
       expect(screen.getByTestId('kokoro-status-text')).toHaveTextContent(/via huggingface\.co/i);
     });
-    expect(( await host.settings.get() ).modelDownloadSource).toBe('huggingface');
-    expect(( await host.settings.get() ).modelMirrorBaseUrl).toBeNull();
+    expect((await host.settings.get()).modelDownloadSource).toBe('huggingface');
+    expect((await host.settings.get()).modelMirrorBaseUrl).toBeNull();
 
     // Test Sheet grabber pull-down-to-dismiss: < 56px springs back, >= 56px closes sheet
     const grabber = container.querySelector('.mb-sheet-grabber')!;
@@ -507,12 +614,12 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     fireEvent.touchStart(grabber, { touches: [{ clientY: 100 }] });
     fireEvent.touchMove(grabber, { touches: [{ clientY: 130 }] });
     fireEvent.touchEnd(grabber);
-    expect(screen.getByRole('dialog', { name: /On-device neural voice/i })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: /Voice and speed/i })).toBeInTheDocument();
 
     fireEvent.touchStart(grabber, { touches: [{ clientY: 100 }] });
     fireEvent.touchMove(grabber, { touches: [{ clientY: 180 }] });
     fireEvent.touchEnd(grabber);
-    expect(screen.queryByRole('dialog', { name: /On-device neural voice/i })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: /Voice and speed/i })).toBeNull();
 
     mounted.unmount();
     container.remove();

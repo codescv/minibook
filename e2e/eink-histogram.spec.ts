@@ -138,7 +138,7 @@ async function assertStrictTwoColorHistogram(
   await page.evaluate(() => {
     const maskCss = `
       img, svg { visibility: hidden !important; }
-      *, *::before, *::after {
+      *, *::before, *::after, *::placeholder {
         color: transparent !important;
         -webkit-text-fill-color: transparent !important;
         -webkit-text-stroke: 0px transparent !important;
@@ -225,67 +225,14 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
     await assertStrictTwoColorHistogram(page, 'E-Ink Library Search Focused');
     await libSearch.fill('');
 
-    // Navigate to Settings -> verify E-Ink PagedList + On/Off 2px-bordered toggles + [P1-6] settings-voice route sheet
+    // Navigate to Settings -> verify E-Ink PagedList + On/Off 2px-bordered toggles (READING + ABOUT only, zero TTS rows in Settings)
     await page.getByRole('button', { name: 'Settings' }).click();
     await expect(page.getByTestId('settings-screen')).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Settings');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Settings');
-
-    await page.locator('[data-setting-row="voice"]').click();
-    await expect(page.getByRole('dialog', { name: 'Voice' })).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Settings Voice Sheet');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Settings Voice Sheet');
-    // Escape closes settings-voice sheet back to Settings (never jumping Settings -> Library)
-    await page.keyboard.press('Escape');
-    await expect(page.getByTestId('settings-screen')).toBeVisible();
-
-    // Verify On-device neural voice (Kokoro) sheet in absent, downloading (stepped [ 45% ] & hidden progress bar), and ready states
-    await page.locator('[data-setting-row="on-device-neural-voice"]').click();
-    await expect(page.getByRole('dialog', { name: 'On-device neural voice' })).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Absent)');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Absent)');
-
-    await page.evaluate(() => {
-      window.__minibookTestHarness?.host.setModelStatus({
-        state: 'downloading',
-        bytesDone: 45_000_000,
-        bytesTotal: 100_000_000,
-        source: 'hf-mirror.com',
-      });
-    });
-    await expect(page.getByTestId('kokoro-status-text')).toContainText('[ 45% ]');
-    const progressDisplay = await page
-      .getByTestId('kokoro-progress-track')
-      .evaluate((el) => window.getComputedStyle(el).display);
-    expect(progressDisplay).toBe('none');
-    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Downloading)');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Downloading)');
-
-    await page.evaluate(() => {
-      window.__minibookTestHarness?.host.setModelStatus({
-        state: 'ready',
-        bytesDone: 129_967_797,
-        bytesTotal: 129_967_797,
-        installedBytes: 129_967_797,
-        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
-      });
-    });
-    await expect(page.getByTestId('kokoro-more-voices-btn')).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Kokoro Sheet (Ready)');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro Sheet (Ready)');
-
-    await page.getByTestId('kokoro-more-voices-btn').click();
-    await expect(page.getByRole('dialog', { name: /More voices/i })).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Kokoro 103 Voices PagedList Sheet');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Kokoro 103 Voices PagedList Sheet');
-    await page.keyboard.press('Escape');
-
-    // Verify Local GPU Server (Qwen3-TTS / mlx-audio) sheet in E-Ink mode
-    await page.locator('[data-setting-row="local-gpu-server"]').click();
-    await expect(page.getByRole('dialog', { name: 'Local GPU server' })).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Local GPU Server Sheet');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Local GPU Server Sheet');
-    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-setting-row="voice"]')).toHaveCount(0);
+    await expect(page.locator('[data-setting-row="on-device-neural-voice"]')).toHaveCount(0);
+    await expect(page.locator('[data-setting-row="local-gpu-server"]')).toHaveCount(0);
+    await assertEinkDomPurity(page, 'E-Ink Settings (READING + ABOUT)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Settings (READING + ABOUT)');
 
     // Return to Library and open Lu Xun CJK book (with ruby & footnote skip nodes)
     await page.getByRole('button', { name: 'Back to Library' }).click();
@@ -371,14 +318,88 @@ test.describe('Android E-Ink Mode (`墨水屏模式`) Full-App Crawl & 2-Colour 
       )
       .toBeGreaterThan(0);
 
+    await expect(page.locator('.mb-tts-bar')).toBeVisible();
+    await expect(page.getByTestId('tts-bar-voice-btn')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink Read Aloud Bar');
+    await assertStrictTwoColorHistogram(page, 'E-Ink Read Aloud Bar');
+
+    // [P0-2] Center tap cycles ReadAloudBar -> Chrome -> Bare page (underline only) -> ReadAloudBar
+    await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await expect(page.locator('.mb-chrome-top')).toBeVisible();
+    await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
+    await expect(page.locator('.mb-chrome-top')).toHaveCount(0);
+    await expect(page.locator('.mb-tts-bar')).toHaveCount(0);
     await assertEinkDomPurity(page, 'E-Ink Read Aloud Underline');
     await assertStrictTwoColorHistogram(page, 'E-Ink Read Aloud Underline');
 
-    // [P0-2] Center tap while Read Aloud bar is hidden summons ReadAloudBar
     await page.mouse.click(box!.x + box!.width * 0.5, box!.y + box!.height * 0.5);
     await expect(page.locator('.mb-tts-bar')).toBeVisible();
-    await assertEinkDomPurity(page, 'E-Ink Read Aloud Bar');
-    await assertStrictTwoColorHistogram(page, 'E-Ink Read Aloud Bar');
+    await expect(page.getByTestId('tts-bar-voice-btn')).toBeVisible();
+
+    // [v0.2.3] Open Guided 3-Tab VoiceSheet directly from ReadAloudBar -> verify strict 2-colour histogram on all 3 tabs!
+    await page.getByTestId('tts-bar-voice-btn').click();
+    await expect(page.getByRole('dialog', { name: 'Voice and speed' })).toBeVisible();
+    await expect(page.getByTestId('tts-guide-system')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet System Tab');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet System Tab');
+
+    // Tab 2: On-Device (Kokoro) -> absent, downloading (stepped [ 45% ] & hidden progress bar), ready, and expanded 103 voices PagedList
+    await page.getByRole('tab', { name: 'On-Device' }).click();
+    await expect(page.getByTestId('tts-guide-on-device')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet On-Device (Absent)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet On-Device (Absent)');
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'downloading',
+        bytesDone: 45_000_000,
+        bytesTotal: 100_000_000,
+        source: 'hf-mirror.com',
+      });
+    });
+    await expect(page.getByTestId('kokoro-status-text')).toContainText('[ 45% ]');
+    const progressDisplay = await page
+      .getByTestId('kokoro-progress-track')
+      .evaluate((el) => window.getComputedStyle(el).display);
+    expect(progressDisplay).toBe('none');
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet On-Device (Downloading)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet On-Device (Downloading)');
+
+    await page.evaluate(() => {
+      window.__minibookTestHarness?.host.setModelStatus({
+        state: 'ready',
+        bytesDone: 129_967_797,
+        bytesTotal: 129_967_797,
+        installedBytes: 129_967_797,
+        installedVoices: ['zf_001', 'zm_010', 'af_maple', 'af_sol', 'bf_vale'],
+      });
+    });
+    const moreVoicesBtn = page.getByTestId('kokoro-more-voices-btn');
+    if ((await moreVoicesBtn.count()) === 0) {
+      await page.getByRole('button', { name: 'Next ›' }).click();
+    }
+    await expect(moreVoicesBtn).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet On-Device (Ready)');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet On-Device (Ready)');
+
+    await moreVoicesBtn.click();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet Kokoro 103 Voices PagedList');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet Kokoro 103 Voices PagedList');
+
+    // Tab 3: Server (LAN GPU, OpenAI API, Edge Online)
+    await page.getByRole('tab', { name: 'Server' }).click();
+    await expect(page.getByTestId('tts-guide-server')).toBeVisible();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet Server LAN GPU');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet Server LAN GPU');
+
+    await page.getByRole('tab', { name: 'OpenAI API' }).click();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet Server OpenAI');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet Server OpenAI');
+
+    await page.getByRole('tab', { name: 'Edge Online' }).click();
+    await assertEinkDomPurity(page, 'E-Ink VoiceSheet Server Edge');
+    await assertStrictTwoColorHistogram(page, 'E-Ink VoiceSheet Server Edge');
+    await page.keyboard.press('Escape');
   });
 
   test('packs every PagedList item inside viewport with zero clipping across 4 E-Ink viewports & turns pages during Read Aloud', async ({

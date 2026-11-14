@@ -272,6 +272,79 @@ test.describe('Production Capacitor www Bundle (Clang-Format Guard, CSP, WebKit 
             await page.keyboard.press('ArrowRight');
             await page.waitForTimeout(320);
             expect(wkMbResErrors).toEqual([]);
+
+            // [v0.2.3] Also import language-less Simplified Chinese `.txt` with mixed JIS + non-JIS chars (`我们在这里说话，没有觉得奇怪，还会继续前进。`) in WebKit (`zh-CN` locale):
+            // verify auto-detected `<html lang="zh-Hans">`, `PingFang SC` before `serif` in computed font-family, and uniform character box height/alignment!
+            const zhCtx = await wkBrowser.newContext({
+              viewport: { width: 393, height: 852 },
+              locale: 'zh-CN',
+            });
+            const zhPage = await zhCtx.newPage();
+            await zhPage.goto(`${baseUrl}/`);
+            await expect(zhPage.locator('html')).toHaveAttribute('lang', 'zh-Hans');
+            const zhChooserPromise = zhPage.waitForEvent('filechooser');
+            await zhPage.locator('.mb-empty-state .mb-primary-btn').click();
+            const zhChooser = await zhChooserPromise;
+            await zhChooser.setFiles({
+              name: '三体测试.txt',
+              mimeType: 'text/plain',
+              buffer: Buffer.from(
+                '第一章 科学边界\n\n我们在这里说话，没有觉得奇怪，还会继续前进。\n',
+                'utf8',
+              ),
+            });
+            const zhCover = zhPage.locator('.mb-cover-item[role="button"]').first();
+            await expect(zhCover).toBeVisible();
+            await zhCover.click();
+            await zhPage.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
+            await expect
+              .poll(async () =>
+                zhPage.evaluate(() => {
+                  const f = document.querySelector<HTMLIFrameElement>(
+                    'iframe.mb-reader-frame[data-frame-role="active"]',
+                  );
+                  return (
+                    f?.contentDocument?.body?.textContent?.includes('我们在这里说话') ?? false
+                  );
+                }),
+              )
+              .toBe(true);
+            const cjkMetrics = await zhPage.evaluate(() => {
+              const f = document.querySelector<HTMLIFrameElement>(
+                'iframe.mb-reader-frame[data-frame-role="active"]',
+              )!;
+              const fDoc = f.contentDocument!;
+              const p = Array.from(fDoc.querySelectorAll('p')).find((el) =>
+                el.textContent?.includes('我们在这里说话'),
+              )!;
+              const ff = fDoc.defaultView!.getComputedStyle(p).fontFamily;
+              const textNode = p.firstChild as Text;
+              const heights: number[] = [];
+              const tops: number[] = [];
+              const txt = textNode.data;
+              const start = txt.indexOf('我们在这里说话');
+              for (let i = start; i < start + 7; i++) {
+                const r = fDoc.createRange();
+                r.setStart(textNode, i);
+                r.setEnd(textNode, i + 1);
+                const rect = r.getBoundingClientRect();
+                heights.push(Math.round(rect.height * 10) / 10);
+                tops.push(Math.round(rect.top * 10) / 10);
+              }
+              return {
+                frameLang: fDoc.documentElement.getAttribute('lang'),
+                fontFamily: ff,
+                heights,
+                tops,
+              };
+            });
+            expect(cjkMetrics.frameLang).toBe('zh-Hans');
+            expect(cjkMetrics.fontFamily).toContain('PingFang SC');
+            expect(cjkMetrics.fontFamily).not.toContain('Hiragino Mincho');
+            // All 7 contiguous characters (`我们在这里说话`, mixing non-JIS `们/这/说` and JIS `我/在/里/话`) on the same line share identical Range top & height!
+            expect(new Set(cjkMetrics.heights).size).toBe(1);
+            expect(new Set(cjkMetrics.tops).size).toBe(1);
+            await zhCtx.close();
           }
 
           expect(wkPageErrors).toEqual([]);

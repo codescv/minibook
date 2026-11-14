@@ -97,6 +97,13 @@ export function isSafeDataImageUri(uri: string): boolean {
 
 export function mimeFromPath(path: string): string {
   const lower = path.toLowerCase();
+  if (lower.endsWith('.epub')) return 'application/epub+zip';
+  if (lower.endsWith('.azw3') || lower.endsWith('.azw')) return 'application/vnd.amazon.mobi8-ebook';
+  if (lower.endsWith('.mobi') || lower.endsWith('.prc')) return 'application/x-mobipocket-ebook';
+  if (lower.endsWith('.fb2')) return 'application/x-fictionbook+xml';
+  if (lower.endsWith('.fb2.zip')) return 'application/zip';
+  if (lower.endsWith('.txt')) return 'text/plain; charset=utf-8';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'text/markdown; charset=utf-8';
   if (lower.endsWith('.xhtml') || lower.endsWith('.xht')) return 'application/xhtml+xml';
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html';
   if (lower.endsWith('.css')) return 'text/css';

@@ -18,7 +18,7 @@ import {
 } from '@minibook/core';
 import { registerOverlayTurnRunner, useRouteStore } from '../app/routes';
 import { RefreshController } from '../eink/RefreshController';
-import { translate, resolveLocale } from '../i18n';
+import { translate, resolveLocale, syncDocumentLang } from '../i18n';
 import {
   applyDocumentTheme,
   computeEffectiveEink,
@@ -129,6 +129,10 @@ export function HostProvider({
     { einkDetected: host.info.capabilities.einkDetected || device.eink },
     mediaEink,
   );
+
+  useEffect(() => {
+    syncDocumentLang(undefined, true);
+  }, []);
 
   useEffect(() => {
     applyDocumentTheme(settings, isEink);

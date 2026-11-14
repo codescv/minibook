@@ -2,20 +2,26 @@
  * File-backed library, reading state, and settings persistence for Android & iOS
  * (`ARCHITECTURE.md` §7.2 — no IndexedDB; atomic JSON writes via `MiniBookPlugin.fs`).
  *
- * Layout under `MiniBookData/`:
- *   - `library.json` (derived summary list; rebuilt automatically from `books/<id>/index.json` if missing/corrupt)
- *   - `settings.json`
- *   - `books/<id>/book.<ext>`
- *   - `books/<id>/cover.<ext>`
- *   - `books/<id>/index.json` (`PersistedBookIndexFile`)
- *   - `books/<id>/state.json` (`PersistedBookStateFile` — shared with native `SpeechJournal`)
- *   - `books/<id>/text.bin` (optional derived stream for MOBI/KF8 or transcoded TXT)
- *   - `tmp/` (import staging)
+ * Layout:
+ *   - User-visible book files (`userbooks/<ReadableName>.<ext>`):
+ *     - iOS: `<Documents>/` (`Files -> On My iPhone -> Books`)
+ *     - Android: `Android/media/dev.minibook.app/Books/` + `MiniBookDocumentsProvider` (`Files -> Books`)
+ *   - Internal metadata & derived streams (`MiniBookData/`):
+ *     - `library.json` (derived summary list; rebuilt automatically from `books/<id>/index.json` if missing/corrupt)
+ *     - `settings.json`
+ *     - `books/<id>/cover.<ext>`
+ *     - `books/<id>/index.json` (`PersistedBookIndexFile`)
+ *     - `books/<id>/state.json` (`PersistedBookStateFile` — shared with native `SpeechJournal`)
+ *     - `books/<id>/text.bin` (optional derived stream for MOBI/KF8 or transcoded TXT)
+ *     - `tmp/` (import staging)
  */
 import {
+  computeBookId,
   DEFAULT_APP_SETTINGS,
   MiniBookError,
+  mimeFromPath,
   sanitizeAppSettings,
+  sanitizeReadableBookFileName,
   type AppSettings,
   type BookFormat,
   type BookId,
@@ -30,6 +36,7 @@ import {
   type SavedPosition,
 } from '@minibook/core';
 import type { MiniBookPlugin } from '../plugin-types.js';
+import { PluginByteSource } from './PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './base64.js';
 
 export interface PersistedBookIndexFile {
@@ -38,6 +45,10 @@ export interface PersistedBookIndexFile {
   readonly index: BookIndex;
   readonly fileName: string;
   readonly fileExt: string;
+  /** Relative path to the adopted book file, e.g. `'userbooks/三体.epub'` (or legacy `'books/<id>/book.<ext>'`). */
+  readonly bookPath?: string;
+  /** Additional duplicate `userbooks/<name>` paths sharing the same SHA-1 `id` so they are not re-scanned on launch and are removed together on delete. */
+  readonly aliasPaths?: readonly string[];
   readonly size: number;
   readonly derivedTextSize: number;
   readonly hasCover: boolean;
@@ -81,9 +92,20 @@ function coverExtForMime(mime: string): string {
   return 'jpg';
 }
 
+function resolvePersistedBookPath(rec: {
+  readonly id: BookId;
+  readonly fileExt: string;
+  readonly bookPath?: string;
+}): string {
+  return rec.bookPath && rec.bookPath.trim().length > 0
+    ? rec.bookPath.trim()
+    : `books/${rec.id}/book.${rec.fileExt}`;
+}
+
 export class FileLibraryStore {
   private readonly plugin: MiniBookPlugin;
   private readonly pathMeta = new Map<BookId, CachedBookPaths>();
+  private legacyMigrationDone: Promise<void> | null = null;
 
   constructor(plugin: MiniBookPlugin) {
     this.plugin = plugin;
@@ -146,7 +168,7 @@ export class FileLibraryStore {
       }
     }
     this.pathMeta.set(rec.id, {
-      bookPath: `books/${rec.id}/book.${rec.fileExt}`,
+      bookPath: resolvePersistedBookPath(rec),
       size: rec.size,
       derivedPath: `books/${rec.id}/text.bin`,
       derivedSize: rec.derivedTextSize,
@@ -172,12 +194,74 @@ export class FileLibraryStore {
     };
   }
 
+  /**
+   * Automatically migrates any legacy `books/<id>/book.<ext>` files into user-visible
+   * `userbooks/<ReadableName>.<ext>` storage on startup so previously imported books
+   * immediately appear in the system Files app (`v0.2.3`).
+   */
+  private ensureLegacyBooksMigrated(): Promise<void> {
+    if (this.legacyMigrationDone) return this.legacyMigrationDone;
+    this.legacyMigrationDone = (async () => {
+      try {
+        const entries = await this.plugin.fs.list({ path: 'books' }).catch(() => []);
+        let migratedAny = false;
+        for (const entry of entries) {
+          if (!entry.isDirectory) continue;
+          const indexPath = `books/${entry.name}/index.json`;
+          try {
+            const rec = await this.readJsonFile<PersistedBookIndexFile>(indexPath);
+            if (!rec || !rec.id) continue;
+            const curPath = resolvePersistedBookPath(rec);
+            if (!curPath.startsWith('books/')) continue;
+
+            const st = await this.plugin.fs
+              .stat({ path: curPath })
+              .catch(() => ({ exists: false } as const));
+            if (!st.exists || st.isDirectory) continue;
+
+            const preferredName = sanitizeReadableBookFileName(
+              rec.meta.title || rec.fileName,
+              rec.fileExt,
+            );
+            const adopted = await this.plugin.import.adopt({
+              tempPath: curPath,
+              bookId: rec.id,
+              ext: rec.fileExt,
+              preferredName,
+            });
+            if (adopted.path && adopted.path !== curPath) {
+              const updatedRec: PersistedBookIndexFile = {
+                ...rec,
+                bookPath: adopted.path,
+                size: adopted.size || rec.size,
+              };
+              await this.writeJsonFile(indexPath, updatedRec);
+              await this.rememberBookFiles(updatedRec);
+              migratedAny = true;
+            }
+          } catch {
+            // Skip non-migratable book folder safely
+          }
+        }
+        if (migratedAny) {
+          await this.rebuildLibraryIndexInternal();
+        }
+      } catch {
+        // Ignore top-level scan error
+      }
+    })();
+    return this.legacyMigrationDone;
+  }
+
   async list(): Promise<LibraryBook[]> {
+    await this.ensureLegacyBooksMigrated();
     try {
       const cached = await this.readJsonFile<
         ReadonlyArray<
           LibraryBook & {
             readonly fileExt?: string;
+            readonly bookPath?: string;
+            readonly aliasPaths?: readonly string[];
             readonly derivedTextSize?: number;
             readonly coverExt?: string | null;
           }
@@ -189,7 +273,7 @@ export class FileLibraryStore {
           if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id) {
             continue;
           }
-          if (!this.pathMeta.has(item.id) && item.fileExt) {
+          if (!this.pathMeta.has(item.id) && (item.bookPath || item.fileExt)) {
             let coverUrl: string | null = null;
             if (item.hasCover && item.coverExt) {
               const res = await this.plugin.fs
@@ -197,20 +281,36 @@ export class FileLibraryStore {
                 .catch(() => null);
               coverUrl = res?.url ?? null;
             }
+            const resolvedPath =
+              item.bookPath && item.bookPath.trim().length > 0
+                ? item.bookPath.trim()
+                : `books/${item.id}/book.${item.fileExt ?? 'epub'}`;
             this.pathMeta.set(item.id, {
-              bookPath: `books/${item.id}/book.${item.fileExt}`,
+              bookPath: resolvedPath,
               size: typeof item.size === 'number' && Number.isFinite(item.size) ? item.size : 0,
               derivedPath: `books/${item.id}/text.bin`,
               derivedSize: item.derivedTextSize ?? 0,
               coverUrl,
             });
           }
-          const { fileExt: _e, derivedTextSize: _d, coverExt: _c, ...clean } = item;
+          const {
+            fileExt: _e,
+            bookPath: _bp,
+            aliasPaths: _ap,
+            derivedTextSize: _d,
+            coverExt: _c,
+            ...clean
+          } = item;
           normalized.push({
             ...clean,
-            title: typeof clean.title === 'string' && clean.title ? clean.title : (clean.fileName || clean.id),
+            title:
+              typeof clean.title === 'string' && clean.title
+                ? clean.title
+                : clean.fileName || clean.id,
             authors: Array.isArray(clean.authors)
-              ? (clean.authors as readonly unknown[]).filter((a): a is string => typeof a === 'string')
+              ? (clean.authors as readonly unknown[]).filter(
+                  (a): a is string => typeof a === 'string',
+                )
               : [],
             fraction:
               typeof clean.fraction === 'number' && Number.isFinite(clean.fraction)
@@ -224,13 +324,18 @@ export class FileLibraryStore {
     } catch {
       // Corrupt or missing library.json -> rebuild below
     }
-    return this.rebuildLibraryIndex();
+    return this.rebuildLibraryIndexInternal();
   }
 
   /**
    * Rebuilds `library.json` from `books/<id>/index.json` + `state.json` (`ARCHITECTURE.md` §7.2).
    */
   async rebuildLibraryIndex(): Promise<LibraryBook[]> {
+    await this.ensureLegacyBooksMigrated();
+    return this.rebuildLibraryIndexInternal();
+  }
+
+  private async rebuildLibraryIndexInternal(): Promise<LibraryBook[]> {
     const entries = await this.plugin.fs.list({ path: 'books' }).catch(() => []);
     const records: Array<{
       readonly rec: PersistedBookIndexFile;
@@ -264,6 +369,8 @@ export class FileLibraryStore {
     const wireList = records.map(({ rec, fraction }) => ({
       ...this.toLibraryBook(rec, fraction),
       fileExt: rec.fileExt,
+      bookPath: resolvePersistedBookPath(rec),
+      ...(rec.aliasPaths && rec.aliasPaths.length > 0 ? { aliasPaths: rec.aliasPaths } : {}),
       derivedTextSize: rec.derivedTextSize,
       coverExt: rec.coverExt,
     }));
@@ -272,11 +379,74 @@ export class FileLibraryStore {
     return records.map(({ rec, fraction }) => this.toLibraryBook(rec, fraction));
   }
 
+  private async healRenamedBookIfNeeded(
+    rec: PersistedBookIndexFile,
+  ): Promise<PersistedBookIndexFile> {
+    const curPath = resolvePersistedBookPath(rec);
+    const curStat = await this.plugin.fs
+      .stat({ path: curPath })
+      .catch(() => ({ exists: false } as const));
+    if (curStat.exists && !curStat.isDirectory) {
+      return rec;
+    }
+
+    // Check recorded aliasPaths first, then scan `userbooks/` for a size + BookId match
+    for (const alias of rec.aliasPaths ?? []) {
+      const st = await this.plugin.fs.stat({ path: alias }).catch(() => ({ exists: false } as const));
+      if (st.exists && !st.isDirectory) {
+        const remaining = (rec.aliasPaths ?? []).filter((p) => p !== alias && p !== curPath);
+        const healed: PersistedBookIndexFile = {
+          ...rec,
+          fileName: alias.split('/').pop() ?? rec.fileName,
+          bookPath: alias,
+          aliasPaths: remaining,
+        };
+        await this.writeJsonFile(`books/${rec.id}/index.json`, healed);
+        await this.rememberBookFiles(healed);
+        await this.rebuildLibraryIndexInternal();
+        return healed;
+      }
+    }
+
+    const candidates = await this.plugin.fs.list({ path: 'userbooks' }).catch(() => []);
+    for (const entry of candidates) {
+      if (entry.isDirectory || entry.size <= 0) continue;
+      if (rec.size > 0 && entry.size !== rec.size) continue;
+      const candPath = entry.path.startsWith('userbooks/')
+        ? entry.path
+        : `userbooks/${entry.name}`;
+      try {
+        const candId = await computeBookId(
+          new PluginByteSource({ plugin: this.plugin, path: candPath, size: entry.size }),
+        );
+        if (candId === rec.id) {
+          const remaining = (rec.aliasPaths ?? []).filter((p) => p !== candPath && p !== curPath);
+          const healed: PersistedBookIndexFile = {
+            ...rec,
+            fileName: entry.name,
+            bookPath: candPath,
+            size: entry.size,
+            aliasPaths: remaining,
+          };
+          await this.writeJsonFile(`books/${rec.id}/index.json`, healed);
+          await this.rememberBookFiles(healed);
+          await this.rebuildLibraryIndexInternal();
+          return healed;
+        }
+      } catch {
+        // Ignore unreadable candidate
+      }
+    }
+    return rec;
+  }
+
   async get(id: BookId): Promise<LibraryBookDetail | null> {
-    const rec = await this.readJsonFile<PersistedBookIndexFile>(`books/${id}/index.json`).catch(
+    await this.ensureLegacyBooksMigrated();
+    const rawRec = await this.readJsonFile<PersistedBookIndexFile>(`books/${id}/index.json`).catch(
       () => null,
     );
-    if (!rec) return null;
+    if (!rawRec) return null;
+    const rec = await this.healRenamedBookIfNeeded(rawRec);
     await this.rememberBookFiles(rec);
     const state = await this.readStateFile(id);
     return {
@@ -293,21 +463,70 @@ export class FileLibraryStore {
     readonly derivedTextSize: number;
     readonly inspected: InspectedBook;
   }): Promise<LibraryBook> {
+    await this.ensureLegacyBooksMigrated();
     const existing = await this.readJsonFile<PersistedBookIndexFile>(
       `books/${params.bookId}/index.json`,
     ).catch(() => null);
 
     if (existing) {
-      // Duplicate book: clean up staged temp files, bump openedAt, and return existing
-      await this.plugin.fs.remove({ path: params.tempPath }).catch(() => undefined);
+      const existingBookPath = resolvePersistedBookPath(existing);
+      const isUserBooksSource = params.tempPath.startsWith('userbooks/');
       if (params.stagedDerivedPath) {
         await this.plugin.fs.remove({ path: params.stagedDerivedPath }).catch(() => undefined);
       }
-      await this.markOpened(params.bookId, Date.now());
-      const detail = await this.get(params.bookId);
-      if (detail) {
-        const { index: _idx, ...summary } = detail;
-        return summary;
+
+      if (isUserBooksSource) {
+        if (params.tempPath !== existingBookPath) {
+          const [oldSt, newSt] = await Promise.all([
+            this.plugin.fs
+              .stat({ path: existingBookPath })
+              .catch(() => ({ exists: false } as const)),
+            this.plugin.fs
+              .stat({ path: params.tempPath })
+              .catch(() => ({ exists: false } as const)),
+          ]);
+          const prevAliases = (existing.aliasPaths ?? []).filter(
+            (p) => p !== existingBookPath && p !== params.tempPath,
+          );
+          if (!oldSt.exists) {
+            // File was renamed in system Files app -> heal bookPath in place while preserving state & openedAt
+            const healed: PersistedBookIndexFile = {
+              ...existing,
+              fileName: params.fileName,
+              bookPath: params.tempPath,
+              ...(prevAliases.length > 0 ? { aliasPaths: prevAliases } : { aliasPaths: [] }),
+              size:
+                newSt.exists && 'size' in newSt && typeof newSt.size === 'number' && newSt.size > 0
+                  ? newSt.size
+                  : existing.size,
+            };
+            await this.writeJsonFile(`books/${params.bookId}/index.json`, healed);
+            await this.rememberBookFiles(healed);
+            await this.rebuildLibraryIndexInternal();
+          } else if (!(existing.aliasPaths ?? []).includes(params.tempPath)) {
+            const withAlias: PersistedBookIndexFile = {
+              ...existing,
+              aliasPaths: [...prevAliases, params.tempPath],
+            };
+            await this.writeJsonFile(`books/${params.bookId}/index.json`, withAlias);
+            await this.rebuildLibraryIndexInternal();
+          }
+        }
+        const detail = await this.get(params.bookId);
+        if (detail) {
+          const { index: _idx, ...summary } = detail;
+          return summary;
+        }
+      } else {
+        if (params.tempPath !== existingBookPath) {
+          await this.plugin.fs.remove({ path: params.tempPath }).catch(() => undefined);
+        }
+        await this.markOpened(params.bookId, Date.now());
+        const detail = await this.get(params.bookId);
+        if (detail) {
+          const { index: _idx, ...summary } = detail;
+          return summary;
+        }
       }
     }
 
@@ -317,10 +536,16 @@ export class FileLibraryStore {
       throw new MiniBookError('not-found', `Staged import file missing: ${params.tempPath}`);
     }
 
+    const preferredName = sanitizeReadableBookFileName(
+      params.inspected.meta.title || params.fileName,
+      fileExt,
+    );
+
     const adoptedRes = await this.plugin.import.adopt({
       tempPath: params.tempPath,
       bookId: params.bookId,
       ext: fileExt,
+      preferredName,
     });
 
     // Move or copy staged derived text.bin if present
@@ -365,6 +590,7 @@ export class FileLibraryStore {
       index: params.inspected.index,
       fileName: params.fileName,
       fileExt,
+      bookPath: adoptedRes.path,
       size: adoptedRes.size,
       derivedTextSize: finalDerivedSize,
       hasCover,
@@ -382,14 +608,61 @@ export class FileLibraryStore {
     } satisfies PersistedBookStateFile);
 
     await this.rememberBookFiles(rec);
-    await this.rebuildLibraryIndex();
+    await this.rebuildLibraryIndexInternal();
     return this.toLibraryBook(rec, 0);
   }
 
   async remove(id: BookId): Promise<void> {
+    const rec = await this.readJsonFile<PersistedBookIndexFile>(`books/${id}/index.json`).catch(
+      () => null,
+    );
+    const pathsToDelete = new Set<string>();
+    const cachedPath = this.pathMeta.get(id)?.bookPath;
+    if (cachedPath) pathsToDelete.add(cachedPath);
+    if (rec) {
+      pathsToDelete.add(resolvePersistedBookPath(rec));
+      for (const alias of rec.aliasPaths ?? []) {
+        if (alias && alias.trim().length > 0) {
+          pathsToDelete.add(alias.trim());
+        }
+      }
+    }
     this.pathMeta.delete(id);
+    for (const p of pathsToDelete) {
+      if (!p.startsWith(`books/${id}/`)) {
+        await this.plugin.fs.remove({ path: p }).catch(() => undefined);
+      }
+    }
     await this.plugin.fs.remove({ path: `books/${id}` });
-    await this.rebuildLibraryIndex();
+    await this.rebuildLibraryIndexInternal();
+  }
+
+  async getShareTarget(id: BookId): Promise<{
+    readonly path: string;
+    readonly title: string;
+    readonly mimeType: string;
+  }> {
+    await this.ensureLegacyBooksMigrated();
+    const rawRec = await this.readJsonFile<PersistedBookIndexFile>(`books/${id}/index.json`).catch(
+      () => null,
+    );
+    const rec = rawRec ? await this.healRenamedBookIfNeeded(rawRec) : null;
+    const cached = this.pathMeta.get(id);
+    const path = rec ? resolvePersistedBookPath(rec) : cached?.bookPath;
+    if (!path) {
+      throw new MiniBookError('not-found', `Book not found: ${id}`);
+    }
+    const st = await this.plugin.fs.stat({ path });
+    if (!st.exists || st.isDirectory) {
+      throw new MiniBookError('not-found', `Book file missing: ${path}`);
+    }
+    const title = rec ? rec.meta.title || rec.fileName : id;
+    const ext = rec ? rec.fileExt : path.split('.').pop() ?? 'epub';
+    return {
+      path,
+      title,
+      mimeType: mimeFromPath(`book.${ext}`),
+    };
   }
 
   async setFinished(id: BookId, finished: boolean): Promise<void> {
@@ -399,7 +672,7 @@ export class FileLibraryStore {
     }
     const updated: PersistedBookIndexFile = { ...rec, finished };
     await this.writeJsonFile(`books/${id}/index.json`, updated);
-    await this.rebuildLibraryIndex();
+    await this.rebuildLibraryIndexInternal();
   }
 
   async markOpened(id: BookId, openedAt: EpochMs = Date.now()): Promise<void> {
@@ -407,7 +680,7 @@ export class FileLibraryStore {
     if (!rec) return;
     const updated: PersistedBookIndexFile = { ...rec, openedAt };
     await this.writeJsonFile(`books/${id}/index.json`, updated);
-    await this.rebuildLibraryIndex();
+    await this.rebuildLibraryIndexInternal();
   }
 
   private async readStateFile(bookId: BookId): Promise<PersistedBookStateFile> {
@@ -447,7 +720,7 @@ export class FileLibraryStore {
         ...rec,
         openedAt: pos.updatedAt || Date.now(),
       });
-      await this.rebuildLibraryIndex();
+      await this.rebuildLibraryIndexInternal();
     }
   }
 
@@ -512,7 +785,11 @@ export class FileLibraryStore {
   }
 
   async booksStorageBytes(): Promise<number> {
-    return this.sumTreeBytes('books');
+    const [booksTree, userBooksTree] = await Promise.all([
+      this.sumTreeBytes('books'),
+      this.sumTreeBytes('userbooks'),
+    ]);
+    return booksTree + userBooksTree;
   }
 
   private async sumTreeBytes(dirPath: string): Promise<number> {
