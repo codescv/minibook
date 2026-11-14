@@ -10,6 +10,7 @@ import type {
   Voice,
   VoiceRef,
 } from '@minibook/core';
+import { filterAndRankSystemVoices, isNaturalSystemVoiceEntry } from './speech-model-store';
 
 export interface WebSpeechPlayerOptions {
   readonly bufferingTimeoutOnlineMs?: number;
@@ -93,15 +94,27 @@ export class WebSpeechPlayer implements SpeechPlayer {
       });
       raw = synth.getVoices();
     }
-    return raw.map((v) => ({
-      id: v.voiceURI || v.name,
-      engine: 'System',
-      provider: 'system',
-      name: v.name,
-      lang: v.lang,
-      quality: v.localService ? 'enhanced' : 'remote',
-      local: v.localService,
-    }));
+    const mapped: Voice[] = raw.map((v) => {
+      const uriLower = (v.voiceURI || '').toLowerCase();
+      const nameLower = (v.name || '').toLowerCase();
+      const quality: Voice['quality'] = !v.localService
+        ? 'remote'
+        : uriLower.includes('.premium.') || /\bpremium\b|高音质|高品质|プレミアム/i.test(nameLower)
+          ? 'neural'
+          : uriLower.includes('.compact.')
+            ? 'compact'
+            : 'enhanced';
+      return {
+        id: v.voiceURI || v.name,
+        engine: 'System',
+        provider: 'system',
+        name: v.name,
+        lang: v.lang,
+        quality,
+        local: v.localService,
+      };
+    });
+    return filterAndRankSystemVoices(mapped, 'en-US', 'en').all;
   }
 
   async load(session: SpeechSession): Promise<void> {
@@ -371,8 +384,31 @@ export class WebSpeechPlayer implements SpeechPlayer {
     utter.rate = this.rate;
 
     if (preferredVoiceId) {
-      const match = synth.getVoices().find((v) => v.voiceURI === preferredVoiceId || v.name === preferredVoiceId);
+      const match = synth
+        .getVoices()
+        .find((v) => v.voiceURI === preferredVoiceId || v.name === preferredVoiceId);
       if (match) utter.voice = match;
+    } else {
+      // Guard against browsers whose first/default voice for `u.lang` is DECTalk/Eloquence or novelty.
+      const osVoices = synth.getVoices();
+      const defaultEntry = osVoices.find((v) => v.default);
+      if (
+        defaultEntry &&
+        !isNaturalSystemVoiceEntry({
+          id: defaultEntry.voiceURI || defaultEntry.name,
+          name: defaultEntry.name,
+        })
+      ) {
+        const targetPrefix = (u.lang.split('-')[0] ?? 'en').toLowerCase();
+        const naturalMatch = osVoices.find(
+          (v) =>
+            isNaturalSystemVoiceEntry({ id: v.voiceURI || v.name, name: v.name }) &&
+            (v.lang.toLowerCase() === u.lang.toLowerCase() ||
+              v.lang.toLowerCase().startsWith(`${targetPrefix}-`) ||
+              v.lang.toLowerCase() === targetPrefix),
+        );
+        if (naturalMatch) utter.voice = naturalMatch;
+      }
     }
 
     utter.onboundary = (ev: SpeechSynthesisEvent) => {

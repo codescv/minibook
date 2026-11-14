@@ -394,4 +394,42 @@ public class ReadAloudQueueTest {
         long queueLowCount = emittedEvents.stream().filter(e -> e.startsWith("queue-low:")).count();
         assertTrue("Expected bounded queue-low emissions, got " + queueLowCount, queueLowCount <= 2);
     }
+
+    @Test
+    public void systemTtsBackendNormalizesCmnYueTagsAndDeduplicatesGoogleLocalNetworkPairs() throws Exception {
+        assertEquals("zh-CN", SystemTtsBackend.normalizeLanguageTag("zh"));
+        assertEquals("zh-CN", SystemTtsBackend.normalizeLanguageTag("cmn-Hans-CN"));
+        assertEquals("zh-TW", SystemTtsBackend.normalizeLanguageTag("cmn-Hant-TW"));
+        assertEquals("zh-HK", SystemTtsBackend.normalizeLanguageTag("yue-Hant-HK"));
+        assertEquals("en-US", SystemTtsBackend.normalizeLanguageTag("en"));
+
+        List<SystemTtsBackend.RawVoiceEntry> googleEntries = Arrays.asList(
+            new SystemTtsBackend.RawVoiceEntry("cmn-cn-x-ccc-network", "cmn-Hans-CN", 400, false),
+            new SystemTtsBackend.RawVoiceEntry("cmn-cn-x-ccc-local", "cmn-Hans-CN", 400, true),
+            new SystemTtsBackend.RawVoiceEntry("en-us-x-sfg-local", "en-US", 500, true)
+        );
+        JSONArray googleOut = SystemTtsBackend.filterAndDeduplicateEngineVoices(
+            "com.google.android.tts",
+            "Speech Recognition and Synthesis from Google",
+            googleEntries
+        );
+        assertEquals(2, googleOut.length());
+        JSONObject zhVoice = googleOut.getJSONObject(0);
+        assertEquals("cmn-cn-x-ccc-local", zhVoice.getString("id"));
+        assertEquals("zh-CN", zhVoice.getString("lang"));
+        assertTrue(zhVoice.getBoolean("local"));
+        assertEquals("enhanced", zhVoice.getString("quality"));
+
+        List<SystemTtsBackend.RawVoiceEntry> multiTtsEntries = Arrays.asList(
+            new SystemTtsBackend.RawVoiceEntry("xiaoxiao", "zh-CN", 500, true),
+            new SystemTtsBackend.RawVoiceEntry("yunxi", "zh-CN", 500, true)
+        );
+        JSONArray multiOut = SystemTtsBackend.filterAndDeduplicateEngineVoices(
+            "org.nobody.multitts",
+            "MultiTTS",
+            multiTtsEntries
+        );
+        assertEquals(2, multiOut.length());
+        assertEquals("MultiTTS · xiaoxiao", multiOut.getJSONObject(0).getString("name"));
+    }
 }

@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
-import type { ModelDownloadSource, PlatformHost, SpeechModelStatus } from '@minibook/core';
+import type {
+  ModelDownloadSource,
+  PlatformHost,
+  SpeechModelStatus,
+  Voice,
+  VoiceRef,
+} from '@minibook/core';
 import { KOKORO_MODEL_ID } from '@minibook/core';
 import type { I18nKey } from '../i18n/en';
 
@@ -339,4 +345,469 @@ export function useSpeechModelStatus(host: PlatformHost, isEink: boolean): UseSp
     displayPct: uiState.displayPct,
     refresh,
   };
+}
+
+// ---------------------------------------------------------------------------
+// System TTS Natural-Voice Filtering, Deduplication & Localized Metadata (`v0.2.5`)
+// ---------------------------------------------------------------------------
+
+const SOUND_EFFECT_NOVELTY_NAMES = new Set([
+  'albert',
+  'bad news',
+  'bahh',
+  'bells',
+  'boing',
+  'bubbles',
+  'cellos',
+  'good news',
+  'jester',
+  'organ',
+  'superstar',
+  'trinoids',
+  'whisper',
+  'wobble',
+  'zarvox',
+]);
+
+const LEGACY_SYNTHETIC_SPEAKER_NAMES = new Set([
+  'eddy',
+  'flo',
+  'grandma',
+  'grandpa',
+  'reed',
+  'rocko',
+  'sandy',
+  'shelley',
+  'fred',
+  'junior',
+  'kathy',
+  'ralph',
+]);
+
+export function isThirdPartyAndroidTtsEngine(engine: string | undefined): boolean {
+  if (!engine) return false;
+  const trimmed = engine.trim();
+  if (!trimmed || trimmed === 'System') return false;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'com.google.android.tts' || lower.startsWith('com.apple.')) {
+    return false;
+  }
+  return true;
+}
+
+function cleanSpeakerBaseName(rawName: string): string {
+  const withoutParen = rawName.replace(/\s*[\(（].*$/, '').trim();
+  return withoutParen.toLowerCase();
+}
+
+function stripQualitySuffix(rawName: string): string {
+  return rawName
+    .trim()
+    .replace(
+      /(?:\s*[\(（](?:enhanced|premium|compact|default|增强型?|高音质|高品质|拡張|プレミアム)[\)）])+\s*$/i,
+      '',
+    )
+    .trim();
+}
+
+/**
+ * Rejects 1990s DECTalk/Eloquence (`Eddy`, `Flo`, `Grandma`, `Rocko`, etc.) and Apple
+ * sound-effect novelty voices (`Zarvox`, `Boing`, `Trinoids`, `Fred`, etc.) across iOS and
+ * macOS Web `speechSynthesis`, while preserving 100% of third-party Android TTS engines
+ * (`MultiTTS`, `sherpa-onnx`, OEM engines) and Apple Personal Voices.
+ */
+export function isNaturalSystemVoiceEntry(v: {
+  readonly id: string;
+  readonly name: string;
+  readonly engine?: string | undefined;
+}): boolean {
+  if (isThirdPartyAndroidTtsEngine(v.engine)) return true;
+  const idLower = (v.id ?? '').trim().toLowerCase();
+  if (!idLower) return false;
+  if (idLower.includes('personalvoice')) return true;
+  if (idLower.includes('.eloquence.') || idLower.includes('.speech.synthesis.voice.')) {
+    return false;
+  }
+
+  const baseName = cleanSpeakerBaseName(v.name ?? '');
+  if (baseName) {
+    if (SOUND_EFFECT_NOVELTY_NAMES.has(baseName)) {
+      return false;
+    }
+    const isModernAppleVoiceBundle =
+      idLower.includes('.voice.compact.') ||
+      idLower.includes('.voice.enhanced.') ||
+      idLower.includes('.voice.premium.') ||
+      idLower.includes('.voice.super-compact.');
+    if (!isModernAppleVoiceBundle && LEGACY_SYNTHETIC_SPEAKER_NAMES.has(baseName)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Normalizes bare or Android-specific BCP-47 tags (`"zh"`, `"cmn-Hans-CN"`, `"yue-Hant-HK"`, `"en"`)
+ * into canonical regional tags (`"zh-CN"`, `"zh-TW"`, `"zh-HK"`, `"en-US"`, `"ja-JP"`, etc.).
+ */
+export function canonicalizeSystemVoiceLang(
+  rawLang: string | null | undefined,
+  fallbackLocale = 'en',
+): string {
+  const cleaned = (rawLang ?? '').trim().replace(/_/g, '-');
+  const locClean = (fallbackLocale || 'en').trim().replace(/_/g, '-').toLowerCase();
+  if (!cleaned) {
+    return canonicalizeSystemVoiceLang(fallbackLocale || 'en-US', 'en-US');
+  }
+  const lower = cleaned.toLowerCase();
+  if (lower === 'und' || lower === 'mul' || lower === 'zxx' || lower === 'unknown') {
+    return 'und';
+  }
+  if (lower === 'zh') {
+    if (locClean.startsWith('zh-tw') || locClean.startsWith('zh-hant')) return 'zh-TW';
+    if (locClean.startsWith('zh-hk') || locClean.startsWith('yue')) return 'zh-HK';
+    return 'zh-CN';
+  }
+  if (
+    lower === 'zh-cn' ||
+    lower === 'zh-hans' ||
+    lower === 'zh-hans-cn' ||
+    lower === 'zh-sg' ||
+    lower === 'zh-hans-sg' ||
+    lower === 'cmn' ||
+    lower === 'cmn-cn' ||
+    lower === 'cmn-hans' ||
+    lower === 'cmn-hans-cn'
+  ) {
+    return 'zh-CN';
+  }
+  if (
+    lower === 'zh-tw' ||
+    lower === 'zh-hant' ||
+    lower === 'zh-hant-tw' ||
+    lower === 'cmn-tw' ||
+    lower === 'cmn-hant' ||
+    lower === 'cmn-hant-tw'
+  ) {
+    return 'zh-TW';
+  }
+  if (
+    lower === 'zh-hk' ||
+    lower === 'zh-hant-hk' ||
+    lower === 'zh-mo' ||
+    lower === 'zh-hant-mo' ||
+    lower === 'yue' ||
+    lower === 'zh-yue' ||
+    lower === 'yue-hk' ||
+    lower === 'yue-hant' ||
+    lower === 'yue-hant-hk'
+  ) {
+    return 'zh-HK';
+  }
+  if (lower === 'en') {
+    if (locClean.startsWith('en-') && locClean.length >= 5) {
+      const region = locClean.split('-')[1] ?? 'us';
+      return region.length === 2 ? `en-${region.toUpperCase()}` : 'en-US';
+    }
+    return 'en-US';
+  }
+  if (lower === 'ja') return 'ja-JP';
+  if (lower === 'ko') return 'ko-KR';
+  if (lower === 'fr') return 'fr-FR';
+  if (lower === 'de') return 'de-DE';
+  if (lower === 'es') return 'es-ES';
+  if (lower === 'ru') return 'ru-RU';
+  if (lower === 'pt') return 'pt-BR';
+  if (lower === 'it') return 'it-IT';
+
+  const parts = cleaned.split('-');
+  const first = parts[0]!.toLowerCase();
+  if (parts.length === 1) return first;
+  return [
+    first,
+    ...parts.slice(1).map((sub) => {
+      if (sub.length === 4 && /^[a-z]+$/i.test(sub)) {
+        return sub[0]!.toUpperCase() + sub.slice(1).toLowerCase();
+      }
+      if (sub.length === 2 && /^[a-z]+$/i.test(sub)) {
+        return sub.toUpperCase();
+      }
+      return sub.toLowerCase();
+    }),
+  ].join('-');
+}
+
+function voiceQualityScore(v: Voice): number {
+  switch (v.quality) {
+    case 'neural':
+      return 4;
+    case 'enhanced':
+      return 3;
+    case 'compact':
+      return 2;
+    case 'remote':
+      return 1;
+    default:
+      return v.local ? 2 : 1;
+  }
+}
+
+function matchesSelectedSystemVoice(v: Voice, selected: VoiceRef | null | undefined): boolean {
+  if (!selected || selected.kind !== 'system' || !selected.voiceId) return false;
+  if (v.id !== selected.voiceId) return false;
+  if (selected.engine && v.engine && selected.engine !== v.engine) return false;
+  return true;
+}
+
+export interface FilteredSystemVoices {
+  /** Clean primary-dialect voices (+ 3rd-party TTS engines & any active non-primary selection). */
+  readonly primary: Voice[];
+  /** Remaining clean voices (other regional dialects & languages) behind the expand toggle. */
+  readonly secondary: Voice[];
+  /** Complete deduplicated natural voice list (`[...primary, ...secondary]`). */
+  readonly all: Voice[];
+}
+
+const GOOGLE_TTS_COLLAPSED_X_CAP = 6;
+
+/**
+ * Strips robotic Eloquence & sound-effect novelty voices, deduplicates multi-tier same-speaker
+ * entries (`compact` / `enhanced` / `neural`) and Android Google TTS `-local` / `-network` pairs,
+ * and splits voices into `primary` (exact target regional dialect, e.g. `zh-CN` ahead of `zh-TW`/`zh-HK`,
+ * `en-US` ahead of `en-ZA`) vs `secondary` ("More system voices").
+ */
+export function filterAndRankSystemVoices(
+  voices: readonly Voice[],
+  targetBcp47: string,
+  locale = 'en',
+  selectedVoice: VoiceRef | null = null,
+): FilteredSystemVoices {
+  const targetNorm = canonicalizeSystemVoiceLang(targetBcp47 || locale || 'en-US', locale);
+  const targetNormFinal = targetNorm === 'und' ? 'en-US' : targetNorm;
+  const targetLower = targetNormFinal.toLowerCase();
+  const targetPrefix = targetLower.split('-')[0] || 'en';
+
+  // 1. Strip Eloquence & novelty voices + deduplicate quality tiers / Google TTS -local vs -network pairs.
+  const byDedupKey = new Map<string, Voice>();
+  for (const v of voices) {
+    if (!isNaturalSystemVoiceEntry(v)) continue;
+
+    const vCanonLang = canonicalizeSystemVoiceLang(v.lang, locale).toLowerCase();
+    let dedupKey: string;
+    if (isThirdPartyAndroidTtsEngine(v.engine)) {
+      dedupKey = `3p:${v.engine}:${v.id}`;
+    } else if ((v.engine ?? '').toLowerCase() === 'com.google.android.tts') {
+      const stem = v.id.replace(/-(local|network)$/i, '').toLowerCase();
+      dedupKey = `gtts:${vCanonLang}|${stem}`;
+    } else if (v.id.toLowerCase().includes('personalvoice')) {
+      dedupKey = `personal:${v.id}`;
+    } else {
+      const speaker = stripQualitySuffix(v.name).toLowerCase() || v.id.toLowerCase();
+      dedupKey = `apple:${vCanonLang}|${speaker}`;
+    }
+
+    const existing = byDedupKey.get(dedupKey);
+    if (!existing) {
+      byDedupKey.set(dedupKey, v);
+      continue;
+    }
+
+    const candSelected = matchesSelectedSystemVoice(v, selectedVoice);
+    const existSelected = matchesSelectedSystemVoice(existing, selectedVoice);
+    if (candSelected !== existSelected) {
+      if (candSelected) byDedupKey.set(dedupKey, v);
+      continue;
+    }
+
+    const candScore = voiceQualityScore(v);
+    const existScore = voiceQualityScore(existing);
+    if (candScore !== existScore) {
+      if (candScore > existScore) byDedupKey.set(dedupKey, v);
+      continue;
+    }
+    if (v.local !== existing.local) {
+      if (v.local) byDedupKey.set(dedupKey, v);
+      continue;
+    }
+    if (v.id.toLowerCase().includes('.voice.') && !existing.id.toLowerCase().includes('.voice.')) {
+      byDedupKey.set(dedupKey, v);
+    }
+  }
+
+  const deduped = [...byDedupKey.values()];
+  if (deduped.length === 0) {
+    return { primary: [], secondary: [], all: [] };
+  }
+
+  const canonLangOf = (v: Voice): string =>
+    canonicalizeSystemVoiceLang(v.lang, locale).toLowerCase();
+  const prefixOf = (v: Voice): string => {
+    const cl = canonLangOf(v);
+    return cl === 'und' ? '' : (cl.split('-')[0] ?? '');
+  };
+
+  const sortVoices = (list: Voice[]): Voice[] =>
+    [...list].sort((a, b) => {
+      const a3p = isThirdPartyAndroidTtsEngine(a.engine) ? 1 : 0;
+      const b3p = isThirdPartyAndroidTtsEngine(b.engine) ? 1 : 0;
+      if (a3p !== b3p) return b3p - a3p;
+
+      const aLang = canonLangOf(a);
+      const bLang = canonLangOf(b);
+      const aExact = aLang === targetLower ? 1 : 0;
+      const bExact = bLang === targetLower ? 1 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+
+      const aPref = prefixOf(a) === targetPrefix ? 1 : 0;
+      const bPref = prefixOf(b) === targetPrefix ? 1 : 0;
+      if (aPref !== bPref) return bPref - aPref;
+
+      const aQ = voiceQualityScore(a);
+      const bQ = voiceQualityScore(b);
+      if (aQ !== bQ) return bQ - aQ;
+
+      if (a.local !== b.local) return a.local ? -1 : 1;
+
+      if (aLang !== bLang) return aLang.localeCompare(bLang);
+      return a.name.localeCompare(b.name);
+    });
+
+  const isExactPrimaryMatch = (v: Voice): boolean => {
+    const cl = canonLangOf(v);
+    if (cl === targetLower) return true;
+    if (isThirdPartyAndroidTtsEngine(v.engine)) {
+      const p = prefixOf(v);
+      if (!p || p === targetPrefix) return true;
+    }
+    return false;
+  };
+
+  const isPrefixMatch = (v: Voice): boolean => {
+    const p = prefixOf(v);
+    return !p || p === targetPrefix;
+  };
+
+  const hasExactMatches = deduped.some(isExactPrimaryMatch);
+  const hasPrefixMatches = hasExactMatches || deduped.some(isPrefixMatch);
+
+  let rawPrimary: Voice[];
+  let rawSecondary: Voice[];
+
+  if (hasExactMatches) {
+    rawPrimary = deduped.filter(
+      (v) => isExactPrimaryMatch(v) || matchesSelectedSystemVoice(v, selectedVoice),
+    );
+    const primarySet = new Set(rawPrimary);
+    rawSecondary = deduped.filter((v) => !primarySet.has(v));
+  } else if (hasPrefixMatches) {
+    rawPrimary = deduped.filter(
+      (v) => isPrefixMatch(v) || matchesSelectedSystemVoice(v, selectedVoice),
+    );
+    const primarySet = new Set(rawPrimary);
+    rawSecondary = deduped.filter((v) => !primarySet.has(v));
+  } else {
+    rawPrimary = [...deduped];
+    rawSecondary = [];
+  }
+
+  const sortedPrimary = sortVoices(rawPrimary);
+  const sortedSecondary = sortVoices(rawSecondary);
+
+  // Cap excessive raw `com.google.android.tts` `x-*` variants in the collapsed view to 6,
+  // while keeping 100% of third-party engines (`MultiTTS`, `sherpa-onnx`, OEM TTS) and active voice.
+  const finalPrimary: Voice[] = [];
+  const overflowGoogleVariants: Voice[] = [];
+  let googleXCount = 0;
+  for (const v of sortedPrimary) {
+    const isGoogleXVariant =
+      (v.engine ?? '').toLowerCase() === 'com.google.android.tts' &&
+      /-x-/i.test(v.id) &&
+      !matchesSelectedSystemVoice(v, selectedVoice);
+    if (isGoogleXVariant) {
+      googleXCount += 1;
+      if (googleXCount > GOOGLE_TTS_COLLAPSED_X_CAP) {
+        overflowGoogleVariants.push(v);
+        continue;
+      }
+    }
+    finalPrimary.push(v);
+  }
+
+  const finalSecondary =
+    overflowGoogleVariants.length > 0
+      ? [...overflowGoogleVariants, ...sortedSecondary]
+      : sortedSecondary;
+
+  return {
+    primary: finalPrimary,
+    secondary: finalSecondary,
+    all: [...finalPrimary, ...finalSecondary],
+  };
+}
+
+const DIALECT_LABELS: Readonly<
+  Record<string, { readonly zh: string; readonly en: string; readonly ja: string }>
+> = {
+  'zh-cn': { zh: '普通话', en: 'Mandarin', ja: '中国語（普通話）' },
+  'zh-tw': { zh: '台湾普通话', en: 'Taiwan Mandarin', ja: '中国語（台湾）' },
+  'zh-hk': { zh: '粤语', en: 'Cantonese', ja: '広東語' },
+  'en-us': { zh: '美式英语', en: 'US English', ja: '英語（米国）' },
+  'en-gb': { zh: '英式英语', en: 'UK English', ja: '英語（英国）' },
+  'en-au': { zh: '澳式英语', en: 'AU English', ja: '英語（豪州）' },
+  'en-ie': { zh: '爱尔兰英语', en: 'IE English', ja: '英語（アイルランド）' },
+  'en-in': { zh: '印度英语', en: 'IN English', ja: '英語（インド）' },
+  'en-za': { zh: '南非英语', en: 'ZA English', ja: '英語（南アフリカ）' },
+  'ja-jp': { zh: '日语', en: 'Japanese', ja: '日本語' },
+  'ko-kr': { zh: '韩语', en: 'Korean', ja: '韓国語' },
+  'fr-fr': { zh: '法语', en: 'French', ja: 'フランス語' },
+  'fr-ca': { zh: '加拿大法语', en: 'CA French', ja: 'フランス語（カナダ）' },
+  'de-de': { zh: '德语', en: 'German', ja: 'ドイツ語' },
+  'es-es': { zh: '西班牙语', en: 'Spanish', ja: 'スペイン語' },
+  'es-mx': { zh: '墨西哥西语', en: 'MX Spanish', ja: 'スペイン語（メキシコ）' },
+  'ru-ru': { zh: '俄语', en: 'Russian', ja: 'ロシア語' },
+  'pt-br': { zh: '巴西葡语', en: 'BR Portuguese', ja: 'ポルトガル語' },
+  'it-it': { zh: '意大利语', en: 'Italian', ja: 'イタリア語' },
+};
+
+/**
+ * Formats localized human metadata for a `System` voice row (`VoiceSheet`), e.g.:
+ * - `zh`: `普通话 · 高音质`, `普通话 · 增强`, `普通话`, `台湾普通话`, `粤语`, `sherpa-onnx · 普通话 · 高音质`
+ * - `en`: `Mandarin · Premium`, `US English · Enhanced`, `UK English`
+ * - `ja`: `中国語（普通話） · 高音質`, `日本語 · 拡張`
+ */
+export function formatSystemVoiceMeta(v: Voice, locale = 'en'): string {
+  const loc = (locale || 'en').toLowerCase();
+  const langGroup: 'zh' | 'ja' | 'en' = loc.startsWith('zh')
+    ? 'zh'
+    : loc.startsWith('ja')
+      ? 'ja'
+      : 'en';
+
+  const canon = canonicalizeSystemVoiceLang(v.lang, locale).toLowerCase();
+  const dialectEntry = DIALECT_LABELS[canon];
+  const dialectLabel = dialectEntry ? dialectEntry[langGroup] : v.lang || 'System';
+
+  let qualityBadge = '';
+  if (v.quality === 'neural') {
+    qualityBadge = langGroup === 'zh' ? '高音质' : langGroup === 'ja' ? '高音質' : 'Premium';
+  } else if (v.quality === 'enhanced') {
+    qualityBadge = langGroup === 'zh' ? '增强' : langGroup === 'ja' ? '拡張' : 'Enhanced';
+  } else if (v.quality === 'remote' || !v.local) {
+    qualityBadge = langGroup === 'zh' ? '在线' : langGroup === 'ja' ? 'オンライン' : 'Online';
+  }
+
+  let engineBadge = '';
+  if (v.engine && v.engine !== 'System' && !v.engine.toLowerCase().startsWith('com.apple.')) {
+    const shortEngine =
+      v.engine.toLowerCase() === 'com.google.android.tts' ? 'Google TTS' : v.engine;
+    if (!v.name.toLowerCase().startsWith(shortEngine.toLowerCase())) {
+      engineBadge = shortEngine;
+    }
+  }
+
+  const parts: string[] = [];
+  if (engineBadge) parts.push(engineBadge);
+  if (dialectLabel) parts.push(dialectLabel);
+  if (qualityBadge) parts.push(qualityBadge);
+  return parts.join(' · ');
 }

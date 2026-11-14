@@ -29,6 +29,89 @@ import { useSpeechModelStore } from './speech-model-store';
 
 const MIN_QUEUE_HORIZON = 25;
 
+function normalizeLangTagClean(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw.trim().replace(/_/g, '-');
+  if (!cleaned) return null;
+  const lower = cleaned.toLowerCase();
+  if (lower === 'und' || lower === 'mul' || lower === 'zxx' || lower === 'unknown') {
+    return null;
+  }
+  const parts = cleaned.split('-');
+  if (parts.length === 1) return parts[0]!.toLowerCase();
+  return [
+    parts[0]!.toLowerCase(),
+    ...parts.slice(1).map((p) => {
+      if (p.length === 4 && /^[a-z]+$/i.test(p)) {
+        return p[0]!.toUpperCase() + p.slice(1).toLowerCase();
+      }
+      return p.length === 2 ? p.toUpperCase() : p;
+    }),
+  ].join('-');
+}
+
+/**
+ * Resolves the effective book BCP-47 language from container metadata + sampled utterance text (`v0.2.5`):
+ * - Chinese `.txt`/`.md` files (`metaLang === null`) or Chinese/Japanese/Korean EPUBs mis-tagged with
+ *   `<dc:language>en</dc:language>` adopt `sampleUtteranceLang` (`'zh-CN'`, `'ja'`, `'ko'`).
+ * - Bare `'zh'` upgrades to regional `'zh-CN'` when `sampleUtteranceLang` is `'zh-CN'`, while preserving
+ *   explicit `'zh-TW'` / `'zh-HK'` metadata.
+ */
+export function resolveEffectiveBookLang(
+  metaLang: string | null | undefined,
+  sampleUtteranceLang: string | null | undefined,
+): string | null {
+  const normMeta = normalizeLangTagClean(metaLang);
+  const normSample = normalizeLangTagClean(sampleUtteranceLang);
+  const samplePrimary = normSample?.split('-')[0]?.toLowerCase() ?? null;
+  const metaPrimary = normMeta?.split('-')[0]?.toLowerCase() ?? null;
+
+  if (samplePrimary === 'zh' || samplePrimary === 'ja' || samplePrimary === 'ko') {
+    if (!normMeta || metaPrimary !== samplePrimary) {
+      return normSample;
+    }
+    if (normMeta === 'zh' && normSample && normSample.includes('-')) {
+      return normSample;
+    }
+  }
+  return normMeta ?? normSample ?? null;
+}
+
+function inferSampleUtteranceLang(
+  utterances: readonly Utterance[],
+  startIdx: number,
+  targetUtteranceLang: string | null | undefined,
+): string | null {
+  const normTarget = normalizeLangTagClean(targetUtteranceLang);
+  const targetPrimary = normTarget?.split('-')[0]?.toLowerCase() ?? null;
+  if (targetPrimary === 'zh' || targetPrimary === 'ja' || targetPrimary === 'ko') {
+    return normTarget;
+  }
+  // Handle chapters whose very first token is an ASCII chapter number (`"1"`, `"Chapter 1"`) followed by CJK prose.
+  const windowSlice = utterances.slice(startIdx, startIdx + 8);
+  if (windowSlice.length >= 2) {
+    const counts = new Map<string, { count: number; firstTag: string }>();
+    for (const u of windowSlice) {
+      const tag = normalizeLangTagClean(u.lang);
+      const p = tag?.split('-')[0]?.toLowerCase();
+      if (tag && (p === 'zh' || p === 'ja' || p === 'ko')) {
+        const prev = counts.get(p);
+        if (prev) {
+          prev.count += 1;
+        } else {
+          counts.set(p, { count: 1, firstTag: tag });
+        }
+      }
+    }
+    for (const entry of counts.values()) {
+      if (entry.count >= 2 && entry.count > windowSlice.length / 2) {
+        return entry.firstTag;
+      }
+    }
+  }
+  return normTarget;
+}
+
 export interface ReadAloudStoreState {
   active: boolean;
   bookId: BookId | null;
@@ -176,9 +259,13 @@ export class ReadAloudController {
     }
   }
 
-  resolvePreferredVoice(bookLang: string | null): VoiceRef {
+  resolvePreferredVoice(
+    bookLang: string | null,
+    sampleUtteranceLang?: string | null,
+  ): VoiceRef {
     const settings = this.getSettings();
-    const langKey = (bookLang?.split('-')[0] ?? 'default').toLowerCase();
+    const effectiveLang = resolveEffectiveBookLang(bookLang, sampleUtteranceLang);
+    const langKey = (effectiveLang?.split('-')[0] ?? 'default').toLowerCase();
     const explicit = settings.preferredVoices[langKey] ?? settings.preferredVoices.default;
     if (explicit) {
       if (explicit.kind === 'edge' && !settings.edgeVoicesEnabled) {
@@ -256,6 +343,7 @@ export class ReadAloudController {
       ...(options.pageEndOffset !== undefined ? { pageEndOffset: options.pageEndOffset } : {}),
       preferContaining: options.preferContaining ?? false,
       voice,
+      resolveVoiceFromEffectiveLang: true,
       rate,
       sleepTimer: { mode: 'off' },
       chapterTitle: options.chapterTitle ?? this.session.meta.title,
@@ -330,6 +418,7 @@ export class ReadAloudController {
     readonly pageEndOffset?: number;
     readonly preferContaining: boolean;
     readonly voice: VoiceRef;
+    readonly resolveVoiceFromEffectiveLang?: boolean;
     readonly rate: number;
     readonly sleepTimer: SleepTimerConfig;
     readonly chapterTitle: string;
@@ -380,8 +469,32 @@ export class ReadAloudController {
       0,
       this.utterances.findIndex((u) => u.id === targetUtterance.id),
     );
-    await this.stockAheadUntilHorizon(startIdx, MIN_QUEUE_HORIZON, options.voice);
+    const sampleLang = inferSampleUtteranceLang(
+      this.utterances,
+      startIdx,
+      targetUtterance.lang,
+    );
+    const effectiveBookLang = resolveEffectiveBookLang(this.session.meta.language, sampleLang);
+    const effectiveVoice = options.resolveVoiceFromEffectiveLang
+      ? this.resolvePreferredVoice(effectiveBookLang)
+      : options.voice;
 
+    await this.stockAheadUntilHorizon(startIdx, MIN_QUEUE_HORIZON, effectiveVoice);
+
+    if (
+      !ReadAloudController.isSameVoiceRef(effectiveVoice, options.voice) &&
+      effectiveVoice.kind === 'kokoro' &&
+      effectiveVoice.voiceId
+    ) {
+      const reannotated = await this.annotateForVoice(this.utterances, effectiveVoice);
+      this.utterances = reannotated;
+      this.utteranceById.clear();
+      for (const u of reannotated) {
+        this.utteranceById.set(u.id, u);
+      }
+    }
+
+    const activeStartUtterance = this.utterances[startIdx] ?? targetUtterance;
     const settings = this.getSettings();
     const coverUrl = this.host.library.coverUrl(options.bookId);
 
@@ -390,12 +503,12 @@ export class ReadAloudController {
       bookId: options.bookId,
       bookTitle: this.session.meta.title,
       bookAuthor: this.session.meta.authors.join(', '),
-      bookLang: this.session.meta.language,
+      bookLang: effectiveBookLang,
       status: 'playing',
       rate: options.rate,
-      voice: options.voice,
+      voice: effectiveVoice,
       sleepTimer: options.sleepTimer,
-      activeUtterance: targetUtterance,
+      activeUtterance: activeStartUtterance,
       activeWordRange: null,
       slowVoiceRtf: null,
       usingFallback: false,
@@ -407,7 +520,7 @@ export class ReadAloudController {
       author: this.session.meta.authors.join(', '),
       chapterTitle: options.chapterTitle,
       coverUrl,
-      voice: options.voice,
+      voice: effectiveVoice,
       systemFallback: settings.fallbackToSystemVoice ? { kind: 'system', voiceId: null } : null,
       rate: options.rate,
     });
@@ -418,7 +531,7 @@ export class ReadAloudController {
 
     const sliceToQueue = this.utterances.slice(startIdx);
     this.player.enqueue(sliceToQueue);
-    this.configureSchedulerForVoice(options.voice, sliceToQueue, targetUtterance.id);
+    this.configureSchedulerForVoice(effectiveVoice, sliceToQueue, activeStartUtterance.id);
     this.player.play();
   }
 

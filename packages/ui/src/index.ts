@@ -74,6 +74,7 @@ export {
 } from './speech/WebSpeechPlayer';
 export {
   ReadAloudController,
+  resolveEffectiveBookLang,
   useReadAloudStore,
   type ReadAloudStoreState,
 } from './speech/ReadAloudController';
@@ -110,6 +111,11 @@ export {
   formatModelBackendBadge,
   formatModelErrorInfo,
   getSpeechModelsApi,
+  isNaturalSystemVoiceEntry,
+  canonicalizeSystemVoiceLang,
+  filterAndRankSystemVoices,
+  formatSystemVoiceMeta,
+  type FilteredSystemVoices,
 } from './speech/speech-model-store';
 export { QWEN_PRESETS, type QwenPresetItem } from './speech/VoiceSheet';
 export { AutoPageTurn, type AutoPageTurnViewAdapter } from './speech/AutoPageTurn';

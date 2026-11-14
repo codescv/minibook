@@ -11,6 +11,7 @@ import android.speech.tts.Voice;
 import androidx.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -132,28 +133,26 @@ public final class SystemTtsBackend implements ReadAloudQueueEngine.TtsBackend {
                 fallbackObj.put("engine", enginePkg);
                 fallbackObj.put("provider", "system");
                 fallbackObj.put("name", engineLabel != null && !engineLabel.isEmpty() ? engineLabel : enginePkg);
-                fallbackObj.put("lang", Locale.getDefault().toLanguageTag());
+                fallbackObj.put("lang", normalizeLanguageTag(Locale.getDefault().toLanguageTag()));
                 fallbackObj.put("quality", "enhanced");
                 fallbackObj.put("local", true);
                 sink.put(fallbackObj);
                 return;
             }
+            List<RawVoiceEntry> rawEntries = new ArrayList<>(voices.size());
             for (Voice v : voices) {
                 if (v == null) continue;
                 Locale loc = v.getLocale();
                 String langTag = loc != null ? loc.toLanguageTag() : "und";
                 boolean local = !v.isNetworkConnectionRequired();
-                String quality = mapQuality(v.getQuality(), local);
-
-                JSONObject obj = new JSONObject();
-                obj.put("id", v.getName());
-                obj.put("engine", enginePkg);
-                obj.put("provider", "system");
-                obj.put("name", formatVoiceDisplayName(v, engineLabel));
-                obj.put("lang", langTag);
-                obj.put("quality", quality);
-                obj.put("local", local);
-                sink.put(obj);
+                rawEntries.add(new RawVoiceEntry(v.getName(), langTag, v.getQuality(), local));
+            }
+            JSONArray deduped = filterAndDeduplicateEngineVoices(enginePkg, engineLabel, rawEntries);
+            for (int i = 0; i < deduped.length(); i++) {
+                JSONObject item = deduped.optJSONObject(i);
+                if (item != null) {
+                    sink.put(item);
+                }
             }
         } catch (Exception ignored) {
             // skip broken engine
@@ -165,6 +164,125 @@ public final class SystemTtsBackend implements ReadAloudQueueEngine.TtsBackend {
         }
     }
 
+    /** Lightweight value snapshot of an Android `Voice` for JVM unit testing without Robolectric. */
+    static final class RawVoiceEntry {
+        final String id;
+        final String langTag;
+        final int androidQuality;
+        final boolean local;
+
+        RawVoiceEntry(String id, String langTag, int androidQuality, boolean local) {
+            this.id = id != null ? id : "";
+            this.langTag = langTag != null ? langTag : "und";
+            this.androidQuality = androidQuality;
+            this.local = local;
+        }
+    }
+
+    /**
+     * Normalizes Android/Google TTS BCP-47 variants (`"cmn-Hans-CN"`, `"yue-Hant-HK"`, bare `"zh"`)
+     * into standard regional tags (`"zh-CN"`, `"zh-TW"`, `"zh-HK"`, `"en-US"`, `"ja-JP"`, `"ko-KR"`).
+     */
+    public static String normalizeLanguageTag(@Nullable String rawTag) {
+        if (rawTag == null) return "und";
+        String cleaned = rawTag.trim().replace('_', '-');
+        if (cleaned.isEmpty()) return "und";
+        String lower = cleaned.toLowerCase(Locale.ROOT);
+        switch (lower) {
+            case "zh":
+            case "zh-cn":
+            case "zh-hans":
+            case "zh-hans-cn":
+            case "zh-sg":
+            case "zh-hans-sg":
+            case "cmn":
+            case "cmn-cn":
+            case "cmn-hans":
+            case "cmn-hans-cn":
+                return "zh-CN";
+            case "zh-tw":
+            case "zh-hant":
+            case "zh-hant-tw":
+            case "cmn-tw":
+            case "cmn-hant":
+            case "cmn-hant-tw":
+                return "zh-TW";
+            case "zh-hk":
+            case "zh-hant-hk":
+            case "zh-mo":
+            case "zh-hant-mo":
+            case "yue":
+            case "zh-yue":
+            case "yue-hk":
+            case "yue-hant":
+            case "yue-hant-hk":
+                return "zh-HK";
+            case "en":
+                return "en-US";
+            case "ja":
+                return "ja-JP";
+            case "ko":
+                return "ko-KR";
+            default:
+                return cleaned;
+        }
+    }
+
+    /**
+     * Collapses `com.google.android.tts` `-local` / `-network` duplicate pairs (preferring `local = true`)
+     * while preserving 100% of third-party Android TTS engine voices (`MultiTTS`, `sherpa-onnx`, OEM TTS).
+     */
+    static JSONArray filterAndDeduplicateEngineVoices(
+        String enginePkg,
+        @Nullable String engineLabel,
+        List<RawVoiceEntry> entries
+    ) {
+        JSONArray out = new JSONArray();
+        if (entries == null || entries.isEmpty()) return out;
+        boolean isGoogleTts = "com.google.android.tts".equalsIgnoreCase(enginePkg);
+        Map<String, RawVoiceEntry> chosen = new LinkedHashMap<>();
+        for (RawVoiceEntry entry : entries) {
+            if (entry == null || entry.id.isEmpty()) continue;
+            String normLang = normalizeLanguageTag(entry.langTag);
+            String key;
+            if (isGoogleTts) {
+                String stem = entry.id.replaceAll("(?i)-(local|network)$", "").toLowerCase(Locale.ROOT);
+                key = normLang.toLowerCase(Locale.ROOT) + "|" + stem;
+            } else {
+                key = enginePkg + ":" + entry.id;
+            }
+            RawVoiceEntry prev = chosen.get(key);
+            if (prev == null) {
+                chosen.put(key, entry);
+            } else if (entry.local != prev.local) {
+                if (entry.local) {
+                    chosen.put(key, entry);
+                }
+            } else if (entry.androidQuality > prev.androidQuality) {
+                chosen.put(key, entry);
+            }
+        }
+
+        for (RawVoiceEntry v : chosen.values()) {
+            try {
+                String normLang = normalizeLanguageTag(v.langTag);
+                String quality = mapQuality(v.androidQuality, v.local);
+                JSONObject obj = new JSONObject();
+                obj.put("id", v.id);
+                obj.put("engine", enginePkg);
+                obj.put("provider", "system");
+                obj.put("name", formatVoiceDisplayName(v.id, enginePkg, engineLabel));
+                obj.put("lang", normLang);
+                obj.put("quality", quality);
+                obj.put("local", v.local);
+                out.put(obj);
+            } catch (Exception ignored) {
+                // skip malformed entry
+            }
+        }
+        return out;
+    }
+
     private static String mapQuality(int androidQuality, boolean local) {
         if (!local) return "remote";
         if (androidQuality >= Voice.QUALITY_VERY_HIGH) return "neural";
@@ -172,12 +290,18 @@ public final class SystemTtsBackend implements ReadAloudQueueEngine.TtsBackend {
         return "compact";
     }
 
-    private static String formatVoiceDisplayName(Voice v, @Nullable String engineLabel) {
-        String raw = v.getName();
-        if (engineLabel != null && !engineLabel.isEmpty()) {
-            return engineLabel + " · " + raw;
+    private static String formatVoiceDisplayName(
+        String rawId,
+        String enginePkg,
+        @Nullable String engineLabel
+    ) {
+        if ("com.google.android.tts".equalsIgnoreCase(enginePkg)) {
+            return rawId.replaceAll("(?i)-(local|network)$", "");
         }
-        return raw;
+        if (engineLabel != null && !engineLabel.isEmpty()) {
+            return engineLabel + " · " + rawId;
+        }
+        return rawId;
     }
 
     @Override
@@ -340,7 +464,7 @@ public final class SystemTtsBackend implements ReadAloudQueueEngine.TtsBackend {
 
         if (!voiceApplied && item.lang != null && !item.lang.isEmpty()) {
             try {
-                Locale loc = Locale.forLanguageTag(item.lang);
+                Locale loc = Locale.forLanguageTag(normalizeLanguageTag(item.lang));
                 activeTts.setLanguage(loc);
             } catch (Exception ignored) {}
         }

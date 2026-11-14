@@ -17,6 +17,8 @@ import { useT } from '../i18n';
 import { useSpeechModelStatus } from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
 
+export const APP_VERSION = '0.2.5';
+
 export { QWEN_PRESETS, type QwenPresetItem } from '../speech/VoiceSheet';
 
 type SettingsItem =
@@ -244,7 +246,7 @@ export function SettingsScreen(): ReactElement {
       ),
     });
 
-    // Version 0.2.3 · Licenses
+    // Version 0.2.5 · Licenses
     list.push({
       key: 'row-version',
       kind: 'row',
@@ -255,7 +257,7 @@ export function SettingsScreen(): ReactElement {
           data-setting-row="version-licenses"
           onClick={() => useRouteStore.getState().openSheet('licenses')}
         >
-          <span>{t('versionAndLicenses', { v: host.info.appVersion })}</span>
+          <span>{t('versionAndLicenses', { v: host.info.appVersion || APP_VERSION })}</span>
           <span className="mb-list-row-meta">▸</span>
         </button>
       ),

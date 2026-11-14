@@ -7,12 +7,17 @@ import {
 } from '@minibook/core';
 import {
   AutoPageTurn,
+  buildDefaultMockFixtures,
   createMockPlatformHost,
   createMockSpeechPlayer,
+  filterAndRankSystemVoices,
+  formatSystemVoiceMeta,
+  isNaturalSystemVoiceEntry,
   KokoroG2PClient,
   KokoroWebEngine,
   ReadAloudController,
   RefreshController,
+  resolveEffectiveBookLang,
   sliceKokoroVoiceStyle,
   useReadAloudStore,
   useSpeechModelStore,
@@ -1069,5 +1074,256 @@ describe('ReadAloudController, Single-Book Rule, 8s Fallback & RefreshController
 
     ctl.dispose();
     realG2p.dispose();
+  }, 15_000);
+
+  it('[v0.2.5] filterAndRankSystemVoices strips Eloquence/novelty voices, deduplicates speaker tiers & Google TTS pairs, ranks zh-CN ahead of zh-TW/zh-HK, and keeps active non-primary voices visible', () => {
+    const noisyVoices = [
+      // Robotic iOS/macOS Eloquence & Novelty voices -> MUST be stripped completely
+      {
+        id: 'com.apple.eloquence.zh-CN.Eddy',
+        provider: 'system' as const,
+        name: 'Eddy (中文（中国大陆）)',
+        lang: 'zh-CN',
+        quality: 'compact' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.eloquence.zh-TW.Flo',
+        provider: 'system' as const,
+        name: 'Flo',
+        lang: 'zh-TW',
+        quality: 'compact' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.speech.synthesis.voice.Zarvox',
+        provider: 'system' as const,
+        name: 'Zarvox',
+        lang: 'en-US',
+        quality: 'compact' as const,
+        local: true,
+      },
+      {
+        id: 'urn:moz-tts:osx:Boing',
+        engine: 'System',
+        provider: 'system' as const,
+        name: 'Boing',
+        lang: 'en-US',
+        quality: 'compact' as const,
+        local: true,
+      },
+      // Duplicate Tingting tiers (compact + enhanced + neural/premium) -> keep ONLY neural
+      {
+        id: 'com.apple.voice.compact.zh-CN.Tingting',
+        provider: 'system' as const,
+        name: '婷婷',
+        lang: 'zh-CN',
+        quality: 'compact' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.voice.enhanced.zh-CN.Tingting',
+        provider: 'system' as const,
+        name: '婷婷 (增强型)',
+        lang: 'zh-CN',
+        quality: 'enhanced' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.voice.premium.zh-CN.Tingting',
+        provider: 'system' as const,
+        name: '婷婷 (高音质)',
+        lang: 'zh-CN',
+        quality: 'neural' as const,
+        local: true,
+      },
+      // Additional Mainland Mandarin natural voice
+      {
+        id: 'com.apple.voice.enhanced.zh-CN.Lili',
+        provider: 'system' as const,
+        name: '莉莉',
+        lang: 'zh-CN',
+        quality: 'enhanced' as const,
+        local: true,
+      },
+      // Third-party Android MultiTTS voice -> MUST stay at the very top of primary!
+      {
+        id: 'multitts:xiaoxiao',
+        engine: 'org.nobody.multitts',
+        provider: 'system' as const,
+        name: 'MultiTTS · 晓晓',
+        lang: 'zh-CN',
+        quality: 'neural' as const,
+        local: true,
+      },
+      // Android Google TTS -local vs -network pair -> collapse to -local
+      {
+        id: 'cmn-cn-x-ccc-network',
+        engine: 'com.google.android.tts',
+        provider: 'system' as const,
+        name: 'cmn-cn-x-ccc',
+        lang: 'cmn-Hans-CN',
+        quality: 'remote' as const,
+        local: false,
+      },
+      {
+        id: 'cmn-cn-x-ccc-local',
+        engine: 'com.google.android.tts',
+        provider: 'system' as const,
+        name: 'cmn-cn-x-ccc',
+        lang: 'cmn-Hans-CN',
+        quality: 'enhanced' as const,
+        local: true,
+      },
+      // Non-Mainland dialects (zh-TW, zh-HK) & English -> belong in secondary unless selected
+      {
+        id: 'com.apple.voice.compact.zh-TW.Meijia',
+        provider: 'system' as const,
+        name: '美佳',
+        lang: 'zh-TW',
+        quality: 'compact' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.voice.enhanced.zh-HK.Sinji',
+        provider: 'system' as const,
+        name: '善怡',
+        lang: 'zh-HK',
+        quality: 'enhanced' as const,
+        local: true,
+      },
+      {
+        id: 'com.apple.voice.enhanced.en-US.Samantha',
+        provider: 'system' as const,
+        name: 'Samantha',
+        lang: 'en-US',
+        quality: 'enhanced' as const,
+        local: true,
+      },
+    ];
+
+    expect(isNaturalSystemVoiceEntry(noisyVoices[0]!)).toBe(false);
+    expect(isNaturalSystemVoiceEntry(noisyVoices[2]!)).toBe(false);
+    expect(isNaturalSystemVoiceEntry(noisyVoices[3]!)).toBe(false);
+    expect(isNaturalSystemVoiceEntry(noisyVoices[6]!)).toBe(true);
+    expect(isNaturalSystemVoiceEntry(noisyVoices[8]!)).toBe(true);
+
+    const ranked = filterAndRankSystemVoices(noisyVoices, 'zh', 'zh-CN', {
+      kind: 'system',
+      voiceId: null,
+    });
+
+    // 0 Eloquence or novelty voices anywhere in `all`
+    expect(ranked.all.some((v) => v.id.includes('eloquence') || v.name === 'Zarvox' || v.name === 'Boing')).toBe(false);
+    // Tingting deduplicated to single `premium` entry, Google TTS deduplicated to `-local`
+    expect(ranked.primary.map((v) => v.id)).toEqual([
+      'multitts:xiaoxiao',
+      'com.apple.voice.premium.zh-CN.Tingting',
+      'cmn-cn-x-ccc-local',
+      'com.apple.voice.enhanced.zh-CN.Lili',
+    ]);
+    // Secondary holds zh-TW & zh-HK ahead of en-US
+    expect(ranked.secondary.map((v) => v.id)).toEqual([
+      'com.apple.voice.enhanced.zh-HK.Sinji',
+      'com.apple.voice.compact.zh-TW.Meijia',
+      'com.apple.voice.enhanced.en-US.Samantha',
+    ]);
+
+    // When a secondary voice (e.g. `zh-HK` Sinji) is actively selected, it stays visible in `primary`!
+    const withActiveCantonese = filterAndRankSystemVoices(noisyVoices, 'zh-CN', 'zh-CN', {
+      kind: 'system',
+      voiceId: 'com.apple.voice.enhanced.zh-HK.Sinji',
+    });
+    expect(withActiveCantonese.primary.map((v) => v.id)).toContain(
+      'com.apple.voice.enhanced.zh-HK.Sinji',
+    );
+    expect(withActiveCantonese.secondary.map((v) => v.id)).not.toContain(
+      'com.apple.voice.enhanced.zh-HK.Sinji',
+    );
+
+    // Readable metadata formatting in zh-CN & en
+    expect(formatSystemVoiceMeta(noisyVoices[6]!, 'zh-CN')).toBe('普通话 · 高音质');
+    expect(formatSystemVoiceMeta(noisyVoices[7]!, 'zh-CN')).toBe('普通话 · 增强');
+    expect(formatSystemVoiceMeta(noisyVoices[11]!, 'zh-CN')).toBe('台湾普通话');
+    expect(formatSystemVoiceMeta(noisyVoices[12]!, 'zh-CN')).toBe('粤语 · 增强');
+    expect(formatSystemVoiceMeta(noisyVoices[13]!, 'en')).toBe('US English · Enhanced');
+  });
+
+  it('[v0.2.5] ReadAloudController resolves bookLang = zh-CN and zh preferred voice for Chinese .txt (meta.language: null) and mis-tagged <dc:language>en</dc:language> Chinese EPUBs', async () => {
+    expect(resolveEffectiveBookLang(null, 'zh-CN')).toBe('zh-CN');
+    expect(resolveEffectiveBookLang('en', 'zh-CN')).toBe('zh-CN');
+    expect(resolveEffectiveBookLang('en-US', 'zh-CN')).toBe('zh-CN');
+    expect(resolveEffectiveBookLang('zh', 'zh-CN')).toBe('zh-CN');
+    expect(resolveEffectiveBookLang('zh-TW', 'zh-TW')).toBe('zh-TW');
+    expect(resolveEffectiveBookLang('en-GB', 'en-GB')).toBe('en-GB');
+
+    const baseFixtures = buildDefaultMockFixtures();
+    const luxun = baseFixtures.find((b) => b.id === 'b_luxun')!;
+    const zhTxtFixture = {
+      ...luxun,
+      id: 'b_zh_txt',
+      fileName: 'santi.txt',
+      meta: { ...luxun.meta, title: '三体 TXT', language: null, format: 'txt' as const },
+      sections: luxun.sections.map((s) => ({ ...s, lang: null })),
+    };
+    const mistaggedZhEpub = {
+      ...luxun,
+      id: 'b_zh_mistagged_en',
+      fileName: 'mistagged-zh.epub',
+      meta: { ...luxun.meta, title: '误标英文的中文书', language: 'en', format: 'epub' as const },
+      sections: luxun.sections.map((s) => ({ ...s, lang: 'en' })),
+    };
+
+    const preferredSettings = {
+      ...DEFAULT_APP_SETTINGS,
+      preferredVoices: {
+        en: { kind: 'system' as const, voiceId: 'com.apple.voice.enhanced.en-US.Samantha' },
+        zh: { kind: 'kokoro' as const, voiceId: 'zf_018' },
+        default: { kind: 'system' as const, voiceId: null },
+      },
+    };
+
+    const host = createMockPlatformHost({
+      platform: 'ios',
+      books: [...baseFixtures, zhTxtFixture, mistaggedZhEpub],
+      initialSettings: preferredSettings,
+      initialModelStatus: {
+        state: 'ready',
+        installedVoices: ['zf_018', 'zf_001', 'af_maple'],
+      },
+    });
+    useSpeechModelStore.getState().setStatus(host.getModelStatus());
+    const player = createMockSpeechPlayer();
+    const g2p = new KokoroG2PClient();
+
+    const ctl = new ReadAloudController({
+      host,
+      player,
+      getSettings: () => preferredSettings,
+      getIsEink: () => false,
+      g2pClient: g2p,
+    });
+
+    // 1. Chinese .txt (`meta.language === null`) -> bookLang becomes `'zh-CN'` and picks `'zh'` preferred voice `zf_018`!
+    await ctl.start({
+      bookId: 'b_zh_txt',
+      startLocator: { section: 0, offset: 0 },
+    });
+    expect(useReadAloudStore.getState().bookLang).toBe('zh-CN');
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+    expect((player.currentUtterance()?.phonemeIds?.length ?? 0) > 0).toBe(true);
+
+    // 2. Mis-tagged `<dc:language>en</dc:language>` Chinese EPUB -> bookLang becomes `'zh-CN'` (NOT `'en'`)
+    //    and picks `'zh'` preferred voice `zf_018` (NOT `'en'` Samantha)!
+    await ctl.start({
+      bookId: 'b_zh_mistagged_en',
+      startLocator: { section: 0, offset: 0 },
+    });
+    expect(useReadAloudStore.getState().bookLang).toBe('zh-CN');
+    expect(useReadAloudStore.getState().voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+    expect((await player.getState()).voice).toEqual({ kind: 'kokoro', voiceId: 'zf_018' });
+
+    ctl.dispose();
+    g2p.dispose();
   }, 15_000);
 });

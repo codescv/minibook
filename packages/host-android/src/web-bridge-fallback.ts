@@ -429,14 +429,23 @@ export function createWebFallbackMiniBookBridge(): MiniBookNativeBridge {
         return { voices: [] };
       }
       try {
-        const raw = window.speechSynthesis.getVoices();
+        const raw = window.speechSynthesis.getVoices().filter((v) => {
+          const uri = (v.voiceURI || '').toLowerCase();
+          return !uri.includes('.eloquence.') && !uri.includes('.speech.synthesis.voice.');
+        });
         return {
           voices: raw.map((v) => ({
             id: v.voiceURI || v.name,
             provider: 'system' as const,
             name: v.name,
             lang: v.lang || 'en-US',
-            quality: v.localService ? ('enhanced' as const) : ('remote' as const),
+            quality: !v.localService
+              ? ('remote' as const)
+              : (v.voiceURI || '').toLowerCase().includes('.premium.')
+                ? ('neural' as const)
+                : (v.voiceURI || '').toLowerCase().includes('.compact.')
+                  ? ('compact' as const)
+                  : ('enhanced' as const),
             local: v.localService,
           })),
         };

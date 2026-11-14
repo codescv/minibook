@@ -812,7 +812,10 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
     fireEvent.click(await screen.findByTestId('tts-bar-voice-btn'));
-    expect(await screen.findByTestId('tts-guide-system')).toHaveTextContent(/Premium/i);
+    const iosSysGuide = await screen.findByTestId('tts-guide-system');
+    expect(iosSysGuide).toHaveTextContent(/restricts Siri voices/i);
+    expect(iosSysGuide).toHaveTextContent(/Premium/i);
+    expect(screen.getByRole('option', { name: 'System Default' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'On-Device' }));
     expect(await screen.findByTestId('tts-guide-on-device')).toHaveTextContent(/Female 18 Warm ★/i);
     expect(screen.queryByTestId('kokoro-precision-row')).toBeNull();

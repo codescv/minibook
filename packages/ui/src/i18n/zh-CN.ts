@@ -91,7 +91,7 @@ export const zhCN: I18nDict = {
   everyNPages: '每 {n} 页',
   keepScreenOn: '阅读时保持亮屏',
   voice: '语音',
-  systemDefault: '系统',
+  systemDefault: '跟随系统默认',
   edgeNeuralVoices: 'Edge 神经语音',
   customSpeechServer: '自定义语音服务',
   notSet: '未设置',
@@ -153,9 +153,9 @@ export const zhCN: I18nDict = {
   ttsTabOnDevice: '本地模型',
   ttsTabServer: 'Server',
   ttsGuideSystem:
-    '调用手机或电脑自带的系统语音（iOS Siri 语音、Android 系统 TTS 及 MultiTTS）。无需下载、零空间占用，离线即点即读。',
+    '调用手机或电脑自带的系统语音（Android 系统 TTS、MultiTTS 及 macOS 语音）。无需下载、零空间占用，离线即点即读。',
   ttsGuideSystemIos:
-    '调用 iPhone 自带系统语音，零空间占用、离线即读。提示：前往「iOS 设置 → 辅助功能 → 朗读内容 → 声音 → 中文」下载 Siri 或「高品质 (Premium)」语音包后，即可在此选用更高音质的苹果离线人声。',
+    '注：苹果 iOS 限制第三方 App 调用 Siri 声音（即便系统设置选了 Siri，也会回退为普通语音）。如需高音质苹果离线人声，请前往「iOS 设置 → 辅助功能 → 朗读内容 → 声音 → 中文 → 普通话」下载非 Siri 的「高音质 / 增强型」语音（如「悦」「莉莉」「婷婷」），下载后即可在此直接选用。',
   ttsGuideOnDevice:
     '下载约 {mb} MB 的 Kokoro-82M 端侧神经模型到本机，由设备芯片离线合成中英文自然人声。无需联网或配服务器，支持熄屏后台朗读与逐词高亮。',
   ttsGuideOnDeviceIos:
@@ -167,7 +167,7 @@ export const zhCN: I18nDict = {
   precisionFp32: '高清无损 · 324 MB',
   downloadHd: '下载高清版',
   downloadStandard: '下载标准版',
-  showAllSystemVoices: '显示全部系统语音（{n}）',
+  showAllSystemVoices: '更多系统语音（{n}）',
   showBookLangVoicesOnly: '仅显示当前书籍语言',
   kokoroSizeAndVoices: '{mb} MB · {count} 种音色',
   customMirrorHint: '可选：自定义 Hugging Face 镜像站域名（默认留空）',

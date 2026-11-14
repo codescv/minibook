@@ -1,6 +1,6 @@
 {
   "name": "@minibook/core",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "MiniBook platform-neutral core: shared types, PlatformHost & SpeechPlayer contracts, pure-TS EPUB/MOBI/KF8/FB2/TXT/Markdown parsers, DOM-free sanitizer, canonical text model, Locator, sentence segmenter, SynthScheduler, and Edge/OpenAI speech providers.",
   "license": "MIT",
   "type": "module",

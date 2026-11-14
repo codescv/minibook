@@ -91,7 +91,7 @@ export const ja: I18nDict = {
   everyNPages: '{n} ページごと',
   keepScreenOn: '画面を常時オン',
   voice: '音声',
-  systemDefault: 'システム',
+  systemDefault: 'システム標準',
   edgeNeuralVoices: 'Edge ニューラル音声',
   customSpeechServer: 'カスタム音声サーバー',
   notSet: '未設定',
@@ -153,9 +153,9 @@ export const ja: I18nDict = {
   ttsTabOnDevice: 'ローカル',
   ttsTabServer: 'Server',
   ttsGuideSystem:
-    '端末標準のシステム音声（iOS Siri・Android TTS）を使用します。ダウンロード不要・容量ゼロでオフラインですぐ読み上げます。',
+    '端末標準のシステム音声（Android TTS・MultiTTS・macOS 音声）を使用します。ダウンロード不要・容量ゼロでオフラインですぐ読み上げます。',
   ttsGuideSystemIos:
-    'iPhone 標準のシステム音声をオフラインで使用します。ヒント：「iOS 設定 → アクセシビリティ → 読み上げコンテンツ → 声」で Siri や高音質（Premium）音声をダウンロードすると選択できます。',
+    '注：Apple の制限により、サードパーティ製アプリからは Siri 音声を利用できません（OS 設定で Siri を選んでいても標準音声にフォールバックします）。高音質な Apple オフライン音声を使うには「iOS 設定 → アクセシビリティ → 読み上げコンテンツ → 声」から Siri 以外の「プレミアム / 拡張」音声（Yue・Lili・Tingting・Kyoko 等）をダウンロードして下から選択してください。',
   ttsGuideOnDevice:
     '約 {mb} MB の Kokoro-82M 神経音声モデルを端末に保存し、オフラインで自然な中英音声・ロック画面再生・単語ハイライトを実現します。',
   ttsGuideOnDeviceIos:
@@ -167,7 +167,7 @@ export const ja: I18nDict = {
   precisionFp32: '高音質 · 324 MB',
   downloadHd: '高音質版を取得',
   downloadStandard: '標準版を取得',
-  showAllSystemVoices: 'すべてのシステム音声を表示（{n}）',
+  showAllSystemVoices: 'その他のシステム音声（{n}）',
   showBookLangVoicesOnly: '本の言語のみ表示',
   kokoroSizeAndVoices: '{mb} MB · {count} 音声',
   customMirrorHint: '任意：カスタム Hugging Face ミラー URL（空欄で既定）',

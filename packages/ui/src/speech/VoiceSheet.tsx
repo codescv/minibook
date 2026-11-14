@@ -22,15 +22,28 @@ import { useHostContext } from '../host/HostContext';
 import { resolveLocale, useT } from '../i18n';
 import { useReadAloudStore, type ReadAloudController } from './ReadAloudController';
 import {
+  canonicalizeSystemVoiceLang,
+  filterAndRankSystemVoices,
   formatKokoroVoiceLabel,
   formatModelBackendBadge,
   formatModelErrorInfo,
   formatSteppedEinkPct,
+  formatSystemVoiceMeta,
   getSpeechModelsApi,
+  isNaturalSystemVoiceEntry,
   resolveEffectiveModelSourceHost,
   useSpeechModelStatus,
   useSpeechModelStore,
+  type FilteredSystemVoices,
 } from './speech-model-store';
+
+export {
+  canonicalizeSystemVoiceLang,
+  filterAndRankSystemVoices,
+  formatSystemVoiceMeta,
+  isNaturalSystemVoiceEntry,
+  type FilteredSystemVoices,
+};
 
 export interface QwenPresetItem {
   readonly label: string;
@@ -117,12 +130,16 @@ export function VoiceSheet({
   onCloseSheet,
 }: VoiceSheetProps): ReactElement | null {
   const t = useT();
-  const locale = useMemo(() => resolveLocale(), []);
+  const locale = useMemo(
+    () => resolveLocale(typeof document !== 'undefined' ? document.documentElement.lang : undefined),
+    [],
+  );
   const { host, speechPlayer, settings, isEink, refreshController, updateSettings } =
     useHostContext();
   const rate = useReadAloudStore((s) => s.rate);
   const selectedVoice = useReadAloudStore((s) => s.voice);
   const bookLang = useReadAloudStore((s) => s.bookLang);
+  const activeUtteranceLang = useReadAloudStore((s) => s.activeUtterance?.lang ?? null);
   const slowVoiceRtf = useReadAloudStore((s) => s.slowVoiceRtf);
 
   const modelsApi = getSpeechModelsApi(host);
@@ -278,7 +295,11 @@ export function VoiceSheet({
     };
   }, [open, speechPlayer, host, settings.edgeVoicesEnabled]);
 
-  const langPrefix = (bookLang?.split('-')[0] ?? 'en').toLowerCase();
+  const targetSystemLang = useMemo(
+    () => canonicalizeSystemVoiceLang(activeUtteranceLang || bookLang || locale || 'en', locale),
+    [activeUtteranceLang, bookLang, locale],
+  );
+  const langPrefix = (targetSystemLang.split('-')[0] ?? 'en').toLowerCase();
 
   const selectAndPersistVoice = (ref: VoiceRef, targetLangKey = langPrefix): void => {
     void updateSettings({
@@ -381,18 +402,14 @@ export function VoiceSheet({
         ),
       });
 
-      const matchesBookLang = (v: Voice): boolean => {
-        const vl = (v.lang.split('-')[0] ?? '').toLowerCase();
-        return !vl || vl === langPrefix;
-      };
-      const filteredSystem = systemVoices.filter(matchesBookLang);
-      const hasFilteredSubset =
-        filteredSystem.length > 0 && filteredSystem.length < systemVoices.length;
-      const sysSource =
-        showAllSystemVoices || filteredSystem.length === 0 ? systemVoices : filteredSystem;
-      const sortedSys = [...sysSource].sort((a, b) =>
-        (a.engine ?? 'System').localeCompare(b.engine ?? 'System'),
+      const rankedSystem = filterAndRankSystemVoices(
+        systemVoices,
+        targetSystemLang,
+        locale,
+        selectedVoice,
       );
+      const hasFilteredSubset = rankedSystem.secondary.length > 0;
+      const sortedSys = showAllSystemVoices ? rankedSystem.all : rankedSystem.primary;
 
       const defaultSysRef: VoiceRef = { kind: 'system', voiceId: null };
       const defaultSelected = voiceMatchesRef(defaultSysRef, selectedVoice);
@@ -419,7 +436,9 @@ export function VoiceSheet({
           ...(v.engine ? { engine: v.engine } : {}),
         };
         const selected = voiceMatchesRef(ref, selectedVoice);
-        const vLangKey = (v.lang.split('-')[0] ?? langPrefix).toLowerCase() || langPrefix;
+        const vCanon = canonicalizeSystemVoiceLang(v.lang, locale);
+        const vLangKey = (vCanon.split('-')[0] ?? langPrefix).toLowerCase() || langPrefix;
+        const metaLabel = formatSystemVoiceMeta(v, locale);
         rows.push({
           key: `sys:${v.engine ?? 'System'}:${v.id}`,
           render: () => (
@@ -432,7 +451,7 @@ export function VoiceSheet({
             >
               <span>
                 {v.name}{' '}
-                <span className="mb-list-row-meta">{v.engine ?? v.lang}</span>
+                <span className="mb-list-row-meta">{metaLabel}</span>
               </span>
               <span aria-hidden="true">{selected ? '✓' : ''}</span>
             </button>
@@ -453,7 +472,7 @@ export function VoiceSheet({
               <span className="mb-list-row-meta">
                 {showAllSystemVoices
                   ? t('showBookLangVoicesOnly')
-                  : t('showAllSystemVoices', { n: systemVoices.length })}
+                  : t('showAllSystemVoices', { n: rankedSystem.secondary.length })}
               </span>
               <span className="mb-list-row-meta">{showAllSystemVoices ? '▴' : '▾'}</span>
             </button>
@@ -1535,6 +1554,7 @@ export function VoiceSheet({
     srvVoice,
     srvApiKey,
     isEink,
+    targetSystemLang,
     langPrefix,
     locale,
     host,

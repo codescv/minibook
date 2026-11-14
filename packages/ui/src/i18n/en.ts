@@ -89,7 +89,7 @@ export const en = {
   everyNPages: 'Every {n} pages',
   keepScreenOn: 'Keep screen on',
   voice: 'Voice',
-  systemDefault: 'System',
+  systemDefault: 'System Default',
   edgeNeuralVoices: 'Edge neural voices',
   customSpeechServer: 'Custom speech server',
   notSet: 'Not set',
@@ -151,9 +151,9 @@ export const en = {
   ttsTabOnDevice: 'On-Device',
   ttsTabServer: 'Server',
   ttsGuideSystem:
-    'Uses voices built into your phone or computer (iOS Siri, Android TTS & MultiTTS). No download or storage needed — works offline immediately.',
+    'Uses voices built into your phone or computer (Android TTS, MultiTTS, or macOS). No download or storage needed — works offline immediately.',
   ttsGuideSystemIos:
-    'Uses built-in iPhone voices offline with zero app storage. Tip: Download Apple Siri or Premium Mandarin voices in iOS Settings → Accessibility → Spoken Content → Voices → Chinese, then select them here.',
+    'Note: Apple restricts Siri voices from third-party apps (even if Siri is set in iOS Settings). For richer offline Apple voices, go to iOS Settings → Accessibility → Spoken Content → Voices and download a non-Siri Premium or Enhanced voice (e.g. Yue, Lili, Tingting, or Ava), then select it below.',
   ttsGuideOnDevice:
     'Downloads the ~{mb} MB Kokoro-82M neural model onto this device for natural offline Chinese & English speech, lock-screen playback, and word highlighting.',
   ttsGuideOnDeviceIos:
@@ -165,7 +165,7 @@ export const en = {
   precisionFp32: 'HD FP32 · 324 MB',
   downloadHd: 'Download HD',
   downloadStandard: 'Download Standard',
-  showAllSystemVoices: 'Show all system voices ({n})',
+  showAllSystemVoices: 'More system voices ({n})',
   showBookLangVoicesOnly: 'Filter by book language',
   kokoroSizeAndVoices: '{mb} MB · {count} voices',
   customMirrorHint: 'Optional custom Hugging Face mirror domain (leave blank for default)',
