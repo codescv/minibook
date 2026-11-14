@@ -177,8 +177,9 @@ test.describe('Production Capacitor www Bundle (Clang-Format Guard, CSP, WebKit 
         await ctx.close();
       }
 
-      // 3. Verify Playwright WebKit (closest engine to iOS WKWebView)
+      // 3. Verify Playwright WebKit (closest engine to iOS WKWebView) including image-bearing EPUB in Reader (0 mb-res: CSP errors!)
       process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = '1';
+      const epubFixturePath = resolve(ROOT_DIR, 'fixtures/epub3-modern.epub');
       const wkBrowser = await webkit.launch({
         headless: true,
         executablePath: webkit.executablePath(),
@@ -196,9 +197,21 @@ test.describe('Production Capacitor www Bundle (Clang-Format Guard, CSP, WebKit 
           const page = await ctx.newPage();
           const wkPageErrors: string[] = [];
           const wkConsoleErrors: string[] = [];
+          const wkMbResErrors: string[] = [];
           page.on('pageerror', (err) => wkPageErrors.push(err.message));
           page.on('console', (msg) => {
-            if (msg.type() === 'error') wkConsoleErrors.push(msg.text());
+            const text = msg.text();
+            if (/mb-res:/i.test(text)) {
+              wkMbResErrors.push(text);
+            }
+            if (
+              msg.type() === 'error' &&
+              !/Blocked script execution in 'about:blank' because the document's frame is sandboxed/i.test(
+                text,
+              )
+            ) {
+              wkConsoleErrors.push(text);
+            }
           });
 
           await page.goto(`${baseUrl}/`);
@@ -231,6 +244,36 @@ test.describe('Production Capacitor www Bundle (Clang-Format Guard, CSP, WebKit 
           expect(wkDiag.titleHeight).toBeGreaterThan(20);
           expect(wkDiag.titleFontSize).toBe('28px');
           expect(wkDiag.windowOnmessageIsNull).toBe(true);
+
+          // On 393x852 WebKit, also import image-bearing epub3-modern.epub and open Reader -> assert 0 `Refused to load mb-res:` CSP errors!
+          if (vp.width === 393) {
+            const fileChooserPromise = page.waitForEvent('filechooser');
+            await page.locator('.mb-empty-state .mb-primary-btn').click();
+            const fileChooser = await fileChooserPromise;
+            await fileChooser.setFiles(epubFixturePath);
+
+            const coverBtn = page.locator('.mb-cover-item[role="button"]').first();
+            await expect(coverBtn).toBeVisible();
+            await coverBtn.click();
+
+            await page.waitForSelector('iframe.mb-reader-frame[data-frame-role="active"]');
+            await expect
+              .poll(async () =>
+                page.evaluate(() => {
+                  const nextFrame = document.querySelector<HTMLIFrameElement>(
+                    'iframe.mb-reader-frame[data-frame-role="next"]',
+                  );
+                  return Boolean(nextFrame?.contentDocument?.querySelector('img[src^="blob:"]'));
+                }),
+              )
+              .toBe(true);
+
+            // Navigate to Chapter 2 (`ornament.png` `<img>`) and verify active frame image `src` is `blob:` with 0 `mb-res:` errors
+            await page.keyboard.press('ArrowRight');
+            await page.waitForTimeout(320);
+            expect(wkMbResErrors).toEqual([]);
+          }
+
           expect(wkPageErrors).toEqual([]);
           expect(wkConsoleErrors).toEqual([]);
           await ctx.close();

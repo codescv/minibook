@@ -652,6 +652,11 @@ export class SectionFrameManager {
       options.sectionDoc.dir,
     );
     stripExecutableNodes(parsed);
+    // Rewrite all `mb-res:` placeholders (incl. `<img>`, inline styles, and XML-namespaced
+    // `<image xlink:href="mb-res:...">`) on the inert `DOMParser` tree BEFORE `adoptNode`!
+    // WebKit starts `<img>` loads inside `didMoveToNewDocument` during `frameDoc.adoptNode(...)`,
+    // so rewriting after `adoptNode` would trigger `img-src` CSP errors on `mb-res:` in WebKit.
+    resources.applyToRoot(parsed.documentElement);
 
     const adoptedRoot = frameDoc.adoptNode(parsed.documentElement);
     let head = adoptedRoot.querySelector('head');
@@ -684,9 +689,6 @@ export class SectionFrameManager {
     });
     head.appendChild(userStyle);
 
-    // Rewrite all `mb-res:` placeholders (incl. XML-namespaced `<image xlink:href="mb-res:...">`)
-    // BEFORE attaching `adoptedRoot` to `frameDoc` so zero `mb-res:` URLs trigger CSP errors (`[P1-U6]`).
-    resources.applyToRoot(adoptedRoot);
     frameDoc.replaceChild(adoptedRoot, frameDoc.documentElement);
     if (options.isEink) {
       freezeAnimatedImages(frameDoc);

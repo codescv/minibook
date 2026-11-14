@@ -66,7 +66,8 @@ export class ResourceUrlScope {
         if (this.skippedOversized.has(path)) {
           if (el.tagName.toLowerCase() === 'img' && ownerDoc) {
             const alt = el.getAttribute('alt') || '';
-            const span = ownerDoc.createElement('span');
+            const ns = el.namespaceURI || 'http://www.w3.org/1999/xhtml';
+            const span = ownerDoc.createElementNS(ns, 'span');
             span.setAttribute('data-mb-skip', '');
             span.textContent = alt;
             el.replaceWith(span);

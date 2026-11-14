@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { DEFAULT_APP_SETTINGS, type PlatformHost, type SpeechPlayer } from '@minibook/core';
 import { AppErrorBoundary } from './ErrorBoundary';
 import { installGlobalBackHandler } from './back';
@@ -218,7 +218,7 @@ function AppShell(): ReactElement {
         ? 'covered-reader'
         : 'active';
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window !== 'undefined') {
       window.__minibookMounted = true;
     }
