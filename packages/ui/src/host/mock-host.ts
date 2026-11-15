@@ -726,7 +726,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: options?.appVersion ?? '0.2.5',
+      appVersion: options?.appVersion ?? '0.2.6',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,

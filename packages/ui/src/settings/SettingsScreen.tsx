@@ -17,7 +17,7 @@ import { useT } from '../i18n';
 import { useSpeechModelStatus } from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
 
-export const APP_VERSION = '0.2.5';
+export const APP_VERSION = '0.2.6';
 
 export { QWEN_PRESETS, type QwenPresetItem } from '../speech/VoiceSheet';
 

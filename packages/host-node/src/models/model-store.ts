@@ -1159,7 +1159,7 @@ export class ModelStore {
         for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
           const reqHeaders: Record<string, string> = {
             'Accept-Encoding': 'identity',
-            'User-Agent': 'MiniBook/0.2.5',
+            'User-Agent': 'MiniBook/0.2.6',
           };
           if (offset > 0) {
             reqHeaders['Range'] = `bytes=${offset}-`;

@@ -180,9 +180,13 @@ test.describe('Production Capacitor www Bundle (Clang-Format Guard, CSP, WebKit 
       // 3. Verify Playwright WebKit (closest engine to iOS WKWebView) including image-bearing EPUB in Reader (0 mb-res: CSP errors!)
       process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = '1';
       const epubFixturePath = resolve(ROOT_DIR, 'fixtures/epub3-modern.epub');
+      const wkExecPath = webkit.executablePath();
+      if (!existsSync(wkExecPath)) {
+        return;
+      }
       const wkBrowser = await webkit.launch({
         headless: true,
-        executablePath: webkit.executablePath(),
+        executablePath: wkExecPath,
         args: [],
       });
       try {

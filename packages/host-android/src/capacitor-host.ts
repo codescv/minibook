@@ -61,7 +61,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.2.5';
+export const CAPACITOR_HOST_VERSION = '0.2.6';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
