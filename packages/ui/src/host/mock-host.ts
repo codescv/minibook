@@ -1,5 +1,6 @@
 import {
   DEFAULT_APP_SETTINGS,
+  resolveAppearanceSettings,
   KOKORO_DEFAULT_VOICES,
   MiniBookError,
   memoryByteSource,
@@ -726,7 +727,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: options?.appVersion ?? '0.2.6',
+      appVersion: options?.appVersion ?? '0.2.7',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,
@@ -746,9 +747,17 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
       },
     };
 
-    this.settingsData = {
+    const initialMerged: AppSettings = {
       ...DEFAULT_APP_SETTINGS,
       ...options?.initialSettings,
+    };
+    this.settingsData = {
+      ...initialMerged,
+      ...resolveAppearanceSettings(
+        options?.initialSettings ?? {},
+        DEFAULT_APP_SETTINGS,
+        initialMerged.theme,
+      ),
     };
     this.synthDelayMs = options?.synthDelayMs ?? 15;
     this.synthRtf = options?.synthRtf ?? 0.25;
@@ -1108,7 +1117,11 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   readonly settings: PlatformHost['settings'] = {
     get: async () => this.settingsData,
     update: async (patch) => {
-      this.settingsData = { ...this.settingsData, ...patch };
+      const merged: AppSettings = { ...this.settingsData, ...patch };
+      this.settingsData = {
+        ...merged,
+        ...resolveAppearanceSettings(patch ?? {}, this.settingsData, merged.theme),
+      };
       if (this.info.platform !== 'ios' && patch && 'kokoroPrecision' in patch) {
         const nextVariant = this.settingsData.kokoroPrecision === 'fp32' ? 'onnx-fp32' : 'onnx-q8';
         const nextTotal = nextVariant === 'onnx-fp32' ? 344_069_602 : 132_056_757;

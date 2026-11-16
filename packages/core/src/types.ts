@@ -627,6 +627,12 @@ export type SocketTransport = (opts: SocketOpenOptions, handlers: SocketHandlers
 /** Four canonical Apple Books reading themes (`UI_SPEC.md` §2.1). */
 export type ReadingTheme = 'original' | 'paper' | 'calm' | 'quiet';
 
+/**
+ * Apple Books-style Appearance, orthogonal to `ReadingTheme`: every theme has a Light and a Dark
+ * palette, and `appearanceMode` picks which one is shown (`'system'` follows `prefers-color-scheme`).
+ */
+export type AppearanceMode = 'system' | 'light' | 'dark';
+
 export type BookFontFamily = 'original' | 'serif' | 'sans';
 
 export type LineSpacingPreset = 'tight' | 'normal' | 'loose';
@@ -710,6 +716,9 @@ export interface SpeechModelsApi {
 export interface AppSettings {
   // Appearance (`UI_SPEC.md` §4.4)
   readonly theme: ReadingTheme;
+  /** Light / Dark / Match System (Apple Books Appearance), independent of `theme`. */
+  readonly appearanceMode: AppearanceMode;
+  /** @deprecated Legacy mirror of `appearanceMode === 'system'`, kept in sync for older hosts/bridges. */
   readonly matchSystemTheme: boolean;
   readonly fontFamily: BookFontFamily;
   readonly fontScale: number;
@@ -743,6 +752,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: 'original',
+  appearanceMode: 'system',
   matchSystemTheme: true,
   fontFamily: 'serif',
   fontScale: 100,
@@ -786,6 +796,45 @@ function isValidVoiceRef(raw: unknown): raw is VoiceRef {
     default:
       return false;
   }
+}
+
+function isAppearanceMode(raw: unknown): raw is AppearanceMode {
+  return raw === 'system' || raw === 'light' || raw === 'dark';
+}
+
+/**
+ * Resolves `appearanceMode` + the legacy `matchSystemTheme` mirror from a partial/legacy payload `p`
+ * merged over `base` (`theme` is the already-resolved theme of the merged result):
+ *   1. A valid `p.appearanceMode` always wins.
+ *   2. Else a legacy boolean `p.matchSystemTheme`: `true` -> `'system'`; `false` keeps an explicit
+ *      `base` Light/Dark choice, otherwise derives `'dark'` for Quiet and `'light'` for the rest.
+ *   3. Else `base.appearanceMode` (falling back to `'system'` for malformed bases).
+ * The returned `matchSystemTheme` is always `appearanceMode === 'system'`.
+ */
+export function resolveAppearanceSettings(
+  p: Readonly<Record<string, unknown>>,
+  base: Pick<AppSettings, 'appearanceMode' | 'matchSystemTheme'>,
+  theme: ReadingTheme,
+): Pick<AppSettings, 'appearanceMode' | 'matchSystemTheme'> {
+  let appearanceMode: AppearanceMode;
+  if (isAppearanceMode(p.appearanceMode)) {
+    appearanceMode = p.appearanceMode;
+  } else if (typeof p.matchSystemTheme === 'boolean') {
+    if (p.matchSystemTheme) {
+      appearanceMode = 'system';
+    } else if (isAppearanceMode(base.appearanceMode) && base.appearanceMode !== 'system') {
+      appearanceMode = base.appearanceMode;
+    } else {
+      appearanceMode = theme === 'quiet' ? 'dark' : 'light';
+    }
+  } else if (isAppearanceMode(base.appearanceMode)) {
+    appearanceMode = base.appearanceMode;
+  } else if (typeof base.matchSystemTheme === 'boolean' && !base.matchSystemTheme) {
+    appearanceMode = theme === 'quiet' ? 'dark' : 'light';
+  } else {
+    appearanceMode = 'system';
+  }
+  return { appearanceMode, matchSystemTheme: appearanceMode === 'system' };
 }
 
 /**
@@ -919,8 +968,7 @@ export function sanitizeAppSettings(
 
   return {
     theme,
-    matchSystemTheme:
-      typeof p.matchSystemTheme === 'boolean' ? p.matchSystemTheme : base.matchSystemTheme,
+    ...resolveAppearanceSettings(p, base, theme),
     fontFamily,
     fontScale,
     lineSpacing,

@@ -1,11 +1,18 @@
 /*
  * @minibook/ui — Bundled Literata Variable Font & 4 Reading Themes (themes.css)
  *
- * Four canonical Apple Books reading themes:
- *   - Original (`data-theme="original"` | default light): #FFFFFF / #1C1C1E (17.0:1)
- *   - Paper    (`data-theme="paper"`):                    #EEEDE8 / #2A2926 (12.2:1)
- *   - Calm     (`data-theme="calm"`):                     #F4ECD8 / #3B3024 (10.9:1)
- *   - Quiet    (`data-theme="quiet"` | system dark):      #2C2C2E / #D8D8DC (9.8:1)
+ * Four canonical Apple Books reading themes, each with a Light AND a Dark palette.
+ * `data-theme` picks the theme; the orthogonal `data-appearance` (`light | dark | system`)
+ * picks the palette (`system` follows `@media (prefers-color-scheme: dark)`):
+ *
+ *   Theme      Light (bg / fg)        Dark (bg / fg)
+ *   Original   #FFFFFF / #1C1C1E      #141416 / #E5E5EA
+ *   Paper      #EEEDE8 / #2A2926      #232220 / #D6D4CE
+ *   Calm       #F4ECD8 / #3B3024      #2B251E / #DDD2C0   (warm sepia, amber highlights)
+ *   Quiet      #F2F2F7 / #2C2C2E      #2C2C2E / #D8D8DC
+ *
+ * Dark selectors exclude `data-eink` so E-Ink (`eink.css`) always stays 1-bit black on white.
+ * Keep in lockstep with `THEME_PALETTES` in `theme-manager.ts`.
  *
  * Incorporates Stage-2 P2 #1 polish: `--mb-fg-caption` uses `--mb-fg-quiet`
  * (4.6–5.3:1 WCAG AA contrast, zero alpha dilution).
@@ -140,6 +147,77 @@
   --mb-hl-search: rgba(255, 204, 0, 0.36);
 }
 
+/* Original — Dark palette (explicit Dark, or Match System while the OS is dark) */
+:root[data-theme="original"][data-appearance="dark"]:not([data-eink="1"]):not([data-eink="true"]) {
+  color-scheme: dark;
+
+  --mb-bg: #141416;
+  --mb-fg: #E5E5EA;
+  --mb-fg-quiet: #98989F;
+  --mb-fg-caption: rgba(229, 229, 234, 0.40);
+  --mb-line: #2C2C2E;
+  --mb-accent: #0A84FF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF453A;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #1C1C1E;
+  --mb-bg-sheet: #1C1C1E;
+  --mb-bg-control: #242426;
+  --mb-bg-control-active: #3A3A3C;
+  --mb-bg-cover-fallback: #26262A;
+
+  --mb-scrim: rgba(0, 0, 0, 0.48);
+  --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+  --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+  --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+  --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+  --mb-hl-sentence: rgba(10, 132, 255, 0.24);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #409CFF;
+  --mb-hl-search: rgba(255, 214, 10, 0.32);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="original"][data-appearance="system"]:not([data-eink="1"]):not([data-eink="true"]) {
+    color-scheme: dark;
+
+    --mb-bg: #141416;
+    --mb-fg: #E5E5EA;
+    --mb-fg-quiet: #98989F;
+    --mb-fg-caption: rgba(229, 229, 234, 0.40);
+    --mb-line: #2C2C2E;
+    --mb-accent: #0A84FF;
+    --mb-accent-fg: #FFFFFF;
+    --mb-danger: #FF453A;
+    --mb-switch-knob-bg: #FFFFFF;
+
+    --mb-bg-elevated: #1C1C1E;
+    --mb-bg-sheet: #1C1C1E;
+    --mb-bg-control: #242426;
+    --mb-bg-control-active: #3A3A3C;
+    --mb-bg-cover-fallback: #26262A;
+
+    --mb-scrim: rgba(0, 0, 0, 0.48);
+    --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+    --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+    --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+    --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+    --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+    --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+    --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+    --mb-hl-sentence: rgba(10, 132, 255, 0.24);
+    --mb-hl-sentence-underline: none;
+    --mb-hl-word-underline: 2px solid #409CFF;
+    --mb-hl-search: rgba(255, 214, 10, 0.32);
+  }
+}
+
 /* ==========================================================================
    Theme 2: Paper (Neutral Warm Stone Stock — WCAG AAA 12.2:1)
    ========================================================================== */
@@ -176,6 +254,77 @@
   --mb-hl-sentence-underline: none;
   --mb-hl-word-underline: 2px solid #0066D6;
   --mb-hl-search: rgba(255, 196, 0, 0.36);
+}
+
+/* Paper — Dark palette (explicit Dark, or Match System while the OS is dark) */
+:root[data-theme="paper"][data-appearance="dark"]:not([data-eink="1"]):not([data-eink="true"]) {
+  color-scheme: dark;
+
+  --mb-bg: #232220;
+  --mb-fg: #D6D4CE;
+  --mb-fg-quiet: #96938B;
+  --mb-fg-caption: rgba(214, 212, 206, 0.40);
+  --mb-line: #3A3834;
+  --mb-accent: #0A84FF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF453A;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #2C2A27;
+  --mb-bg-sheet: #282724;
+  --mb-bg-control: #34322E;
+  --mb-bg-control-active: #484540;
+  --mb-bg-cover-fallback: #2E2C29;
+
+  --mb-scrim: rgba(0, 0, 0, 0.44);
+  --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+  --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+  --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+  --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+  --mb-hl-sentence: rgba(10, 132, 255, 0.22);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #409CFF;
+  --mb-hl-search: rgba(255, 204, 0, 0.30);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="paper"][data-appearance="system"]:not([data-eink="1"]):not([data-eink="true"]) {
+    color-scheme: dark;
+
+    --mb-bg: #232220;
+    --mb-fg: #D6D4CE;
+    --mb-fg-quiet: #96938B;
+    --mb-fg-caption: rgba(214, 212, 206, 0.40);
+    --mb-line: #3A3834;
+    --mb-accent: #0A84FF;
+    --mb-accent-fg: #FFFFFF;
+    --mb-danger: #FF453A;
+    --mb-switch-knob-bg: #FFFFFF;
+
+    --mb-bg-elevated: #2C2A27;
+    --mb-bg-sheet: #282724;
+    --mb-bg-control: #34322E;
+    --mb-bg-control-active: #484540;
+    --mb-bg-cover-fallback: #2E2C29;
+
+    --mb-scrim: rgba(0, 0, 0, 0.44);
+    --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+    --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+    --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+    --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+    --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+    --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+    --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+    --mb-hl-sentence: rgba(10, 132, 255, 0.22);
+    --mb-hl-sentence-underline: none;
+    --mb-hl-word-underline: 2px solid #409CFF;
+    --mb-hl-search: rgba(255, 204, 0, 0.30);
+  }
 }
 
 /* ==========================================================================
@@ -216,11 +365,117 @@
   --mb-hl-search: rgba(212, 146, 20, 0.34);
 }
 
+/* Calm — Dark palette (explicit Dark, or Match System while the OS is dark) */
+:root[data-theme="calm"][data-appearance="dark"]:not([data-eink="1"]):not([data-eink="true"]) {
+  color-scheme: dark;
+
+  --mb-bg: #2B251E;
+  --mb-fg: #DDD2C0;
+  --mb-fg-quiet: #A39580;
+  --mb-fg-caption: rgba(221, 210, 192, 0.40);
+  --mb-line: #443A2E;
+  --mb-accent: #0A84FF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF6B57;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #352E25;
+  --mb-bg-sheet: #302921;
+  --mb-bg-control: #3D352B;
+  --mb-bg-control-active: #52473A;
+  --mb-bg-cover-fallback: #3A3128;
+
+  --mb-scrim: rgba(12, 8, 3, 0.46);
+  --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+  --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+  --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+  --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+  --mb-hl-sentence: rgba(222, 160, 64, 0.22);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #D9A04A;
+  --mb-hl-search: rgba(240, 176, 48, 0.32);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="calm"][data-appearance="system"]:not([data-eink="1"]):not([data-eink="true"]) {
+    color-scheme: dark;
+
+    --mb-bg: #2B251E;
+    --mb-fg: #DDD2C0;
+    --mb-fg-quiet: #A39580;
+    --mb-fg-caption: rgba(221, 210, 192, 0.40);
+    --mb-line: #443A2E;
+    --mb-accent: #0A84FF;
+    --mb-accent-fg: #FFFFFF;
+    --mb-danger: #FF6B57;
+    --mb-switch-knob-bg: #FFFFFF;
+
+    --mb-bg-elevated: #352E25;
+    --mb-bg-sheet: #302921;
+    --mb-bg-control: #3D352B;
+    --mb-bg-control-active: #52473A;
+    --mb-bg-cover-fallback: #3A3128;
+
+    --mb-scrim: rgba(12, 8, 3, 0.46);
+    --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+    --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+    --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+    --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+    --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+    --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+    --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+    --mb-hl-sentence: rgba(222, 160, 64, 0.22);
+    --mb-hl-sentence-underline: none;
+    --mb-hl-word-underline: 2px solid #D9A04A;
+    --mb-hl-search: rgba(240, 176, 48, 0.32);
+  }
+}
+
 /* ==========================================================================
-   Theme 4: Quiet (Low-Glare Charcoal Dark — WCAG AAA 9.8:1)
+   Theme 4: Quiet (Low-Glare Grey — Light #F2F2F7 / Dark charcoal WCAG AAA 9.8:1)
    ========================================================================== */
 
 :root[data-theme="quiet"] {
+  color-scheme: light;
+
+  --mb-bg: #F2F2F7;
+  --mb-fg: #2C2C2E;
+  --mb-fg-quiet: #6E6E73;
+  --mb-fg-caption: rgba(44, 44, 46, 0.40);
+  --mb-line: #DCDCE2;
+  --mb-accent: #007AFF;
+  --mb-accent-fg: #FFFFFF;
+  --mb-danger: #FF3B30;
+  --mb-switch-knob-bg: #FFFFFF;
+
+  --mb-bg-elevated: #E5E5EA;
+  --mb-bg-sheet: #F2F2F7;
+  --mb-bg-control: #E2E2E8;
+  --mb-bg-control-active: #FFFFFF;
+  --mb-bg-cover-fallback: #E6E6EB;
+
+  --mb-scrim: rgba(0, 0, 0, 0.18);
+  --mb-shadow: 0 -4px 24px rgba(0, 0, 0, 0.08), 0 -1px 4px rgba(0, 0, 0, 0.04);
+  --mb-shadow-popover: 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --mb-shadow-cover: 0 2px 8px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.08);
+  --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --mb-swatch-ring: 0 0 0 2px rgba(0, 122, 255, 0.24);
+  --mb-cover-border: rgba(0, 0, 0, 0.08);
+
+  --mb-hl-sentence: rgba(0, 122, 255, 0.12);
+  --mb-hl-sentence-underline: none;
+  --mb-hl-word-underline: 2px solid #007AFF;
+  --mb-hl-search: rgba(255, 204, 0, 0.36);
+}
+
+/* Quiet — Dark palette (explicit Dark, or Match System while the OS is dark) */
+:root[data-theme="quiet"][data-appearance="dark"]:not([data-eink="1"]):not([data-eink="true"]) {
   color-scheme: dark;
 
   --mb-bg: #2C2C2E;
@@ -254,24 +509,26 @@
   --mb-hl-search: rgba(255, 214, 10, 0.32);
 }
 
-/* "Match system light/dark" maps system dark -> Quiet (#2C2C2E) when no explicit theme attribute is set */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme]):not([data-eink="1"]):not([data-eink="true"]) {
+  :root[data-theme="quiet"][data-appearance="system"]:not([data-eink="1"]):not([data-eink="true"]) {
     color-scheme: dark;
+
     --mb-bg: #2C2C2E;
     --mb-fg: #D8D8DC;
     --mb-fg-quiet: #98989F;
-    --mb-fg-caption: var(--mb-fg-quiet);
+    --mb-fg-caption: rgba(216, 216, 220, 0.40);
     --mb-line: #444448;
     --mb-accent: #0A84FF;
     --mb-accent-fg: #FFFFFF;
     --mb-danger: #FF453A;
     --mb-switch-knob-bg: #FFFFFF;
+
     --mb-bg-elevated: #363639;
     --mb-bg-sheet: #323235;
     --mb-bg-control: #3C3C40;
     --mb-bg-control-active: #505056;
     --mb-bg-cover-fallback: #38383C;
+
     --mb-scrim: rgba(0, 0, 0, 0.42);
     --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
     --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
@@ -280,6 +537,7 @@
     --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
     --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
     --mb-cover-border: rgba(255, 255, 255, 0.10);
+
     --mb-hl-sentence: rgba(10, 132, 255, 0.22);
     --mb-hl-sentence-underline: none;
     --mb-hl-word-underline: 2px solid #409CFF;
@@ -287,7 +545,46 @@
   }
 }
 
-/* Appearance Swatch Chip Colours (only rendered in non-E-Ink Appearance sheet) */
+/* Pre-hydration default (no `data-theme` yet, Match System): Original's Dark palette when the OS is dark */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]):not([data-appearance="light"]):not([data-eink="1"]):not([data-eink="true"]) {
+    color-scheme: dark;
+
+    --mb-bg: #141416;
+    --mb-fg: #E5E5EA;
+    --mb-fg-quiet: #98989F;
+    --mb-fg-caption: rgba(229, 229, 234, 0.40);
+    --mb-line: #2C2C2E;
+    --mb-accent: #0A84FF;
+    --mb-accent-fg: #FFFFFF;
+    --mb-danger: #FF453A;
+    --mb-switch-knob-bg: #FFFFFF;
+
+    --mb-bg-elevated: #1C1C1E;
+    --mb-bg-sheet: #1C1C1E;
+    --mb-bg-control: #242426;
+    --mb-bg-control-active: #3A3A3C;
+    --mb-bg-cover-fallback: #26262A;
+
+    --mb-scrim: rgba(0, 0, 0, 0.48);
+    --mb-shadow: 0 -6px 28px rgba(0, 0, 0, 0.38), 0 -1px 4px rgba(0, 0, 0, 0.24);
+    --mb-shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.30);
+    --mb-shadow-cover: 0 3px 10px rgba(0, 0, 0, 0.36), 0 1px 3px rgba(0, 0, 0, 0.24);
+    --mb-shadow-segment: 0 1px 3px rgba(0, 0, 0, 0.32);
+    --mb-shadow-knob: 0 1px 3px rgba(0, 0, 0, 0.36);
+    --mb-swatch-ring: 0 0 0 2px rgba(10, 132, 255, 0.28);
+    --mb-cover-border: rgba(255, 255, 255, 0.10);
+
+    --mb-hl-sentence: rgba(10, 132, 255, 0.24);
+    --mb-hl-sentence-underline: none;
+    --mb-hl-word-underline: 2px solid #409CFF;
+    --mb-hl-search: rgba(255, 214, 10, 0.32);
+  }
+}
+
+/* Appearance Swatch Chip Colours (only rendered in non-E-Ink Appearance sheet).
+   Like Apple Books, every swatch previews the Light or Dark palette of its theme for the
+   active Appearance. */
 .mb-swatch[data-swatch="original"] {
   background-color: #FFFFFF;
   color: #1C1C1E;
@@ -301,8 +598,48 @@
   color: #3B3024;
 }
 .mb-swatch[data-swatch="quiet"] {
+  background-color: #F2F2F7;
+  color: #2C2C2E;
+}
+
+:root[data-appearance="dark"] .mb-swatch[data-swatch="original"] {
+  background-color: #141416;
+  color: #E5E5EA;
+}
+:root[data-appearance="dark"] .mb-swatch[data-swatch="paper"] {
+  background-color: #232220;
+  color: #D6D4CE;
+}
+:root[data-appearance="dark"] .mb-swatch[data-swatch="calm"] {
+  background-color: #2B251E;
+  color: #DDD2C0;
+}
+:root[data-appearance="dark"] .mb-swatch[data-swatch="quiet"] {
   background-color: #2C2C2E;
   color: #D8D8DC;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-appearance="system"] .mb-swatch[data-swatch="original"],
+  :root:not([data-appearance]) .mb-swatch[data-swatch="original"] {
+    background-color: #141416;
+    color: #E5E5EA;
+  }
+  :root[data-appearance="system"] .mb-swatch[data-swatch="paper"],
+  :root:not([data-appearance]) .mb-swatch[data-swatch="paper"] {
+    background-color: #232220;
+    color: #D6D4CE;
+  }
+  :root[data-appearance="system"] .mb-swatch[data-swatch="calm"],
+  :root:not([data-appearance]) .mb-swatch[data-swatch="calm"] {
+    background-color: #2B251E;
+    color: #DDD2C0;
+  }
+  :root[data-appearance="system"] .mb-swatch[data-swatch="quiet"],
+  :root:not([data-appearance]) .mb-swatch[data-swatch="quiet"] {
+    background-color: #2C2C2E;
+    color: #D8D8DC;
+  }
 }
 
 /* Reduced Motion Preference (PRODUCT_DESIGN.md §5, §10) */

@@ -28,10 +28,19 @@ Every visual surface, text hierarchy level, divider, elevation shadow, and highl
 | `original` *(light default)* | `Aa` chip (`aria-label="Original"`) | `#FFFFFF` | `#FFFFFF` | `#1C1C1E` | `#6E6E73` | `#E5E5EA` | `#007AFF` | **17.0 : 1** (AAA) |
 | `paper` *(warm stone)* | `Aa` chip (`aria-label="Paper"`) | `#EEEDE8` | `#EEEDE8` | `#2A2926` | `#686660` | `#DAD8D0` | `#007AFF` | **12.2 : 1** (AAA) |
 | `calm` *(warm sepia)* | `Aa` chip (`aria-label="Calm"`) | `#F4ECD8` | `#F4ECD8` | `#3B3024` | `#786855` | `#DFD3B8` | `#007AFF` | **10.9 : 1** (AAA) |
-| `quiet` *(dark default)* | `Aa` chip (`aria-label="Quiet"`) | `#2C2C2E` | `#323235` | `#D8D8DC` | `#98989F` | `#444448` | `#0A84FF` | **9.8 : 1** (AAA) |
+| `quiet` *(low-glare grey)* | `Aa` chip (`aria-label="Quiet"`) | `#F2F2F7` | `#F2F2F7` | `#2C2C2E` | `#6E6E73` | `#DCDCE2` | `#007AFF` | **12.5 : 1** (AAA) |
 | `:root[data-eink="1"]` | *E-Ink Mode* | `#FFFFFF` | `#FFFFFF` | `#000000` | `#000000` | `#000000` | `#000000` | **21.0 : 1** (1-bit) |
 
-- **Match system light/dark:** When enabled (default), `prefers-color-scheme: light` uses **Original** (`#FFFFFF` / `#1C1C1E`) and `prefers-color-scheme: dark` uses **Quiet** (`#2C2C2E` / `#D8D8DC`).
+- **Appearance (Light / Dark / Match System, `AppSettings.appearanceMode`, default `'system'`):** Orthogonal to the theme, exactly like Apple Books. Every theme above is its **Light** palette; each theme also has a **Dark** palette, selected via `data-appearance="dark"` (or `data-appearance="system"` while `prefers-color-scheme: dark`). `data-theme` is always set to the chosen theme. The legacy `matchSystemTheme` boolean is kept as a mirror of `appearanceMode === 'system'`.
+
+  | Theme | Light (`--mb-bg` / `--mb-fg`) | Dark `--mb-bg` | Dark `--mb-fg` | Dark `--mb-fg-quiet` | Dark `--mb-line` | Dark `--mb-accent` |
+  |---|---|---|---|---|---|---|
+  | `original` | `#FFFFFF` / `#1C1C1E` | `#141416` | `#E5E5EA` | `#98989F` | `#2C2C2E` | `#0A84FF` |
+  | `paper` | `#EEEDE8` / `#2A2926` | `#232220` | `#D6D4CE` | `#96938B` | `#3A3834` | `#0A84FF` |
+  | `calm` | `#F4ECD8` / `#3B3024` | `#2B251E` | `#DDD2C0` | `#A39580` | `#443A2E` | `#0A84FF` (amber highlights) |
+  | `quiet` | `#F2F2F7` / `#2C2C2E` | `#2C2C2E` | `#D8D8DC` | `#98989F` | `#444448` | `#0A84FF` |
+
+  Legacy settings migrate as: `matchSystemTheme: true` → `'system'`; `false` → `'dark'` for Quiet, `'light'` otherwise.
 - **E-Ink attribute lifecycle:** E-Ink mode sets `document.documentElement.dataset.eink = '1'`. When E-Ink mode is off, the attribute is removed (`delete document.documentElement.dataset.eink`), so `:root[data-eink="1"]` never matches when off.
 
 ### 2.2 Read-Aloud (TTS) Highlight Tokens
@@ -126,7 +135,7 @@ Every visual surface, text hierarchy level, divider, elevation shadow, and highl
   2. **Font Family (3-segment control, `44px` tall):** `Original` · `Serif` · `Sans`.
   3. **Theme Swatches (`48px` height):**
      - Four `Aa` chips rendered in each theme's exact `--mb-bg` and `--mb-fg` (`aria-label="Original"`, `aria-label="Paper"`, `aria-label="Calm"`, `aria-label="Quiet"` — the swatch IS the label per `PRODUCT_DESIGN.md` §4.4, avoiding duplicate `"Original"` text). Active swatch has a `2px solid var(--mb-accent)` selection ring.
-     - Followed by row `Match system light/dark` (`16px` `--mb-fg` label + switch).
+     - Preceded by a 3-segment **Appearance** control (`Light` · `Dark` · `Match System`, `44px` tall) that sets only `appearanceMode`; swatches set only `theme` and preview the active Light or Dark palette. The active swatch is `settings.theme` regardless of appearance.
      - *In E-Ink mode:* Swatch and system-match rows are replaced by **Text boldness** (`−` `1` `+`, steps `0–3` corresponding to `0–0.6px` glyph stroke compensation per `PRODUCT_DESIGN.md` §8.4).
   4. **Line Spacing Stepper (`44px` row):** Label `Line spacing` + `−` `Normal` `+` (`Tight` · `Normal` · `Loose`).
   5. **Margins Stepper (`44px` row):** Label `Margins` + `−` `Medium` `+` (`Narrow` · `Medium` · `Wide`).

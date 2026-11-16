@@ -25,6 +25,8 @@ import {
 } from '../host/core-bridge';
 import { useHostContext } from '../host/HostContext';
 import { useT } from '../i18n';
+import { resolveEffectiveDark } from '../theme/theme-manager';
+import { usePrefersDark } from '../theme/use-prefers-dark';
 import { ReadAloudBar } from '../speech/ReadAloudBar';
 import { useReadAloudStore, type ReadAloudController } from '../speech/ReadAloudController';
 import { SleepTimerSheet, VoiceSheet } from '../speech/VoiceSheet';
@@ -68,6 +70,9 @@ function computePageRange(
 export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactElement {
   const t = useT();
   const { host, settings, isEink, refreshController, updateSettings } = useHostContext();
+  // Live OS light/dark (Match System): flipping it must re-apply iframe theme colours immediately.
+  const prefersDark = usePrefersDark();
+  const effectiveDark = resolveEffectiveDark(settings, prefersDark);
 
   const isReaderScreen = useRouteStore((s) => s.screen === 'reader');
   const chromeOpen = useRouteStore((s) => s.chromeOpen);
@@ -634,7 +639,9 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
     settings.margins,
     settings.justify,
     settings.theme,
+    settings.appearanceMode,
     settings.matchSystemTheme,
+    effectiveDark,
     settings.textBoldness,
     isEink,
     loadAndShowUnit,

@@ -169,8 +169,16 @@ export {
   applyDocumentTheme,
   computeEffectiveEink,
   computeEffectiveVolumeKeyPaging,
+  detectPrefersDark,
   resolveActiveThemeColors,
+  resolveAppearanceMode,
+  resolveEffectiveDark,
+  subscribePrefersDark,
+  THEME_PALETTES,
+  type ActiveThemeColors,
+  type ResolvedAppearance,
 } from './theme/theme-manager';
+export { usePrefersDark } from './theme/use-prefers-dark';
 export {
   resolveLocale,
   localeToHtmlLang,

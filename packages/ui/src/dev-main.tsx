@@ -10,7 +10,7 @@ import {
   type MockPlatformHost,
   type MockSpeechPlayer,
 } from './index';
-import type { EinkModeSetting, HostPlatform, ReadingTheme, SpeechModelState } from '@minibook/core';
+import type { AppearanceMode, EinkModeSetting, HostPlatform, ReadingTheme, SpeechModelState } from '@minibook/core';
 
 declare global {
   interface Window {
@@ -27,7 +27,16 @@ declare global {
 const params = new URLSearchParams(window.location.search);
 const einkParam = (params.get('eink') as EinkModeSetting | null) ?? 'auto';
 const themeParam = (params.get('theme') as ReadingTheme | null) ?? 'original';
-const matchSystem = params.get('theme') ? false : true;
+const appearanceRaw = params.get('appearance');
+// `?appearance=light|dark|system` wins; legacy `?theme=<id>` alone pins Light (Quiet -> Dark).
+const appearanceParam: AppearanceMode =
+  appearanceRaw === 'light' || appearanceRaw === 'dark' || appearanceRaw === 'system'
+    ? appearanceRaw
+    : params.get('theme')
+      ? themeParam === 'quiet'
+        ? 'dark'
+        : 'light'
+      : 'system';
 const platform = (params.get('platform') as HostPlatform | null) ?? 'desktop';
 const extraBooks = Number(params.get('extraBooks') ?? '0') || 0;
 const vendorRefresh = params.get('vendorRefresh') === '1';
@@ -57,7 +66,8 @@ const host = createMockPlatformHost({
   initialSettings: {
     einkMode: einkParam,
     theme: themeParam,
-    matchSystemTheme: matchSystem,
+    appearanceMode: appearanceParam,
+    matchSystemTheme: appearanceParam === 'system',
   },
   extraShelfBooks: extraBooks,
 });

@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import {
   FONT_SCALE_STEPS,
+  type AppearanceMode,
   type BookFontFamily,
   type LineSpacingPreset,
   type MarginPreset,
@@ -33,7 +34,9 @@ const THEMES: ReadonlyArray<{ id: ReadingTheme; labelKey: 'themeOriginal' | 'the
 /**
  * Appearance Sheet (`Aa` — `PRODUCT_DESIGN.md` §4.4 & `UI_SPEC.md` §4.4):
  * - Discrete steppers and toggles (`>= 44px`), zero continuous sliders.
- * - Normal mode: 4 `Aa` theme swatches + `Match system light/dark`.
+ * - Normal mode: 4 `Aa` theme swatches + an orthogonal Appearance segmented control
+ *   (Light / Dark / Match System, like Apple Books). Each theme has a Light and a Dark palette;
+ *   picking a swatch changes ONLY `theme`, picking an appearance changes ONLY `appearanceMode`.
  * - E-Ink mode: replaces theme swatches with `Text boldness` (`0–3`) and clamps
  *   minimum font size to `100%` and minimum line spacing to `Normal` (`§8.4`).
  */
@@ -129,9 +132,22 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
         </div>
       ) : (
         <>
+          <Segmented<AppearanceMode>
+            label={t('appearanceMode')}
+            value={settings.appearanceMode}
+            options={[
+              { value: 'light', label: t('appearanceLight') },
+              { value: 'dark', label: t('appearanceDark') },
+              { value: 'system', label: t('appearanceSystem') },
+            ]}
+            onChange={(appearanceMode) => {
+              void updateSettings({ appearanceMode, matchSystemTheme: appearanceMode === 'system' });
+            }}
+          />
+
           <div className="mb-swatches" role="radiogroup" aria-label="Reading theme">
             {THEMES.map((th) => {
-              const active = !settings.matchSystemTheme && settings.theme === th.id;
+              const active = settings.theme === th.id;
               return (
                 <button
                   key={th.id}
@@ -143,27 +159,13 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
                   data-active={active ? 'true' : undefined}
                   className="mb-swatch"
                   onClick={() => {
-                    void updateSettings({ theme: th.id, matchSystemTheme: false });
+                    void updateSettings({ theme: th.id });
                   }}
                 >
                   <span>Aa</span>
                 </button>
               );
             })}
-          </div>
-
-          <div className="mb-sheet-row">
-            <span className="mb-sheet-label">{t('matchSystemTheme')}</span>
-            <Toggle
-              label={t('matchSystemTheme')}
-              checked={settings.matchSystemTheme}
-              isEink={false}
-              onText={t('on')}
-              offText={t('off')}
-              onChange={(matchSystemTheme) => {
-                void updateSettings({ matchSystemTheme });
-              }}
-            />
           </div>
         </>
       )}
