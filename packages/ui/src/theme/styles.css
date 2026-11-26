@@ -558,6 +558,22 @@ body,
   border-bottom: none;
 }
 
+.mb-sheet-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.mb-language-segmented .mb-segmented {
+  width: 100%;
+  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)) !important;
+}
+
+.mb-language-segmented .mb-segment-btn {
+  padding: 0 4px;
+}
+
 .mb-sheet-label {
   font-size: var(--mb-ui-body-size);
   font-weight: var(--mb-ui-body-weight);

@@ -181,9 +181,11 @@ export {
 export { usePrefersDark } from './theme/use-prefers-dark';
 export {
   resolveLocale,
+  resolveActiveLocale,
   localeToHtmlLang,
   syncDocumentLang,
   translate,
+  useLocale,
   useT,
   type SupportedLocale,
   type I18nKey,

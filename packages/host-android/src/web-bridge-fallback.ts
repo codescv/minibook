@@ -17,6 +17,7 @@ import {
   type SpeechModelStatus,
   type SpeechSession,
   type SpeechState,
+  type UiLanguage,
   type Voice,
   type VoiceRef,
 } from '@minibook/core';
@@ -634,6 +635,8 @@ export function createWebFallbackMiniBookBridge(): MiniBookNativeBridge {
         window.open(opts.url, '_blank', 'noopener,noreferrer');
       }
     },
+
+    async setUiLanguage(_opts: { lang: UiLanguage }): Promise<void> {},
 
     async addListener<K extends keyof MiniBookPluginEventMap>(
       eventName: K,

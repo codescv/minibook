@@ -713,8 +713,11 @@ export interface SpeechModelsApi {
   remove(id: SpeechModelId): Promise<void>;
 }
 
+export type UiLanguage = 'system' | 'zh-CN' | 'en' | 'ja';
+
 export interface AppSettings {
   // Appearance (`UI_SPEC.md` §4.4)
+  readonly uiLanguage: UiLanguage;
   readonly theme: ReadingTheme;
   /** Light / Dark / Match System (Apple Books Appearance), independent of `theme`. */
   readonly appearanceMode: AppearanceMode;
@@ -751,6 +754,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  uiLanguage: 'system',
   theme: 'original',
   appearanceMode: 'system',
   matchSystemTheme: true,
@@ -850,6 +854,13 @@ export function sanitizeAppSettings(
   }
   const p = raw as Record<string, unknown>;
 
+  const uiLanguage: UiLanguage =
+    p.uiLanguage === 'system' ||
+    p.uiLanguage === 'zh-CN' ||
+    p.uiLanguage === 'en' ||
+    p.uiLanguage === 'ja'
+      ? p.uiLanguage
+      : base.uiLanguage;
   const theme: ReadingTheme =
     p.theme === 'original' || p.theme === 'paper' || p.theme === 'calm' || p.theme === 'quiet'
       ? p.theme
@@ -967,6 +978,7 @@ export function sanitizeAppSettings(
       : base.kokoroPrecision;
 
   return {
+    uiLanguage,
     theme,
     ...resolveAppearanceSettings(p, base, theme),
     fontFamily,
@@ -1164,6 +1176,7 @@ export interface DeviceApi {
   setKeepScreenOn(enabled: boolean): Promise<void>;
   fullRefresh(): Promise<boolean>;
   setKeyPolicy(policy: KeyPolicy): Promise<void>;
+  setUiLanguage?(lang: UiLanguage): Promise<void>;
 }
 
 export interface IncomingFileDescriptor {

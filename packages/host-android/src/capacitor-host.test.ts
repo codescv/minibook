@@ -13,6 +13,7 @@ import {
   type InspectedBook,
   type SpeechEvent,
   type TxtBookIndex,
+  type UiLanguage,
 } from '@minibook/core';
 import { createCapacitorPlatformHost } from './capacitor-host.js';
 import {
@@ -41,6 +42,7 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
   keepScreenOnCalls: boolean[] = [];
   immersiveCalls: boolean[] = [];
   keyPolicyCalls: boolean[] = [];
+  uiLanguageCalls: UiLanguage[] = [];
   einkDevice = {
     eink: false,
     vendor: null as string | null,
@@ -425,6 +427,9 @@ class InMemoryNativeBridge implements MiniBookNativeBridge {
     this.secrets.delete(opts.name);
   }
   async openExternal() {}
+  async setUiLanguage(opts: { lang: UiLanguage }) {
+    this.uiLanguageCalls.push(opts.lang);
+  }
 
   async addListener<K extends keyof MiniBookPluginEventMap>(
     eventName: K,
@@ -1083,5 +1088,17 @@ describe('@minibook/host-android PluginByteSource, FileLibraryStore & CapacitorP
     expect(bridge.files.has('userbooks/三体精校版.txt')).toBe(false);
     expect(bridge.files.has('userbooks/santi-backup.txt')).toBe(false);
     expect(bridge.files.has(`books/${imported.id}/index.json`)).toBe(false);
+  });
+
+  it('forwards device.setUiLanguage to native MiniBookPlugin.setUiLanguage on Android and iOS', async () => {
+    const bridge = new InMemoryNativeBridge();
+    const host = createCapacitorPlatformHost({
+      plugin: wrapNativeBridge(bridge),
+      platform: 'android',
+    });
+    await host.device.setUiLanguage?.('zh-CN');
+    await host.device.setUiLanguage?.('ja');
+    await host.device.setUiLanguage?.('system');
+    expect(bridge.uiLanguageCalls).toEqual(['zh-CN', 'ja', 'system']);
   });
 });

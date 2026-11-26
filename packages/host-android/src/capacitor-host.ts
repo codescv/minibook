@@ -44,6 +44,7 @@ import {
   type StorageUsage,
   type SynthRequest,
   type SynthResult,
+  type UiLanguage,
   type Unsubscribe,
   type Voice,
   type WordMark,
@@ -61,7 +62,7 @@ import { FileLibraryStore } from './storage/FileLibraryStore.js';
 import { PluginByteSource } from './storage/PluginByteSource.js';
 import { base64ToBytes, bytesToBase64 } from './storage/base64.js';
 
-export const CAPACITOR_HOST_VERSION = '0.2.7';
+export const CAPACITOR_HOST_VERSION = '0.2.8';
 
 const SPEECH_CACHE_INDEX_PATH = 'speech-cache-index.json';
 const SPEECH_CACHE_SOFT_CAP_BYTES = 180 * 1024 * 1024; // < 200 MB native cap
@@ -934,6 +935,10 @@ export function createCapacitorPlatformHost(options?: CapacitorHostOptions): Pla
       setKeyPolicy(policy: KeyPolicy): Promise<void> {
         if (platform !== 'android') return Promise.resolve();
         return plugin.device.setKeyPolicy(policy);
+      },
+
+      setUiLanguage(lang: UiLanguage): Promise<void> {
+        return plugin.setUiLanguage({ lang });
       },
     },
 

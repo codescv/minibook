@@ -3,6 +3,7 @@ import {
   type EinkModeSetting,
   type FullRefreshCadence,
   type TextBoldnessStep,
+  type UiLanguage,
 } from '@minibook/core';
 import { useRouteStore } from '../app/routes';
 import { IconButton } from '../components/IconButton';
@@ -17,7 +18,7 @@ import { useT } from '../i18n';
 import { useSpeechModelStatus } from '../speech/speech-model-store';
 import { computeEffectiveVolumeKeyPaging } from '../theme/theme-manager';
 
-export const APP_VERSION = '0.2.7';
+export const APP_VERSION = '0.2.8';
 
 export { QWEN_PRESETS, type QwenPresetItem } from '../speech/VoiceSheet';
 
@@ -92,6 +93,32 @@ export function SettingsScreen(): ReactElement {
     // --- Section 1: READING ---
     list.push({ key: 'hdr-reading', kind: 'header', title: t('sectionReading') });
 
+    // Row 0: Language (System Default · 中文 · English · 日本語)
+    list.push({
+      key: 'row-ui-language',
+      kind: 'row',
+      render: () => (
+        <div className="mb-sheet-row mb-sheet-row-stacked" data-setting-row="ui-language">
+          <span className="mb-sheet-label">{t('language')}</span>
+          <div className="mb-language-segmented">
+            <Segmented<UiLanguage>
+              label={t('language')}
+              value={settings.uiLanguage}
+              options={[
+                { value: 'system', label: t('languageSystem') },
+                { value: 'zh-CN', label: '中文' },
+                { value: 'en', label: 'English' },
+                { value: 'ja', label: '日本語' },
+              ]}
+              onChange={(uiLanguage) => {
+                void updateSettings({ uiLanguage });
+              }}
+            />
+          </div>
+        </div>
+      ),
+    });
+
     // Row 1: E-Ink mode (Auto · On · Off)
     list.push({
       key: 'row-eink-mode',
@@ -154,8 +181,8 @@ export function SettingsScreen(): ReactElement {
               }
               canDecrement={cadenceIdx > 0}
               canIncrement={cadenceIdx < REFRESH_CADENCES.length - 1}
-              decrementLabel="Decrease refresh interval"
-              incrementLabel="Increase refresh interval"
+              decrementLabel={t('decreaseRefreshInterval')}
+              incrementLabel={t('increaseRefreshInterval')}
               onDecrement={() => {
                 const next = REFRESH_CADENCES[Math.max(0, cadenceIdx - 1)];
                 if (next !== undefined) void updateSettings({ fullRefreshEvery: next });
@@ -180,8 +207,8 @@ export function SettingsScreen(): ReactElement {
               valueLabel={String(settings.textBoldness)}
               canDecrement={boldIdx > 0}
               canIncrement={boldIdx < BOLDNESS_STEPS.length - 1}
-              decrementLabel="Decrease boldness"
-              incrementLabel="Increase boldness"
+              decrementLabel={t('decreaseBoldness')}
+              incrementLabel={t('increaseBoldness')}
               onDecrement={() => {
                 const next = BOLDNESS_STEPS[Math.max(0, boldIdx - 1)];
                 if (next !== undefined) void updateSettings({ textBoldness: next });
@@ -329,7 +356,7 @@ export function SettingsScreen(): ReactElement {
       {/* Open-Source Licenses Sheet */}
       <Sheet
         open={activeSheet === 'licenses'}
-        label="Licenses"
+        label={t('licenses')}
         onClose={handleCloseSheet}
       >
         <div className="mb-sheet-row">

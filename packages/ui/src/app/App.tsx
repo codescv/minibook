@@ -8,7 +8,7 @@ import { IconButton } from '../components/IconButton';
 import { CloseIcon } from '../components/icons';
 import { FlashOverlay } from '../eink/FlashOverlay';
 import { HostProvider, useHostContext, useSettingsStore } from '../host/HostContext';
-import { resolveLocale, translate } from '../i18n';
+import { resolveActiveLocale, translate, useT } from '../i18n';
 import { useImportStore } from '../library/ImportController';
 import { LibraryScreen } from '../library/LibraryScreen';
 import { ReaderScreen } from '../reader/ReaderScreen';
@@ -29,6 +29,7 @@ function prefersReducedMotion(): boolean {
 }
 
 function AppShell(): ReactElement {
+  const t = useT();
   const { host, speechPlayer, isEink } = useHostContext();
   const screen = useRouteStore((s) => s.screen);
   const activeBookId = useRouteStore((s) => s.activeBookId);
@@ -173,7 +174,7 @@ function AppShell(): ReactElement {
         }
         if (!isEink || now - lastHostProgressMs >= 1000 || lastHostProgressMs === 0) {
           lastHostProgressMs = now;
-          const locale = resolveLocale();
+          const locale = resolveActiveLocale();
           useImportStore.getState().upsert({
             key: 'host-import-progress',
             name: ev.currentName ?? translate(locale, 'importing'),
@@ -296,7 +297,7 @@ function AppShell(): ReactElement {
               </button>
             )}
             <IconButton
-              label="Dismiss notice"
+              label={t('dismissNotice')}
               onClick={() => useRouteStore.getState().dismissNotice()}
             >
               <CloseIcon />

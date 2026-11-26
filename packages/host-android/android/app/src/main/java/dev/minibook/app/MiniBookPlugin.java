@@ -16,7 +16,9 @@ import android.util.Base64;
 import android.view.View;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.content.FileProvider;
+import androidx.core.os.LocaleListCompat;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -1755,6 +1757,35 @@ public class MiniBookPlugin extends Plugin {
             ((MainActivity) act).getKeyPolicy().setVolumePaging(volumePaging);
         }
         call.resolve(new JSObject());
+    }
+
+    static String normalizeUiLanguageTag(@Nullable String raw) {
+        if (raw == null) return "";
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty() || "system".equalsIgnoreCase(trimmed)) {
+            return "";
+        }
+        String lower = trimmed.toLowerCase(Locale.US);
+        if (lower.startsWith("zh")) return "zh-CN";
+        if (lower.startsWith("ja")) return "ja";
+        if (lower.startsWith("en")) return "en";
+        return "";
+    }
+
+    @PluginMethod
+    public void setUiLanguage(PluginCall call) {
+        final String tag = normalizeUiLanguageTag(call.getString("lang", "system"));
+        mainHandler.post(() -> {
+            LocaleListCompat target = tag.isEmpty()
+                ? LocaleListCompat.getEmptyLocaleList()
+                : LocaleListCompat.forLanguageTags(tag);
+            LocaleListCompat current = AppCompatDelegate.getApplicationLocales();
+            if (!target.toLanguageTags().equals(current.toLanguageTags())) {
+                AppCompatDelegate.setApplicationLocales(target);
+            }
+            ReadAloudService.updateNotificationChannelName(getContext(), tag);
+            call.resolve(new JSObject());
+        });
     }
 
     // -------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import {
   segmentSectionSafe,
 } from '../host/core-bridge';
 import { useSettingsStore } from '../host/HostContext';
-import { resolveLocale, translate } from '../i18n';
+import { resolveActiveLocale, translate } from '../i18n';
 import { AutoPageTurn, type AutoPageTurnViewAdapter } from './AutoPageTurn';
 import { KokoroG2PClient, isKokoroCompatibleLang } from './KokoroG2PClient';
 import { useSpeechModelStore, isNaturalSystemVoiceEntry } from './speech-model-store';
@@ -1326,7 +1326,7 @@ export class ReadAloudController {
 
       case 'speech-fallback': {
         useReadAloudStore.setState({ usingFallback: true });
-        const locale = resolveLocale();
+        const locale = resolveActiveLocale(this.getSettings().uiLanguage);
         useRouteStore.getState().showNotice(translate(locale, 'fallbackNotice'));
         break;
       }

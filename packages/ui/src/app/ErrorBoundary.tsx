@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { resolveActiveLocale, translate } from '../i18n';
 
 export interface AppErrorBoundaryProps {
   readonly children?: ReactNode;
@@ -60,21 +61,20 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
       return this.props.children;
     }
 
+    const locale = resolveActiveLocale();
     return (
       <main className="mb-boot-error" role="alert" data-testid="boot-error-card">
         <div className="mb-boot-error-card">
-          <h1 className="mb-boot-error-title">Books</h1>
-          <p className="mb-boot-error-desc">
-            Something interrupted startup. Your books and reading progress are safe.
-          </p>
+          <h1 className="mb-boot-error-title">{translate(locale, 'appName')}</h1>
+          <p className="mb-boot-error-desc">{translate(locale, 'bootErrorDesc')}</p>
           <pre className="mb-boot-error-detail">{error.message || String(error)}</pre>
           <div className="mb-boot-error-actions">
             <button type="button" className="mb-primary-btn" onClick={this.handleReload}>
-              Reload
+              {translate(locale, 'reload')}
             </button>
             {this.props.onResetSettings && (
               <button type="button" className="mb-icon-btn" onClick={this.handleResetAndRetry}>
-                Retry with defaults
+                {translate(locale, 'retryWithDefaults')}
               </button>
             )}
           </div>

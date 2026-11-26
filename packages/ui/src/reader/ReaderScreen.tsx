@@ -908,7 +908,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
             type="button"
             className="mb-page-caption"
             style={{ right: `${rightMarginPx}px` }}
-            aria-label="Reading progress caption"
+            aria-label={t('readingProgressCaption')}
             onClick={cycleCaptionMode}
           >
             {captionText}
@@ -931,7 +931,7 @@ export function ReaderScreen({ bookId, readAloud }: ReaderScreenProps): ReactEle
       )}
 
       {selectionState && (
-        <div className="mb-selection-bar" role="toolbar" aria-label="Text selection actions">
+        <div className="mb-selection-bar" role="toolbar" aria-label={t('textSelectionActions')}>
           <button
             type="button"
             className="mb-icon-btn"

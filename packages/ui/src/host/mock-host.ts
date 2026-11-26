@@ -713,6 +713,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
   private readonly downloadedModelVariants = new Set<string>();
 
   public lastKeyPolicy: KeyPolicy = { volumePaging: false };
+  public lastUiLanguage: AppSettings['uiLanguage'] | null = null;
   public immersiveEnabled = false;
   public keepScreenOnEnabled = false;
   public fullRefreshCallCount = 0;
@@ -727,7 +728,7 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
 
     this.info = {
       platform,
-      appVersion: options?.appVersion ?? '0.2.7',
+      appVersion: options?.appVersion ?? '0.2.8',
       capabilities: {
         nativeSpeechQueue: platform !== 'desktop',
         volumeKeyPaging: isAndroid,
@@ -1360,6 +1361,9 @@ export class MockPlatformHost implements PlatformHost, MockHostHooks {
     },
     setKeyPolicy: async (policy) => {
       this.lastKeyPolicy = policy;
+    },
+    setUiLanguage: async (lang) => {
+      this.lastUiLanguage = lang;
     },
   };
 

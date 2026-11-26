@@ -86,8 +86,8 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
         incText="A+"
         canDecrement={scaleIdx > 0}
         canIncrement={scaleIdx < allowedScales.length - 1}
-        decrementLabel="Decrease text size"
-        incrementLabel="Increase text size"
+        decrementLabel={t('decreaseTextSize')}
+        incrementLabel={t('increaseTextSize')}
         onDecrement={() => {
           const prev = allowedScales[Math.max(0, scaleIdx - 1)];
           if (prev !== undefined) void updateSettings({ fontScale: prev });
@@ -99,7 +99,7 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
       />
 
       <Segmented<BookFontFamily>
-        label="Font family"
+        label={t('fontFamily')}
         value={settings.fontFamily}
         options={[
           { value: 'original', label: t('fontOriginal') },
@@ -118,8 +118,8 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
             valueLabel={String(settings.textBoldness)}
             canDecrement={boldIdx > 0}
             canIncrement={boldIdx < BOLDNESS_STEPS.length - 1}
-            decrementLabel="Decrease boldness"
-            incrementLabel="Increase boldness"
+            decrementLabel={t('decreaseBoldness')}
+            incrementLabel={t('increaseBoldness')}
             onDecrement={() => {
               const next = BOLDNESS_STEPS[Math.max(0, boldIdx - 1)];
               if (next !== undefined) void updateSettings({ textBoldness: next });
@@ -145,7 +145,7 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
             }}
           />
 
-          <div className="mb-swatches" role="radiogroup" aria-label="Reading theme">
+          <div className="mb-swatches" role="radiogroup" aria-label={t('readingTheme')}>
             {THEMES.map((th) => {
               const active = settings.theme === th.id;
               return (
@@ -176,8 +176,8 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
           valueLabel={spacingLabel}
           canDecrement={spacingIdx > 0}
           canIncrement={spacingIdx < allowedSpacing.length - 1}
-          decrementLabel="Tighter line spacing"
-          incrementLabel="Looser line spacing"
+          decrementLabel={t('tighterLineSpacing')}
+          incrementLabel={t('looserLineSpacing')}
           onDecrement={() => {
             const next = allowedSpacing[Math.max(0, spacingIdx - 1)];
             if (next) void updateSettings({ lineSpacing: next });
@@ -195,8 +195,8 @@ export function AppearanceSheet({ open, onClose }: AppearanceSheetProps): ReactE
           valueLabel={marginLabel}
           canDecrement={marginIdx > 0}
           canIncrement={marginIdx < MARGIN_STEPS.length - 1}
-          decrementLabel="Narrower margins"
-          incrementLabel="Wider margins"
+          decrementLabel={t('narrowerMargins')}
+          incrementLabel={t('widerMargins')}
           onDecrement={() => {
             const next = MARGIN_STEPS[Math.max(0, marginIdx - 1)];
             if (next) void updateSettings({ margins: next });

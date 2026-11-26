@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
+import android.content.res.Configuration;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -31,6 +32,7 @@ import androidx.media3.session.MediaSessionService;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 import org.json.JSONObject;
@@ -522,19 +524,27 @@ public class ReadAloudService extends MediaSessionService {
         }
     }
 
-    private void ensureNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
-                NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID,
-                    getString(R.string.read_aloud_channel_name),
-                    NotificationManager.IMPORTANCE_LOW
-                );
-                ch.setShowBadge(false);
-                nm.createNotificationChannel(ch);
-            }
+    public static void updateNotificationChannelName(Context context, @Nullable String languageTag) {
+        if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm = context.getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        Context localizedCtx = context;
+        if (languageTag != null && !languageTag.trim().isEmpty()) {
+            Configuration config = new Configuration(context.getResources().getConfiguration());
+            config.setLocale(Locale.forLanguageTag(languageTag.trim()));
+            localizedCtx = context.createConfigurationContext(config);
         }
+        NotificationChannel ch = new NotificationChannel(
+            CHANNEL_ID,
+            localizedCtx.getString(R.string.read_aloud_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        );
+        ch.setShowBadge(false);
+        nm.createNotificationChannel(ch);
+    }
+
+    private void ensureNotificationChannel() {
+        updateNotificationChannelName(this, null);
     }
 
     private void promoteBootstrapForeground() {

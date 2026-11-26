@@ -86,6 +86,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
       el.getAttribute('data-setting-row'),
     );
     expect(desktopRows).toEqual([
+      'ui-language',
       'eink-mode',
       'keep-screen-on',
       'storage',
@@ -95,7 +96,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
     m1.unmount();
     c1.remove();
 
-    // 2. Android E-Ink Mode: 6 rows (volume keys + full refresh + text boldness shown; keep-screen-on hidden; zero TTS rows)
+    // 2. Android E-Ink Mode: 7 rows (ui-language + volume keys + full refresh + text boldness shown; keep-screen-on hidden; zero TTS rows)
     const c2 = document.createElement('div');
     document.body.appendChild(c2);
     const androidEinkHost = createMockPlatformHost({
@@ -114,6 +115,7 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
       el.getAttribute('data-setting-row'),
     );
     expect(einkRows).toEqual([
+      'ui-language',
       'eink-mode',
       'volume-keys',
       'full-refresh',
@@ -122,9 +124,9 @@ describe('Screens, 11-Row Settings Capability Gating, Back Stack & KeyPolicy', (
       'version-licenses',
     ]);
 
-    // Distinct union of all settings rows across both modes is 7 (READING 5 + ABOUT 2)
+    // Distinct union of all settings rows across both modes is 8 (READING 6 + ABOUT 2)
     const allDistinctRows = new Set([...desktopRows, ...einkRows]);
-    expect(allDistinctRows.size).toBe(7);
+    expect(allDistinctRows.size).toBe(8);
 
     // E-Ink toggles use 2px-bordered On/Off group (`role="group"`), zero switch sliders
     expect(c2.querySelectorAll('[role="switch"]')).toHaveLength(0);

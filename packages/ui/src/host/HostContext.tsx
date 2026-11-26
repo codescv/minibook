@@ -7,10 +7,8 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react';
-import { create } from 'zustand';
 import {
   DEFAULT_APP_SETTINGS,
-  sanitizeAppSettings,
   type AppSettings,
   type DeviceInfo,
   type PlatformHost,
@@ -18,34 +16,15 @@ import {
 } from '@minibook/core';
 import { registerOverlayTurnRunner, useRouteStore } from '../app/routes';
 import { RefreshController } from '../eink/RefreshController';
-import { translate, resolveLocale, syncDocumentLang } from '../i18n';
+import { resolveActiveLocale, syncDocumentLang, translate } from '../i18n';
 import {
   applyDocumentTheme,
   computeEffectiveEink,
   detectMediaEink,
 } from '../theme/theme-manager';
+import { useSettingsStore, type SettingsStoreState } from './settings-store';
 
-export interface SettingsStoreState {
-  settings: AppSettings;
-  hydrated: boolean;
-  setSettings(next: AppSettings): void;
-  patchLocal(patch: Partial<AppSettings>): void;
-  reset(): void;
-}
-
-export const useSettingsStore = create<SettingsStoreState>((set) => ({
-  settings: DEFAULT_APP_SETTINGS,
-  hydrated: false,
-  setSettings(next) {
-    set({ settings: sanitizeAppSettings(next, DEFAULT_APP_SETTINGS), hydrated: true });
-  },
-  patchLocal(patch) {
-    set((s) => ({ settings: sanitizeAppSettings(patch, s.settings) }));
-  },
-  reset() {
-    set({ settings: DEFAULT_APP_SETTINGS, hydrated: false });
-  },
-}));
+export { useSettingsStore, type SettingsStoreState };
 
 export interface HostContextValue {
   readonly host: PlatformHost;
@@ -130,9 +109,15 @@ export function HostProvider({
     mediaEink,
   );
 
+  const hydrated = useSettingsStore((s) => s.hydrated);
+
   useEffect(() => {
-    syncDocumentLang(undefined, true);
-  }, []);
+    const resolved = resolveActiveLocale(settings.uiLanguage);
+    syncDocumentLang(resolved);
+    if (hydrated) {
+      void host.device.setUiLanguage?.(settings.uiLanguage).catch(() => {});
+    }
+  }, [hydrated, settings.uiLanguage, host]);
 
   useEffect(() => {
     applyDocumentTheme(settings, isEink);
@@ -153,11 +138,10 @@ export function HostProvider({
   }, [refreshController, isEink, settings.fullRefreshEvery]);
 
   // One-time auto E-Ink notice (`PRODUCT_DESIGN.md` §8.1)
-  const hydrated = useSettingsStore((s) => s.hydrated);
   useEffect(() => {
     if (!hydrated) return;
     if (settings.einkMode === 'auto' && isEink && !settings.einkAutoNoticeShown) {
-      const locale = resolveLocale();
+      const locale = resolveActiveLocale(settings.uiLanguage);
       useRouteStore.getState().showNotice(
         translate(locale, 'einkAutoNotice'),
         translate(locale, 'settings'),

@@ -6,7 +6,7 @@ import {
   type PlatformHost,
 } from '@minibook/core';
 import { inspectBookWithHost } from '../host/core-bridge';
-import { resolveLocale, translate } from '../i18n';
+import { resolveActiveLocale, translate } from '../i18n';
 
 export interface ImportTileItem {
   readonly key: string;
@@ -63,7 +63,7 @@ export function fileToImportSource(file: File): ImportSource {
 }
 
 function mapImportErrorMessage(err: unknown): string {
-  const locale = resolveLocale();
+  const locale = resolveActiveLocale();
   const wrapped = MiniBookError.wrap(err, 'corrupt-book');
   switch (wrapped.code) {
     case 'drm-protected':
@@ -124,7 +124,7 @@ export class ImportController {
     isEink: boolean,
     onImported?: () => void,
   ): Promise<void> {
-    const locale = resolveLocale();
+    const locale = resolveActiveLocale();
     const total = sources.length;
 
     for (let i = 0; i < total; i++) {

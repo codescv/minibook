@@ -208,7 +208,7 @@ export function Chrome({
       <footer
         className="mb-chrome-bottom"
         data-state={phase}
-        aria-label={isClosing ? undefined : 'Reading position'}
+        aria-label={isClosing ? undefined : t('readingPosition')}
         aria-hidden={isClosing ? 'true' : undefined}
         style={isClosing ? { pointerEvents: 'none' } : undefined}
       >
@@ -310,7 +310,7 @@ export function Chrome({
                 className="mb-scrubber-track"
                 role="slider"
                 tabIndex={0}
-                aria-label="Reading position"
+                aria-label={t('readingPosition')}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={pct}

@@ -274,7 +274,7 @@ export function ContentsSheet({
                       </div>
                     </button>
                     <IconButton
-                      label="Delete bookmark"
+                      label={t('deleteBookmark')}
                       onClick={() => onRemoveBookmark(bm.id)}
                     >
                       <CloseIcon />

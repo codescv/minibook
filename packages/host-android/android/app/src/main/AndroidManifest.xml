@@ -96,6 +96,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Persist AppCompatDelegate.setApplicationLocales across restarts on Android 12 and below -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
         <!-- Media3 background Read Aloud service (lock screen, notification, Bluetooth AVRCP) -->
         <service
             android:name=".ReadAloudService"

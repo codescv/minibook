@@ -19,7 +19,7 @@ import { Stepper } from '../components/Stepper';
 import { Toggle } from '../components/Toggle';
 import { PagedList } from '../eink/PagedList';
 import { useHostContext } from '../host/HostContext';
-import { resolveLocale, useT } from '../i18n';
+import { useLocale, useT } from '../i18n';
 import { useReadAloudStore, type ReadAloudController } from './ReadAloudController';
 import {
   canonicalizeSystemVoiceLang,
@@ -131,10 +131,7 @@ export function VoiceSheet({
   onCloseSheet,
 }: VoiceSheetProps): ReactElement | null {
   const t = useT();
-  const locale = useMemo(
-    () => resolveLocale(typeof document !== 'undefined' ? document.documentElement.lang : undefined),
-    [],
-  );
+  const locale = useLocale();
   const { host, speechPlayer, settings, isEink, refreshController, updateSettings } =
     useHostContext();
   const rate = useReadAloudStore((s) => s.rate);
@@ -1030,8 +1027,8 @@ export function VoiceSheet({
               valueLabel={QWEN_PRESETS[qwenPresetIdx]?.label ?? QWEN_PRESETS[0]!.label}
               canDecrement={QWEN_PRESETS.length > 1}
               canIncrement={QWEN_PRESETS.length > 1}
-              decrementLabel="Previous preset"
-              incrementLabel="Next preset"
+              decrementLabel={t('prevPreset')}
+              incrementLabel={t('nextPreset')}
               onDecrement={() => applyQwenPreset(qwenPresetIdx - 1)}
               onIncrement={() => applyQwenPreset(qwenPresetIdx + 1)}
             />
@@ -1605,8 +1602,8 @@ export function VoiceSheet({
           valueLabel={`${rate.toFixed(1)}×`}
           canDecrement={rate > 0.51}
           canIncrement={rate < 2.99}
-          decrementLabel="Decrease speed"
-          incrementLabel="Increase speed"
+          decrementLabel={t('decreaseSpeed')}
+          incrementLabel={t('increaseSpeed')}
           onDecrement={() => controller.setRate(rate - 0.1)}
           onIncrement={() => controller.setRate(rate + 0.1)}
         />

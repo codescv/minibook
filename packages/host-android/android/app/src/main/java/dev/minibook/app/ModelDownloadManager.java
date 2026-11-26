@@ -868,7 +868,7 @@ public final class ModelDownloadManager {
             Request.Builder rb = new Request.Builder()
                 .url(url)
                 .header("Accept-Encoding", "identity")
-                .header("User-Agent", "MiniBook/0.2.7");
+                .header("User-Agent", "MiniBook/0.2.8");
             if (offset > 0L) {
                 rb.header("Range", "bytes=" + offset + "-");
             }

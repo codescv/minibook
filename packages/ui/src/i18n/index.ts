@@ -1,3 +1,6 @@
+import { useCallback, useEffect } from 'react';
+import type { UiLanguage } from '@minibook/core';
+import { useSettingsStore } from '../host/settings-store';
 import { en, type I18nDict, type I18nKey } from './en';
 import { zhCN } from './zh-CN';
 import { ja } from './ja';
@@ -11,11 +14,23 @@ const DICTS: Record<SupportedLocale, I18nDict> = {
 };
 
 export function resolveLocale(raw?: string | null): SupportedLocale {
-  const effectiveRaw = raw && raw.trim().length > 0 ? raw : undefined;
-  const tag = (effectiveRaw ?? (typeof navigator !== 'undefined' ? navigator.language : 'en')).toLowerCase();
+  const trimmed = raw?.trim();
+  const effectiveRaw =
+    trimmed && trimmed.length > 0 && trimmed.toLowerCase() !== 'system' ? trimmed : undefined;
+  const tag = (
+    effectiveRaw ?? (typeof navigator !== 'undefined' ? navigator.language : 'en')
+  ).toLowerCase();
   if (tag.startsWith('zh')) return 'zh-CN';
   if (tag.startsWith('ja')) return 'ja';
   return 'en';
+}
+
+export function resolveActiveLocale(uiLanguage?: UiLanguage | null): SupportedLocale {
+  const setting = uiLanguage ?? useSettingsStore.getState().settings.uiLanguage;
+  if (setting === 'zh-CN' || setting === 'en' || setting === 'ja') {
+    return setting;
+  }
+  return resolveLocale();
 }
 
 export function localeToHtmlLang(locale: SupportedLocale): string {
@@ -48,13 +63,21 @@ export function translate(
   return template.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? ''));
 }
 
+export function useLocale(locale?: SupportedLocale): SupportedLocale {
+  const uiLanguage = useSettingsStore((s) => s.settings.uiLanguage);
+  const active = locale ?? resolveActiveLocale(uiLanguage);
+  useEffect(() => {
+    syncDocumentLang(active);
+  }, [active]);
+  return active;
+}
+
 export function useT(locale?: SupportedLocale) {
-  const docLang =
-    typeof document !== 'undefined' && document.documentElement.lang?.trim()
-      ? document.documentElement.lang
-      : undefined;
-  const active = locale ?? resolveLocale(docLang);
-  return (key: I18nKey, vars?: Readonly<Record<string, string | number>>) => translate(active, key, vars);
+  const active = useLocale(locale);
+  return useCallback(
+    (key: I18nKey, vars?: Readonly<Record<string, string | number>>) => translate(active, key, vars),
+    [active],
+  );
 }
 
 export { en, zhCN, ja, type I18nKey, type I18nDict };

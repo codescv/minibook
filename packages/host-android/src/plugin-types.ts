@@ -26,6 +26,7 @@ import type {
   SpeechModelVariant,
   SpeechSession,
   SpeechState,
+  UiLanguage,
   Utterance,
   Voice,
   VoiceRef,
@@ -350,6 +351,7 @@ export interface MiniBookPlugin {
   };
 
   openExternal(opts: { readonly url: string }): Promise<void>;
+  setUiLanguage(opts: { readonly lang: UiLanguage }): Promise<void>;
 
   addListener<K extends keyof MiniBookPluginEventMap>(
     eventName: K,
@@ -420,8 +422,9 @@ export interface MiniBookNativeBridge {
   secretsHas(opts: { name: string }): Promise<{ exists: boolean }>;
   secretsRemove(opts: { name: string }): Promise<void>;
 
-  // external URL
+  // external URL & locale
   openExternal(opts: { url: string }): Promise<void>;
+  setUiLanguage(opts: { lang: UiLanguage }): Promise<void>;
 
   // events
   addListener<K extends keyof MiniBookPluginEventMap>(
@@ -515,6 +518,7 @@ export function wrapNativeBridge(bridge: MiniBookNativeBridge): MiniBookPlugin {
       remove: (opts) => bridge.secretsRemove(opts),
     },
     openExternal: (opts) => bridge.openExternal(opts),
+    setUiLanguage: (opts) => bridge.setUiLanguage(opts),
     addListener: (eventName, listener) => bridge.addListener(eventName, listener),
   };
 }
